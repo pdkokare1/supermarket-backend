@@ -1,33 +1,39 @@
-const express = require('express');
+const Fastify = require('fastify');
 const mongoose = require('mongoose');
-const cors = require('cors');
 require('dotenv').config();
 
-const app = express();
+// Initialize Fastify with Pino logging enabled
+const fastify = Fastify({
+    logger: true 
+});
+
 const PORT = process.env.PORT || 8080;
 
-// Middleware configuration
-app.use(cors()); // Will allow the Vercel frontend to connect safely
-app.use(express.json()); // Allows the server to read JSON data
+// Register CORS middleware for Vercel communication
+fastify.register(require('@fastify/cors'), { 
+    origin: '*' 
+});
 
 // Basic Health Check Route
-app.get('/', (req, res) => {
-    res.status(200).json({ 
+fastify.get('/', async (request, reply) => {
+    return { 
         status: 'Active',
-        message: 'Supermarket Backend MVP is running and connected!' 
-    });
+        message: 'Supermarket Fastify Backend MVP is running and connected!' 
+    };
 });
 
 // Database Connection and Server Initialization
-mongoose.connect(process.env.MONGO_URI)
-    .then(() => {
-        console.log('Successfully connected to MongoDB Atlas');
+const startServer = async () => {
+    try {
+        await mongoose.connect(process.env.MONGO_URI);
+        fastify.log.info('Successfully connected to MongoDB Atlas');
         
-        // Start the server only after DB is connected
-        app.listen(PORT, () => {
-            console.log(`Live Operations Center backend is listening on port ${PORT}`);
-        });
-    })
-    .catch((error) => {
-        console.error('Critical Error connecting to MongoDB:', error.message);
-    });
+        // Start the server (0.0.0.0 is required for Railway deployments)
+        await fastify.listen({ port: PORT, host: '0.0.0.0' });
+    } catch (err) {
+        fastify.log.error('Critical Error connecting to MongoDB:', err);
+        process.exit(1);
+    }
+};
+
+startServer();
