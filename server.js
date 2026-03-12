@@ -14,6 +14,9 @@ fastify.register(require('@fastify/cors'), {
     origin: '*' 
 });
 
+// Register API Routes
+fastify.register(require('./routes/productRoutes'));
+
 // Basic Health Check Route
 fastify.get('/', async (request, reply) => {
     return { 
