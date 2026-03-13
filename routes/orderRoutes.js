@@ -1,15 +1,18 @@
 const Order = require('../models/Order');
 
 async function orderRoutes(fastify, options) {
-    // POST /api/orders - Receive cart data and create a new order ticket
+    // POST /api/orders - Receive cart data and delivery details
     fastify.post('/api/orders', async (request, reply) => {
         try {
-            const { items, totalAmount } = request.body;
+            const { customerName, customerPhone, deliveryAddress, items, totalAmount } = request.body;
             
-            // Construct the database ticket
+            // Construct the database ticket with the new delivery data
             const newOrder = new Order({
-                items: items,
-                totalAmount: totalAmount
+                customerName,
+                customerPhone,
+                deliveryAddress,
+                items,
+                totalAmount
             });
 
             // Lock it into MongoDB
