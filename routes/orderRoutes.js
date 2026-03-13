@@ -42,6 +42,25 @@ async function orderRoutes(fastify, options) {
             reply.status(500).send({ success: false, message: 'Server Error fetching orders' });
         }
     });
+
+    // GET /api/orders/:id - Fetch a single order's status for the customer app
+    fastify.get('/api/orders/:id', async (request, reply) => {
+        try {
+            const order = await Order.findById(request.params.id);
+            
+            if (!order) {
+                return reply.status(404).send({ success: false, message: 'Order not found' });
+            }
+            
+            return { 
+                success: true, 
+                data: order 
+            };
+        } catch (error) {
+            fastify.log.error('Tracking Error:', error);
+            reply.status(500).send({ success: false, message: 'Server Error fetching order status' });
+        }
+    });
 }
 
 module.exports = orderRoutes;
