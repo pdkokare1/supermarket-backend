@@ -1,11 +1,12 @@
 const Product = require('../models/Product');
 
 async function productRoutes(fastify, options) {
-    // GET /api/products - Fetch all active products for the storefront
+    // GET /api/products - Fetch products
+    // Customers fetch active items. Admin app adds ?all=true to fetch everything.
     fastify.get('/api/products', async (request, reply) => {
         try {
-            // Only fetch products that are currently active and in-stock
-            const products = await Product.find({ isActive: true });
+            const filter = request.query.all === 'true' ? {} : { isActive: true };
+            const products = await Product.find(filter).sort({ createdAt: -1 });
             return { success: true, count: products.length, data: products };
         } catch (error) {
             fastify.log.error(error);
@@ -13,10 +14,44 @@ async function productRoutes(fastify, options) {
         }
     });
 
+    // POST /api/products - Add a new item to the catalog
+    fastify.post('/api/products', async (request, reply) => {
+        try {
+            const { name, price, weightOrVolume, category } = request.body;
+            const newProduct = new Product({ name, price, weightOrVolume, category });
+            await newProduct.save();
+            return { success: true, message: 'Product added successfully', data: newProduct };
+        } catch (error) {
+            fastify.log.error(error);
+            reply.status(500).send({ success: false, message: 'Server Error creating product' });
+        }
+    });
+
+    // PUT /api/products/:id/toggle - Master switch for In-Stock / Out-of-Stock
+    fastify.put('/api/products/:id/toggle', async (request, reply) => {
+        try {
+            const product = await Product.findById(request.params.id);
+            if (!product) return reply.status(404).send({ success: false, message: 'Product not found' });
+            
+            // Instantly flip the visibility status
+            product.isActive = !product.isActive;
+            await product.save();
+            
+            return { 
+                success: true, 
+                message: `${product.name} is now ${product.isActive ? 'Live' : 'Hidden'}`, 
+                data: product 
+            };
+        } catch (error) {
+            fastify.log.error(error);
+            reply.status(500).send({ success: false, message: 'Server Error updating product' });
+        }
+    });
+
     // GET /api/seed - Temporary utility route to populate the database
     fastify.get('/api/seed', async (request, reply) => {
         try {
-            // Clear existing products to prevent duplicates if the route is hit multiple times
+            // Clear existing products to prevent duplicates
             await Product.deleteMany({});
             
             const sampleProducts = [
@@ -29,12 +64,11 @@ async function productRoutes(fastify, options) {
                 { name: 'Amul Butter', price: 55, weightOrVolume: '100g', category: 'Dairy' }
             ];
 
-            // Bulk insert the sample data
             await Product.insertMany(sampleProducts);
             
             return { 
                 success: true, 
-                message: 'The Gamut database successfully seeded with 7 sample products!' 
+                message: 'DailyPick database successfully seeded with sample products!' 
             };
         } catch (error) {
             fastify.log.error(error);
