@@ -16,6 +16,7 @@ fastify.register(require('@fastify/cors'), {
 
 // Register API Routes
 fastify.register(require('./routes/productRoutes'));
+fastify.register(require('./routes/orderRoutes'));
 
 // Basic Health Check Route
 fastify.get('/', async (request, reply) => {
@@ -34,7 +35,8 @@ const startServer = async () => {
         // Start the server (0.0.0.0 is required for Railway deployments)
         await fastify.listen({ port: PORT, host: '0.0.0.0' });
     } catch (err) {
-        fastify.log.error('Critical Error connecting to MongoDB:', err);
+        // Updated logging syntax to ensure the exact error message prints to Railway
+        console.error('CRITICAL ERROR CONNECTING TO MONGODB:', err.message);
         process.exit(1);
     }
 };
