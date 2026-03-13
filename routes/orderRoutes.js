@@ -4,15 +4,25 @@ async function orderRoutes(fastify, options) {
     // POST /api/orders - Receive cart data and delivery details
     fastify.post('/api/orders', async (request, reply) => {
         try {
-            const { customerName, customerPhone, deliveryAddress, items, totalAmount } = request.body;
+            const { 
+                customerName, 
+                customerPhone, 
+                deliveryAddress, 
+                items, 
+                totalAmount,
+                deliveryType,
+                scheduleTime
+            } = request.body;
             
-            // Construct the database ticket with the new delivery data
+            // Construct the database ticket with the new routing and schedule data
             const newOrder = new Order({
                 customerName,
                 customerPhone,
                 deliveryAddress,
                 items,
-                totalAmount
+                totalAmount,
+                deliveryType: deliveryType || 'Instant',
+                scheduleTime: scheduleTime || 'ASAP'
             });
 
             // Lock it into MongoDB
@@ -25,7 +35,10 @@ async function orderRoutes(fastify, options) {
             };
         } catch (error) {
             fastify.log.error('Checkout Error:', error);
-            reply.status(500).send({ success: false, message: 'Server Error processing checkout' });
+            reply.status(500).send({ 
+                success: false, 
+                message: 'Server Error processing checkout' 
+            });
         }
     });
 
@@ -42,7 +55,10 @@ async function orderRoutes(fastify, options) {
             };
         } catch (error) {
             fastify.log.error('Dispatch Error:', error);
-            reply.status(500).send({ success: false, message: 'Server Error fetching orders' });
+            reply.status(500).send({ 
+                success: false, 
+                message: 'Server Error fetching orders' 
+            });
         }
     });
 
@@ -52,7 +68,10 @@ async function orderRoutes(fastify, options) {
             const order = await Order.findById(request.params.id);
             
             if (!order) {
-                return reply.status(404).send({ success: false, message: 'Order not found' });
+                return reply.status(404).send({ 
+                    success: false, 
+                    message: 'Order not found' 
+                });
             }
             
             return { 
@@ -61,7 +80,10 @@ async function orderRoutes(fastify, options) {
             };
         } catch (error) {
             fastify.log.error('Tracking Error:', error);
-            reply.status(500).send({ success: false, message: 'Server Error fetching order status' });
+            reply.status(500).send({ 
+                success: false, 
+                message: 'Server Error fetching order status' 
+            });
         }
     });
 }
