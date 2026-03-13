@@ -25,6 +25,23 @@ async function orderRoutes(fastify, options) {
             reply.status(500).send({ success: false, message: 'Server Error processing checkout' });
         }
     });
+
+    // GET /api/orders - Dispatch active orders to the Admin Live Operations Center
+    fastify.get('/api/orders', async (request, reply) => {
+        try {
+            // Fetch all orders, sorting by the newest first (-1)
+            const orders = await Order.find().sort({ createdAt: -1 });
+            
+            return { 
+                success: true, 
+                count: orders.length,
+                data: orders 
+            };
+        } catch (error) {
+            fastify.log.error('Dispatch Error:', error);
+            reply.status(500).send({ success: false, message: 'Server Error fetching orders' });
+        }
+    });
 }
 
 module.exports = orderRoutes;
