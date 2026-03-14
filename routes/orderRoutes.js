@@ -8,6 +8,9 @@ async function orderRoutes(fastify, options) {
 
     // 1. PUSH CHANNEL: ADMIN LIVE STREAM
     fastify.get('/api/orders/stream/admin', (request, reply) => {
+        // THE FIX: Tell Fastify we are hijacking the raw connection so it doesn't crash
+        reply.hijack(); 
+        
         reply.raw.writeHead(200, {
             'Content-Type': 'text/event-stream',
             'Cache-Control': 'no-cache',
@@ -26,6 +29,8 @@ async function orderRoutes(fastify, options) {
 
     // 2. PUSH CHANNEL: CUSTOMER TRACKING STREAM
     fastify.get('/api/orders/stream/customer/:id', (request, reply) => {
+        reply.hijack(); // THE FIX
+        
         const orderId = request.params.id;
         
         reply.raw.writeHead(200, {
@@ -44,14 +49,27 @@ async function orderRoutes(fastify, options) {
         });
     });
 
-    // 3. POST /api/orders - Checkout (Now with Real-Time Admin Broadcast)
+    // 3. POST /api/orders - Checkout (With Real-Time Admin Broadcast)
     fastify.post('/api/orders', async (request, reply) => {
         try {
-            const { customerName, customerPhone, deliveryAddress, items, totalAmount, deliveryType, scheduleTime } = request.body;
+            const { 
+                customerName, 
+                customerPhone, 
+                deliveryAddress, 
+                items, 
+                totalAmount, 
+                deliveryType, 
+                scheduleTime 
+            } = request.body;
             
             const newOrder = new Order({
-                customerName, customerPhone, deliveryAddress, items, totalAmount,
-                deliveryType: deliveryType || 'Instant', scheduleTime: scheduleTime || 'ASAP'
+                customerName, 
+                customerPhone, 
+                deliveryAddress, 
+                items, 
+                totalAmount,
+                deliveryType: deliveryType || 'Instant', 
+                scheduleTime: scheduleTime || 'ASAP'
             });
 
             await newOrder.save();
@@ -68,7 +86,7 @@ async function orderRoutes(fastify, options) {
         }
     });
 
-    // 4. PUT /api/orders/:id/dispatch - NEW ACTION (Triggers Customer Broadcast)
+    // 4. PUT /api/orders/:id/dispatch - Triggers Customer Broadcast
     fastify.put('/api/orders/:id/dispatch', async (request, reply) => {
         try {
             const order = await Order.findByIdAndUpdate(
