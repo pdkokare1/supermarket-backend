@@ -4,24 +4,34 @@ const Order = require('../models/Order');
 let adminConnections = [];
 let customerConnections = {};
 
+// --- NEW: Heartbeat Interval ---
+// Keeps connections alive so Railway doesn't drop them
+setInterval(() => {
+    adminConnections = adminConnections.filter(conn => !conn.destroyed);
+    adminConnections.forEach(conn => conn.write(':\n\n'));
+
+    for (const orderId in customerConnections) {
+        customerConnections[orderId] = customerConnections[orderId].filter(conn => !conn.destroyed);
+        customerConnections[orderId].forEach(conn => conn.write(':\n\n'));
+        if (customerConnections[orderId].length === 0) delete customerConnections[orderId];
+    }
+}, 15000);
+
 async function orderRoutes(fastify, options) {
 
     // 1. PUSH CHANNEL: ADMIN LIVE STREAM
     fastify.get('/api/orders/stream/admin', (request, reply) => {
-        // THE FIX: Tell Fastify we are hijacking the raw connection so it doesn't crash
         reply.hijack(); 
         
         reply.raw.writeHead(200, {
             'Content-Type': 'text/event-stream',
             'Cache-Control': 'no-cache',
-            'Connection': 'keep-alive',
-            'Access-Control-Allow-Origin': '*'
+            'Connection': 'keep-alive'
         });
         reply.raw.write('data: {"message": "Admin Stream Connected"}\n\n');
         
         adminConnections.push(reply.raw);
 
-        // If the admin closes the app, remove their connection
         request.raw.on('close', () => {
             adminConnections = adminConnections.filter(conn => conn !== reply.raw);
         });
@@ -29,15 +39,14 @@ async function orderRoutes(fastify, options) {
 
     // 2. PUSH CHANNEL: CUSTOMER TRACKING STREAM
     fastify.get('/api/orders/stream/customer/:id', (request, reply) => {
-        reply.hijack(); // THE FIX
+        reply.hijack(); 
         
         const orderId = request.params.id;
         
         reply.raw.writeHead(200, {
             'Content-Type': 'text/event-stream',
             'Cache-Control': 'no-cache',
-            'Connection': 'keep-alive',
-            'Access-Control-Allow-Origin': '*'
+            'Connection': 'keep-alive'
         });
         reply.raw.write('data: {"message": "Tracking Stream Connected"}\n\n');
         
@@ -53,30 +62,23 @@ async function orderRoutes(fastify, options) {
     fastify.post('/api/orders', async (request, reply) => {
         try {
             const { 
-                customerName, 
-                customerPhone, 
-                deliveryAddress, 
-                items, 
-                totalAmount, 
-                deliveryType, 
-                scheduleTime 
+                customerName, customerPhone, deliveryAddress, items, 
+                totalAmount, deliveryType, scheduleTime 
             } = request.body;
             
             const newOrder = new Order({
-                customerName, 
-                customerPhone, 
-                deliveryAddress, 
-                items, 
-                totalAmount,
+                customerName, customerPhone, deliveryAddress, items, totalAmount,
                 deliveryType: deliveryType || 'Instant', 
                 scheduleTime: scheduleTime || 'ASAP'
             });
 
             await newOrder.save();
             
-            // INSTANTLY PUSH TO ALL CONNECTED ADMIN TABLETS
+            // INSTANTLY PUSH TO ALL CONNECTED ADMIN TABLETS (With Safety Check)
             adminConnections.forEach(conn => {
-                conn.write(`data: ${JSON.stringify({ type: 'NEW_ORDER', order: newOrder })}\n\n`);
+                if (!conn.destroyed) {
+                    conn.write(`data: ${JSON.stringify({ type: 'NEW_ORDER', order: newOrder })}\n\n`);
+                }
             });
 
             return { success: true, message: 'Order Placed Successfully', orderId: newOrder._id };
@@ -97,10 +99,12 @@ async function orderRoutes(fastify, options) {
             
             if (!order) return reply.status(404).send({ success: false, message: 'Order not found' });
 
-            // INSTANTLY PUSH TO THE SPECIFIC CUSTOMER'S PHONE
+            // INSTANTLY PUSH TO THE SPECIFIC CUSTOMER'S PHONE (With Safety Check)
             if (customerConnections[order._id]) {
                 customerConnections[order._id].forEach(conn => {
-                    conn.write(`data: ${JSON.stringify({ type: 'STATUS_UPDATE', status: 'Dispatched' })}\n\n`);
+                    if (!conn.destroyed) {
+                        conn.write(`data: ${JSON.stringify({ type: 'STATUS_UPDATE', status: 'Dispatched' })}\n\n`);
+                    }
                 });
             }
 
