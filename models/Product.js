@@ -1,6 +1,6 @@
 const mongoose = require('mongoose');
 
-// NEW: Sub-schema for individual sizes/prices
+// Sub-schema for individual sizes/prices
 const variantSchema = new mongoose.Schema({
     weightOrVolume: { type: String, required: true },
     price: { type: Number, required: true },
@@ -12,7 +12,8 @@ const productSchema = new mongoose.Schema({
     category: { type: String, required: true },
     imageUrl: { type: String, default: '' },
     isActive: { type: Boolean, default: true },
-    variants: [variantSchema] // Replaces flat price/weight fields
+    searchTags: { type: String, default: '' }, // <-- NEW: Invisible Search Keywords
+    variants: [variantSchema] 
 }, { timestamps: true });
 
 module.exports = mongoose.model('Product', productSchema);
