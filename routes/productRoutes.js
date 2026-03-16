@@ -1,4 +1,5 @@
 const Product = require('../models/Product');
+const Category = require('../models/Category');
 
 async function productRoutes(fastify, options) {
     // GET /api/products - Fetch products
@@ -16,8 +17,8 @@ async function productRoutes(fastify, options) {
     // POST /api/products - Add a single item
     fastify.post('/api/products', async (request, reply) => {
         try {
-            const { name, category, imageUrl, variants } = request.body;
-            const newProduct = new Product({ name, category, imageUrl, variants });
+            const { name, category, imageUrl, searchTags, variants } = request.body;
+            const newProduct = new Product({ name, category, imageUrl, searchTags, variants });
             await newProduct.save();
             return { success: true, message: 'Product added successfully', data: newProduct };
         } catch (error) {
@@ -26,14 +27,12 @@ async function productRoutes(fastify, options) {
         }
     });
 
-    // --- NEW: PUT /api/products/:id - Edit an existing product ---
+    // PUT /api/products/:id - Edit an existing product
     fastify.put('/api/products/:id', async (request, reply) => {
         try {
-            const { name, category, imageUrl, variants } = request.body;
+            const { name, category, imageUrl, searchTags, variants } = request.body;
             
-            // Build the update object. If imageUrl is empty string, we let it update to empty (removing image)
-            // or if it's undefined we don't update it (keeps existing image if no new one uploaded)
-            const updateData = { name, category, variants };
+            const updateData = { name, category, searchTags, variants };
             if (imageUrl !== undefined && imageUrl !== null) {
                 updateData.imageUrl = imageUrl;
             }
@@ -65,12 +64,12 @@ async function productRoutes(fastify, options) {
             let insertedCount = 0;
 
             for (const p of products) {
-                // Upsert logic: Match by name.
                 const result = await Product.updateOne(
                     { name: p.name },
                     { $set: {
                         category: p.category,
                         imageUrl: p.imageUrl || '',
+                        searchTags: p.searchTags || '',
                         variants: p.variants || []
                     }},
                     { upsert: true } 
@@ -110,18 +109,26 @@ async function productRoutes(fastify, options) {
     // GET /api/seed - Temporary utility route
     fastify.get('/api/seed', async (request, reply) => {
         try {
+            // Seed Categories
+            await Category.deleteMany({});
+            const sampleCategories = [
+                { name: 'Milk & Dairy' }, { name: 'Ice Creams & Desserts' }, 
+                { name: 'Chocolates & Sweets' }, { name: 'Kitchen & Groceries' }, 
+                { name: 'Fruits & Vegetables' }, { name: 'Snacks & Drinks' }
+            ];
+            await Category.insertMany(sampleCategories);
+
+            // Seed Products
             await Product.deleteMany({});
             const sampleProducts = [
-                { name: 'Fresh Cow Milk', category: 'Dairy', imageUrl: '', variants: [{ weightOrVolume: '1 Liter', price: 60, stock: 50 }, { weightOrVolume: '500 ml', price: 32, stock: 50 }] },
-                { name: 'Whole Wheat Bread', category: 'Bakery', imageUrl: '', variants: [{ weightOrVolume: '400g', price: 45, stock: 20 }] },
-                { name: 'Farm Fresh Eggs', category: 'Dairy', imageUrl: '', variants: [{ weightOrVolume: '1 Dozen', price: 80, stock: 30 }, { weightOrVolume: '6 Pack', price: 45, stock: 15 }] },
-                { name: 'Organic Bananas', category: 'Produce', imageUrl: '', variants: [{ weightOrVolume: '1 kg', price: 50, stock: 40 }] },
-                { name: 'Basmati Rice', category: 'Pantry', imageUrl: '', variants: [{ weightOrVolume: '1 kg', price: 120, stock: 100 }, { weightOrVolume: '5 kg', price: 550, stock: 20 }] },
-                { name: 'Toor Dal', category: 'Pantry', imageUrl: '', variants: [{ weightOrVolume: '1 kg', price: 160, stock: 50 }] },
-                { name: 'Amul Butter', category: 'Dairy', imageUrl: '', variants: [{ weightOrVolume: '100g', price: 55, stock: 40 }, { weightOrVolume: '500g', price: 260, stock: 10 }] }
+                { name: 'Fresh Cow Milk', category: 'Milk & Dairy', searchTags: 'liquid, morning, chai, tea', imageUrl: '', variants: [{ weightOrVolume: '1 Liter', price: 60, stock: 50 }] },
+                { name: 'Vanilla Ice Cream Tub', category: 'Ice Creams & Desserts', searchTags: 'cold, sweet, summer, frozen', imageUrl: '', variants: [{ weightOrVolume: '500 ml', price: 150, stock: 20 }] },
+                { name: 'Farm Fresh Eggs', category: 'Milk & Dairy', searchTags: 'protein, breakfast, poultry', imageUrl: '', variants: [{ weightOrVolume: '1 Dozen', price: 80, stock: 30 }] },
+                { name: 'Organic Bananas', category: 'Fruits & Vegetables', searchTags: 'fruit, yellow, healthy', imageUrl: '', variants: [{ weightOrVolume: '1 kg', price: 50, stock: 40 }] }
             ];
             await Product.insertMany(sampleProducts);
-            return { success: true, message: 'DailyPick database successfully seeded with sample products!' };
+
+            return { success: true, message: 'Categories and Products successfully seeded!' };
         } catch (error) {
             fastify.log.error(error);
             reply.status(500).send({ success: false, message: 'Server Error seeding database' });
