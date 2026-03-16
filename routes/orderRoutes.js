@@ -4,8 +4,8 @@ const Order = require('../models/Order');
 let adminConnections = [];
 let customerConnections = {};
 
-// --- NEW: Heartbeat Interval ---
-// Keeps connections alive so Railway doesn't drop them
+// --- Heartbeat Interval ---
+// Keeps connections alive so the cloud proxy doesn't drop them
 setInterval(() => {
     adminConnections = adminConnections.filter(conn => !conn.destroyed);
     adminConnections.forEach(conn => conn.write(':\n\n'));
@@ -26,7 +26,9 @@ async function orderRoutes(fastify, options) {
         reply.raw.writeHead(200, {
             'Content-Type': 'text/event-stream',
             'Cache-Control': 'no-cache',
-            'Connection': 'keep-alive'
+            'Connection': 'keep-alive',
+            'Access-Control-Allow-Origin': '*',  // <-- RESTORED: Bypasses strict browser blocks
+            'X-Accel-Buffering': 'no'            // <-- NEW: Forces Railway to send data instantly
         });
         reply.raw.write('data: {"message": "Admin Stream Connected"}\n\n');
         
@@ -46,7 +48,9 @@ async function orderRoutes(fastify, options) {
         reply.raw.writeHead(200, {
             'Content-Type': 'text/event-stream',
             'Cache-Control': 'no-cache',
-            'Connection': 'keep-alive'
+            'Connection': 'keep-alive',
+            'Access-Control-Allow-Origin': '*',  // <-- RESTORED
+            'X-Accel-Buffering': 'no'            // <-- NEW
         });
         reply.raw.write('data: {"message": "Tracking Stream Connected"}\n\n');
         
