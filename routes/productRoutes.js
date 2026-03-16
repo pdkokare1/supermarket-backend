@@ -13,11 +13,11 @@ async function productRoutes(fastify, options) {
         }
     });
 
-    // POST /api/products - Add a single item (Now accepts Images)
+    // POST /api/products - Add a single item
     fastify.post('/api/products', async (request, reply) => {
         try {
-            const { name, price, weightOrVolume, category, imageUrl } = request.body;
-            const newProduct = new Product({ name, price, weightOrVolume, category, imageUrl });
+            const { name, category, imageUrl, variants } = request.body;
+            const newProduct = new Product({ name, category, imageUrl, variants });
             await newProduct.save();
             return { success: true, message: 'Product added successfully', data: newProduct };
         } catch (error) {
@@ -26,7 +26,36 @@ async function productRoutes(fastify, options) {
         }
     });
 
-    // --- NEW: POST /api/products/bulk - Excel/CSV Import ---
+    // --- NEW: PUT /api/products/:id - Edit an existing product ---
+    fastify.put('/api/products/:id', async (request, reply) => {
+        try {
+            const { name, category, imageUrl, variants } = request.body;
+            
+            // Build the update object. If imageUrl is empty string, we let it update to empty (removing image)
+            // or if it's undefined we don't update it (keeps existing image if no new one uploaded)
+            const updateData = { name, category, variants };
+            if (imageUrl !== undefined && imageUrl !== null) {
+                updateData.imageUrl = imageUrl;
+            }
+
+            const updatedProduct = await Product.findByIdAndUpdate(
+                request.params.id,
+                { $set: updateData },
+                { new: true, runValidators: true }
+            );
+
+            if (!updatedProduct) {
+                return reply.status(404).send({ success: false, message: 'Product not found' });
+            }
+
+            return { success: true, message: 'Product updated successfully', data: updatedProduct };
+        } catch (error) {
+            fastify.log.error(error);
+            reply.status(500).send({ success: false, message: 'Server Error updating product' });
+        }
+    });
+
+    // POST /api/products/bulk - Excel/CSV Import
     fastify.post('/api/products/bulk', async (request, reply) => {
         try {
             const { products } = request.body;
@@ -36,14 +65,13 @@ async function productRoutes(fastify, options) {
             let insertedCount = 0;
 
             for (const p of products) {
-                // Upsert logic: Match by name. If it exists, update it. If not, create it.
+                // Upsert logic: Match by name.
                 const result = await Product.updateOne(
                     { name: p.name },
                     { $set: {
-                        price: p.price,
-                        weightOrVolume: p.weightOrVolume,
                         category: p.category,
-                        imageUrl: p.imageUrl || ''
+                        imageUrl: p.imageUrl || '',
+                        variants: p.variants || []
                     }},
                     { upsert: true } 
                 );
@@ -84,13 +112,13 @@ async function productRoutes(fastify, options) {
         try {
             await Product.deleteMany({});
             const sampleProducts = [
-                { name: 'Fresh Cow Milk', price: 60, weightOrVolume: '1 Liter', category: 'Dairy', imageUrl: '' },
-                { name: 'Whole Wheat Bread', price: 45, weightOrVolume: '400g', category: 'Bakery', imageUrl: '' },
-                { name: 'Farm Fresh Eggs', price: 80, weightOrVolume: '1 Dozen', category: 'Dairy', imageUrl: '' },
-                { name: 'Organic Bananas', price: 50, weightOrVolume: '1 kg', category: 'Produce', imageUrl: '' },
-                { name: 'Basmati Rice', price: 120, weightOrVolume: '1 kg', category: 'Pantry', imageUrl: '' },
-                { name: 'Toor Dal', price: 160, weightOrVolume: '1 kg', category: 'Pantry', imageUrl: '' },
-                { name: 'Amul Butter', price: 55, weightOrVolume: '100g', category: 'Dairy', imageUrl: '' }
+                { name: 'Fresh Cow Milk', category: 'Dairy', imageUrl: '', variants: [{ weightOrVolume: '1 Liter', price: 60, stock: 50 }, { weightOrVolume: '500 ml', price: 32, stock: 50 }] },
+                { name: 'Whole Wheat Bread', category: 'Bakery', imageUrl: '', variants: [{ weightOrVolume: '400g', price: 45, stock: 20 }] },
+                { name: 'Farm Fresh Eggs', category: 'Dairy', imageUrl: '', variants: [{ weightOrVolume: '1 Dozen', price: 80, stock: 30 }, { weightOrVolume: '6 Pack', price: 45, stock: 15 }] },
+                { name: 'Organic Bananas', category: 'Produce', imageUrl: '', variants: [{ weightOrVolume: '1 kg', price: 50, stock: 40 }] },
+                { name: 'Basmati Rice', category: 'Pantry', imageUrl: '', variants: [{ weightOrVolume: '1 kg', price: 120, stock: 100 }, { weightOrVolume: '5 kg', price: 550, stock: 20 }] },
+                { name: 'Toor Dal', category: 'Pantry', imageUrl: '', variants: [{ weightOrVolume: '1 kg', price: 160, stock: 50 }] },
+                { name: 'Amul Butter', category: 'Dairy', imageUrl: '', variants: [{ weightOrVolume: '100g', price: 55, stock: 40 }, { weightOrVolume: '500g', price: 260, stock: 10 }] }
             ];
             await Product.insertMany(sampleProducts);
             return { success: true, message: 'DailyPick database successfully seeded with sample products!' };
