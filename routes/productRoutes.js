@@ -2,12 +2,39 @@ const Product = require('../models/Product');
 const Category = require('../models/Category');
 
 async function productRoutes(fastify, options) {
-    // GET /api/products - Fetch products
+    // GET /api/products - Fetch products (Now supports safe pagination and search)
     fastify.get('/api/products', async (request, reply) => {
         try {
-            const filter = request.query.all === 'true' ? {} : { isActive: true };
-            const products = await Product.find(filter).sort({ createdAt: -1 });
-            return { success: true, count: products.length, data: products };
+            let filter = request.query.all === 'true' ? {} : { isActive: true };
+            
+            // Apply Search Filtering if provided
+            if (request.query.search) {
+                filter.$or = [
+                    { name: { $regex: request.query.search, $options: 'i' } },
+                    { searchTags: { $regex: request.query.search, $options: 'i' } }
+                ];
+            }
+            
+            // Apply Category Filtering if provided
+            if (request.query.category && request.query.category !== 'All') {
+                filter.category = request.query.category;
+            }
+
+            // Safe Pagination Logic: If no limit is sent (like your live storefront), fetch everything.
+            const page = parseInt(request.query.page) || 1;
+            const limit = parseInt(request.query.limit); 
+            
+            let query = Product.find(filter).sort({ createdAt: -1 });
+            
+            if (limit) {
+                const skip = (page - 1) * limit;
+                query = query.skip(skip).limit(limit);
+            }
+
+            const products = await query;
+            const total = await Product.countDocuments(filter); // Useful if you want total page counts later
+
+            return { success: true, count: products.length, total: total, data: products };
         } catch (error) {
             fastify.log.error(error);
             reply.status(500).send({ success: false, message: 'Server Error fetching products' });
