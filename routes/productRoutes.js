@@ -77,7 +77,7 @@ async function productRoutes(fastify, options) {
         } catch (error) { fastify.log.error(error); reply.status(500).send({ success: false, message: 'Server Error' }); }
     });
 
-    // GET /api/seed - EXPANDED DEMO CATALOG
+    // GET /api/seed - EXPANDED CATALOG WITH PROMO TAGS INJECTED
     fastify.get('/api/seed', async (request, reply) => {
         try {
             await Category.deleteMany({});
@@ -90,20 +90,20 @@ async function productRoutes(fastify, options) {
 
             await Product.deleteMany({});
             const sampleProducts = [
-                // Dairy & Breakfast
-                { name: 'Amul Taaza Toned Milk', category: 'Dairy & Breakfast', brand: 'Amul', searchTags: 'milk, liquid, morning, dairy', imageUrl: 'https://m.media-amazon.com/images/I/61H4YpTfGLL._SL1500_.jpg', variants: [{ weightOrVolume: '1 Litre', price: 68, stock: 150, sku: '8901262150171' }] },
-                { name: 'Britannia Fresh White Bread', category: 'Dairy & Breakfast', brand: 'Britannia', searchTags: 'bread, bakery, toast, breakfast', imageUrl: 'https://m.media-amazon.com/images/I/71I3uXhYyPL._SL1500_.jpg', variants: [{ weightOrVolume: '400 g', price: 45, stock: 30, sku: '8901063132030' }] },
-                { name: 'Farm Fresh White Eggs', category: 'Dairy & Breakfast', brand: 'Farm Fresh', searchTags: 'anda, protein, poultry, egg', imageUrl: 'https://m.media-amazon.com/images/I/61bM5YfWdXL._SL1500_.jpg', variants: [{ weightOrVolume: '6 Pack', price: 48, stock: 45, sku: 'DP-EGG-006' }] },
-                { name: 'Kellogg\'s Corn Flakes', category: 'Dairy & Breakfast', brand: 'Kelloggs', searchTags: 'cereal, breakfast, healthy', imageUrl: 'https://m.media-amazon.com/images/I/81I-D+OeyYL._SL1500_.jpg', variants: [{ weightOrVolume: '475 g', price: 199, stock: 20, sku: '8901499009824' }] },
+                // Dairy & Breakfast (Injecting 'promo-morning' tag)
+                { name: 'Amul Taaza Toned Milk', category: 'Dairy & Breakfast', brand: 'Amul', searchTags: 'milk, liquid, morning, dairy, promo-morning', imageUrl: 'https://m.media-amazon.com/images/I/61H4YpTfGLL._SL1500_.jpg', variants: [{ weightOrVolume: '1 Litre', price: 68, stock: 150, sku: '8901262150171' }] },
+                { name: 'Britannia Fresh White Bread', category: 'Dairy & Breakfast', brand: 'Britannia', searchTags: 'bread, bakery, toast, breakfast, promo-morning', imageUrl: 'https://m.media-amazon.com/images/I/71I3uXhYyPL._SL1500_.jpg', variants: [{ weightOrVolume: '400 g', price: 45, stock: 30, sku: '8901063132030' }] },
+                { name: 'Farm Fresh White Eggs', category: 'Dairy & Breakfast', brand: 'Farm Fresh', searchTags: 'anda, protein, poultry, egg, promo-morning', imageUrl: 'https://m.media-amazon.com/images/I/61bM5YfWdXL._SL1500_.jpg', variants: [{ weightOrVolume: '6 Pack', price: 48, stock: 45, sku: 'DP-EGG-006' }] },
+                { name: 'Kellogg\'s Corn Flakes', category: 'Dairy & Breakfast', brand: 'Kelloggs', searchTags: 'cereal, breakfast, healthy, promo-morning', imageUrl: 'https://m.media-amazon.com/images/I/81I-D+OeyYL._SL1500_.jpg', variants: [{ weightOrVolume: '475 g', price: 199, stock: 20, sku: '8901499009824' }] },
 
-                // Snacks & Munchies
-                { name: 'Lay\'s Magic Masala Chips', category: 'Snacks & Munchies', brand: 'Lay\'s', searchTags: 'chips, namkeen, blue, potato, snack', imageUrl: 'https://m.media-amazon.com/images/I/71XmZ7Kq9vL._SL1500_.jpg', variants: [{ weightOrVolume: '50 g', price: 20, stock: 100, sku: '8901491100512' }] },
-                { name: 'Haldiram\'s Aloo Bhujia', category: 'Snacks & Munchies', brand: 'Haldiram', searchTags: 'namkeen, spicy, snack, bhujiya', imageUrl: 'https://m.media-amazon.com/images/I/71+G94Y0U6L._SL1500_.jpg', variants: [{ weightOrVolume: '200 g', price: 55, stock: 80, sku: '8904004400263' }] },
-                { name: 'Cadbury Dairy Milk Silk', category: 'Snacks & Munchies', brand: 'Cadbury', searchTags: 'chocolate, sweet, bar', imageUrl: 'https://m.media-amazon.com/images/I/61y8BhhV7+L._SL1500_.jpg', variants: [{ weightOrVolume: '60 g', price: 80, stock: 50, sku: '7622201402263' }] },
+                // Snacks & Munchies (Injecting 'promo-snack' tag)
+                { name: 'Lay\'s Magic Masala Chips', category: 'Snacks & Munchies', brand: 'Lay\'s', searchTags: 'chips, namkeen, blue, potato, snack, promo-snack', imageUrl: 'https://m.media-amazon.com/images/I/71XmZ7Kq9vL._SL1500_.jpg', variants: [{ weightOrVolume: '50 g', price: 20, stock: 100, sku: '8901491100512' }] },
+                { name: 'Haldiram\'s Aloo Bhujia', category: 'Snacks & Munchies', brand: 'Haldiram', searchTags: 'namkeen, spicy, snack, bhujiya, promo-snack', imageUrl: 'https://m.media-amazon.com/images/I/71+G94Y0U6L._SL1500_.jpg', variants: [{ weightOrVolume: '200 g', price: 55, stock: 80, sku: '8904004400263' }] },
+                { name: 'Cadbury Dairy Milk Silk', category: 'Snacks & Munchies', brand: 'Cadbury', searchTags: 'chocolate, sweet, bar, promo-snack', imageUrl: 'https://m.media-amazon.com/images/I/61y8BhhV7+L._SL1500_.jpg', variants: [{ weightOrVolume: '60 g', price: 80, stock: 50, sku: '7622201402263' }] },
 
-                // Cold Drinks & Juices
-                { name: 'Pepsi Soft Drink', category: 'Cold Drinks & Juices', brand: 'Pepsi', searchTags: 'cold drink, soda, cola, beverage', imageUrl: 'https://m.media-amazon.com/images/I/51r5I9fWqFL._SL1200_.jpg', variants: [{ weightOrVolume: '750 ml', price: 40, stock: 80, sku: '8902080204144' }] },
-                { name: 'Tropicana 100% Orange Juice', category: 'Cold Drinks & Juices', brand: 'Tropicana', searchTags: 'juice, fruit, sweet, drink', imageUrl: 'https://m.media-amazon.com/images/I/81B-8Z+-iNL._SL1500_.jpg', variants: [{ weightOrVolume: '1 Litre', price: 120, stock: 35, sku: '8902080204145' }] },
+                // Cold Drinks & Juices (Injecting 'promo-summer' tag)
+                { name: 'Pepsi Soft Drink', category: 'Cold Drinks & Juices', brand: 'Pepsi', searchTags: 'cold drink, soda, cola, beverage, promo-summer', imageUrl: 'https://m.media-amazon.com/images/I/51r5I9fWqFL._SL1200_.jpg', variants: [{ weightOrVolume: '750 ml', price: 40, stock: 80, sku: '8902080204144' }] },
+                { name: 'Tropicana 100% Orange Juice', category: 'Cold Drinks & Juices', brand: 'Tropicana', searchTags: 'juice, fruit, sweet, drink, promo-summer', imageUrl: 'https://m.media-amazon.com/images/I/81B-8Z+-iNL._SL1500_.jpg', variants: [{ weightOrVolume: '1 Litre', price: 120, stock: 35, sku: '8902080204145' }] },
 
                 // Personal Care
                 { name: 'Pears Pure & Gentle Soap', category: 'Personal Care', brand: 'Pears', searchTags: 'bath, body, wash, hygiene', imageUrl: 'https://m.media-amazon.com/images/I/61A83wYQ4oL._SL1500_.jpg', variants: [{ weightOrVolume: '125 g', price: 55, stock: 65, sku: '8901030739941' }] },
