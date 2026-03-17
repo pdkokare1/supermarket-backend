@@ -17,7 +17,9 @@ fastify.register(require('@fastify/cors'), {
 // Register API Routes
 fastify.register(require('./routes/productRoutes'));
 fastify.register(require('./routes/orderRoutes'));
-fastify.register(require('./routes/categoryRoutes')); // <-- NEW: Registered Category Routes
+fastify.register(require('./routes/categoryRoutes'));
+fastify.register(require('./routes/brandRoutes')); // <-- NEW: Registered Brand Routes
+fastify.register(require('./routes/distributorRoutes')); // <-- NEW: Registered Distributor Routes
 
 // Basic Health Check Route
 fastify.get('/', async (request, reply) => {
