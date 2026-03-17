@@ -77,42 +77,48 @@ async function productRoutes(fastify, options) {
         } catch (error) { fastify.log.error(error); reply.status(500).send({ success: false, message: 'Server Error' }); }
     });
 
-    // GET /api/seed - UPDATED TO MATCH NEW SCREENSHOTS
+    // GET /api/seed - EXPANDED DEMO CATALOG
     fastify.get('/api/seed', async (request, reply) => {
         try {
             await Category.deleteMany({});
             const sampleCategories = [
-                { name: 'Dairy, Bread & Eggs' }, { name: 'Snacks & Drinks' }, 
-                { name: 'Grocery & Kitchen' }, { name: 'Beauty & Personal Care' }, 
-                { name: 'Home Essentials' }
+                { name: 'Dairy & Breakfast' }, { name: 'Snacks & Munchies' }, 
+                { name: 'Cold Drinks & Juices' }, { name: 'Personal Care' }, 
+                { name: 'Cleaning Essentials' }, { name: 'Grocery & Kitchen' }
             ];
             await Category.insertMany(sampleCategories);
 
             await Product.deleteMany({});
             const sampleProducts = [
-                // Snacks & Drinks
-                { name: 'Lay\'s Magic Masala Chips', category: 'Snacks & Drinks', brand: 'Lay\'s', distributorName: 'PepsiCo', searchTags: 'chips, namkeen, blue, potato', imageUrl: 'https://m.media-amazon.com/images/I/71XmZ7Kq9vL._SL1500_.jpg', variants: [{ weightOrVolume: '50 g', price: 20, stock: 100, sku: '8901491100512' }] },
-                { name: 'Cadbury Dairy Milk Silk', category: 'Snacks & Drinks', brand: 'Cadbury', distributorName: 'Mondelez', searchTags: 'chocolate, sweet, bar', imageUrl: 'https://m.media-amazon.com/images/I/61y8BhhV7+L._SL1500_.jpg', variants: [{ weightOrVolume: '60 g', price: 80, stock: 50, sku: '7622201402263' }] },
-                { name: 'Pepsi Soft Drink Bottle', category: 'Snacks & Drinks', brand: 'Pepsi', distributorName: 'PepsiCo', searchTags: 'cold drink, soda, cola, beverage', imageUrl: 'https://m.media-amazon.com/images/I/51r5I9fWqFL._SL1200_.jpg', variants: [{ weightOrVolume: '750 ml', price: 40, stock: 80, sku: '8902080204144' }] },
-                { name: 'Nescafe Classic Coffee', category: 'Snacks & Drinks', brand: 'Nescafe', distributorName: 'Nestle', searchTags: 'tea, coffee, caffeine, morning', imageUrl: 'https://m.media-amazon.com/images/I/71pE1Q5NnDL._SL1500_.jpg', variants: [{ weightOrVolume: '50 g', price: 160, stock: 40, sku: '8901058814729' }] },
+                // Dairy & Breakfast
+                { name: 'Amul Taaza Toned Milk', category: 'Dairy & Breakfast', brand: 'Amul', searchTags: 'milk, liquid, morning, dairy', imageUrl: 'https://m.media-amazon.com/images/I/61H4YpTfGLL._SL1500_.jpg', variants: [{ weightOrVolume: '1 Litre', price: 68, stock: 150, sku: '8901262150171' }] },
+                { name: 'Britannia Fresh White Bread', category: 'Dairy & Breakfast', brand: 'Britannia', searchTags: 'bread, bakery, toast, breakfast', imageUrl: 'https://m.media-amazon.com/images/I/71I3uXhYyPL._SL1500_.jpg', variants: [{ weightOrVolume: '400 g', price: 45, stock: 30, sku: '8901063132030' }] },
+                { name: 'Farm Fresh White Eggs', category: 'Dairy & Breakfast', brand: 'Farm Fresh', searchTags: 'anda, protein, poultry, egg', imageUrl: 'https://m.media-amazon.com/images/I/61bM5YfWdXL._SL1500_.jpg', variants: [{ weightOrVolume: '6 Pack', price: 48, stock: 45, sku: 'DP-EGG-006' }] },
+                { name: 'Kellogg\'s Corn Flakes', category: 'Dairy & Breakfast', brand: 'Kelloggs', searchTags: 'cereal, breakfast, healthy', imageUrl: 'https://m.media-amazon.com/images/I/81I-D+OeyYL._SL1500_.jpg', variants: [{ weightOrVolume: '475 g', price: 199, stock: 20, sku: '8901499009824' }] },
+
+                // Snacks & Munchies
+                { name: 'Lay\'s Magic Masala Chips', category: 'Snacks & Munchies', brand: 'Lay\'s', searchTags: 'chips, namkeen, blue, potato, snack', imageUrl: 'https://m.media-amazon.com/images/I/71XmZ7Kq9vL._SL1500_.jpg', variants: [{ weightOrVolume: '50 g', price: 20, stock: 100, sku: '8901491100512' }] },
+                { name: 'Haldiram\'s Aloo Bhujia', category: 'Snacks & Munchies', brand: 'Haldiram', searchTags: 'namkeen, spicy, snack, bhujiya', imageUrl: 'https://m.media-amazon.com/images/I/71+G94Y0U6L._SL1500_.jpg', variants: [{ weightOrVolume: '200 g', price: 55, stock: 80, sku: '8904004400263' }] },
+                { name: 'Cadbury Dairy Milk Silk', category: 'Snacks & Munchies', brand: 'Cadbury', searchTags: 'chocolate, sweet, bar', imageUrl: 'https://m.media-amazon.com/images/I/61y8BhhV7+L._SL1500_.jpg', variants: [{ weightOrVolume: '60 g', price: 80, stock: 50, sku: '7622201402263' }] },
+
+                // Cold Drinks & Juices
+                { name: 'Pepsi Soft Drink', category: 'Cold Drinks & Juices', brand: 'Pepsi', searchTags: 'cold drink, soda, cola, beverage', imageUrl: 'https://m.media-amazon.com/images/I/51r5I9fWqFL._SL1200_.jpg', variants: [{ weightOrVolume: '750 ml', price: 40, stock: 80, sku: '8902080204144' }] },
+                { name: 'Tropicana 100% Orange Juice', category: 'Cold Drinks & Juices', brand: 'Tropicana', searchTags: 'juice, fruit, sweet, drink', imageUrl: 'https://m.media-amazon.com/images/I/81B-8Z+-iNL._SL1500_.jpg', variants: [{ weightOrVolume: '1 Litre', price: 120, stock: 35, sku: '8902080204145' }] },
+
+                // Personal Care
+                { name: 'Pears Pure & Gentle Soap', category: 'Personal Care', brand: 'Pears', searchTags: 'bath, body, wash, hygiene', imageUrl: 'https://m.media-amazon.com/images/I/61A83wYQ4oL._SL1500_.jpg', variants: [{ weightOrVolume: '125 g', price: 55, stock: 65, sku: '8901030739941' }] },
+                { name: 'Colgate Strong Teeth Toothpaste', category: 'Personal Care', brand: 'Colgate', searchTags: 'brush, teeth, dental, hygiene', imageUrl: 'https://m.media-amazon.com/images/I/61Wv8q9q-xL._SL1500_.jpg', variants: [{ weightOrVolume: '100 g', price: 62, stock: 90, sku: '8901314010526' }] },
+
+                // Cleaning Essentials
+                { name: 'Vim Dishwash Gel Lemon', category: 'Cleaning Essentials', brand: 'Vim', searchTags: 'clean, dishes, liquid, kitchen', imageUrl: 'https://m.media-amazon.com/images/I/51I7s-r-TCL._SL1000_.jpg', variants: [{ weightOrVolume: '250 ml', price: 55, stock: 40, sku: '8901030739942' }] },
+                { name: 'Lizol Floor Cleaner Citrus', category: 'Cleaning Essentials', brand: 'Lizol', searchTags: 'clean, floor, surface, home', imageUrl: 'https://m.media-amazon.com/images/I/61sJc-0H5cL._SL1500_.jpg', variants: [{ weightOrVolume: '500 ml', price: 105, stock: 30, sku: '8901314010527' }] },
                 
                 // Grocery & Kitchen
-                { name: 'Aashirvaad Shudh Chakki Atta', category: 'Grocery & Kitchen', brand: 'Aashirvaad', distributorName: 'ITC', searchTags: 'flour, wheat, roti, chapati', imageUrl: 'https://m.media-amazon.com/images/I/81kIitI3KPL._SL1500_.jpg', variants: [{ weightOrVolume: '5 kg', price: 230, stock: 60, sku: '8901725132514' }] },
-                { name: 'Fortune Sunlite Refined Sunflower Oil', category: 'Grocery & Kitchen', brand: 'Fortune', distributorName: 'Adani Wilmar', searchTags: 'oil, ghee, cooking', imageUrl: 'https://m.media-amazon.com/images/I/61k9H6M5pHL._SL1500_.jpg', variants: [{ weightOrVolume: '1 Litre', price: 145, stock: 90, sku: '8906007270213' }] },
-                { name: 'Tata Salt Lite', category: 'Grocery & Kitchen', brand: 'Tata', distributorName: 'Tata Consumer', searchTags: 'salt, namak, sodium', imageUrl: 'https://m.media-amazon.com/images/I/61zLz6T8mPL._SL1500_.jpg', variants: [{ weightOrVolume: '1 kg', price: 45, stock: 120, sku: '8904004400262' }] },
-                
-                // Dairy, Bread & Eggs
-                { name: 'Amul Taaza Toned Milk', category: 'Dairy, Bread & Eggs', brand: 'Amul', distributorName: 'GCMMF', searchTags: 'milk, liquid, dairy', imageUrl: 'https://m.media-amazon.com/images/I/61H4YpTfGLL._SL1500_.jpg', variants: [{ weightOrVolume: '1 Litre', price: 68, stock: 150, sku: '8901262150171' }] },
-                { name: 'Britannia Daily Fresh White Bread', category: 'Dairy, Bread & Eggs', brand: 'Britannia', distributorName: 'Britannia Ind', searchTags: 'bread, bakery, toast', imageUrl: 'https://m.media-amazon.com/images/I/71I3uXhYyPL._SL1500_.jpg', variants: [{ weightOrVolume: '400 g', price: 45, stock: 30, sku: '8901063132030' }] },
-                { name: 'Farm Fresh White Eggs', category: 'Dairy, Bread & Eggs', brand: 'Farm Fresh', distributorName: 'Local Farms', searchTags: 'anda, protein, poultry', imageUrl: 'https://m.media-amazon.com/images/I/61bM5YfWdXL._SL1500_.jpg', variants: [{ weightOrVolume: '6 Pack', price: 48, stock: 45, sku: 'DP-EGG-006' }] },
-
-                // Beauty & Personal Care
-                { name: 'Pears Pure & Gentle Soap', category: 'Beauty & Personal Care', brand: 'Pears', distributorName: 'HUL', searchTags: 'bath, body, wash, hygiene', imageUrl: 'https://m.media-amazon.com/images/I/61A83wYQ4oL._SL1500_.jpg', variants: [{ weightOrVolume: '125 g', price: 55, stock: 65, sku: '8901030739941' }] },
-                { name: 'Tresemme Keratin Smooth Shampoo', category: 'Beauty & Personal Care', brand: 'Tresemme', distributorName: 'HUL', searchTags: 'hair, care, wash', imageUrl: 'https://m.media-amazon.com/images/I/51r5I9fWqFL._SL1200_.jpg', variants: [{ weightOrVolume: '340 ml', price: 299, stock: 25, sku: '8901030612183' }] }
+                { name: 'Aashirvaad Shudh Chakki Atta', category: 'Grocery & Kitchen', brand: 'Aashirvaad', searchTags: 'flour, wheat, roti, chapati', imageUrl: 'https://m.media-amazon.com/images/I/81kIitI3KPL._SL1500_.jpg', variants: [{ weightOrVolume: '5 kg', price: 230, stock: 60, sku: '8901725132514' }] }
             ];
             await Product.insertMany(sampleProducts);
 
-            return { success: true, message: 'Database successfully seeded with Branded Quick-Commerce layout!' };
+            return { success: true, message: 'Database seeded with DailyPick catalog and functional categories!' };
         } catch (error) {
             fastify.log.error(error);
             reply.status(500).send({ success: false, message: 'Server Error seeding database' });
