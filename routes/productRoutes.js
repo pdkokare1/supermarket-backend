@@ -17,6 +17,14 @@ async function productRoutes(fastify, options) {
             if (request.query.category && request.query.category !== 'All') { 
                 filter.category = request.query.category; 
             }
+
+            // NEW: Advanced Filtering for Brand and Distributor
+            if (request.query.brand && request.query.brand !== 'All') {
+                filter.brand = request.query.brand;
+            }
+            if (request.query.distributor && request.query.distributor !== 'All') {
+                filter.distributorName = request.query.distributor;
+            }
             
             const page = parseInt(request.query.page) || 1; 
             const limit = parseInt(request.query.limit); 
