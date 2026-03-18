@@ -1,5 +1,6 @@
 const Order = require('../models/Order');
-const Product = require('../models/Product'); // <-- NEW: Needed for cancelling orders (stock refund)
+const Product = require('../models/Product'); // <-- Needed for cancelling orders (stock refund)
+const Customer = require('../models/Customer'); // <-- NEW: Needed for persistent credit ledger
 
 // In-memory radio channels for live devices
 let adminConnections = [];
@@ -68,11 +69,39 @@ async function orderRoutes(fastify, options) {
         try {
             const { 
                 customerName, customerPhone, deliveryAddress, items, 
-                totalAmount, deliveryType, scheduleTime 
+                totalAmount, deliveryType, scheduleTime, paymentMethod 
             } = request.body;
             
+            // --- NEW: Pay Later Credit Check Logic ---
+            if (paymentMethod === 'Pay Later') {
+                const customerProfile = await Customer.findOne({ phone: customerPhone });
+                
+                if (!customerProfile || !customerProfile.isCreditEnabled) {
+                    return reply.status(400).send({ success: false, message: 'Pay Later is not enabled for this account.' });
+                }
+                if ((customerProfile.creditUsed + totalAmount) > customerProfile.creditLimit) {
+                    return reply.status(400).send({ success: false, message: `Credit limit exceeded. Available credit: ₹${customerProfile.creditLimit - customerProfile.creditUsed}` });
+                }
+                
+                // Deduct from their available credit by increasing their used amount
+                customerProfile.creditUsed += totalAmount;
+                await customerProfile.save();
+            }
+
+            // --- NEW: Auto-create/update customer profile permanently in the background ---
+            let custProfile = await Customer.findOne({ phone: customerPhone });
+            if (!custProfile) {
+                custProfile = new Customer({ phone: customerPhone, name: customerName });
+                await custProfile.save();
+            } else if (custProfile.name !== customerName) {
+                custProfile.name = customerName; // Update name if they changed it
+                await custProfile.save();
+            }
+            // --- END NEW LOGIC ---
+
             const newOrder = new Order({
                 customerName, customerPhone, deliveryAddress, items, totalAmount,
+                paymentMethod: paymentMethod || 'Cash on Delivery',
                 deliveryType: deliveryType || 'Instant', 
                 scheduleTime: scheduleTime || 'ASAP'
             });
@@ -120,7 +149,7 @@ async function orderRoutes(fastify, options) {
         }
     });
 
-    // --- NEW: Cancel Order & Refund Stock (Phase 4) ---
+    // --- Cancel Order & Refund Stock ---
     fastify.put('/api/orders/:id/cancel', async (request, reply) => {
         try {
             const { reason } = request.body;
@@ -129,7 +158,17 @@ async function orderRoutes(fastify, options) {
             if (!order) return reply.status(404).send({ success: false, message: 'Order not found' });
             
             order.status = 'Cancelled';
-            // Optional: you could save the reason to a new schema field, but for now we rely on status change.
+
+            // --- NEW: Refund Credit Limit if cancelled ---
+            if (order.paymentMethod === 'Pay Later') {
+                const custProfile = await Customer.findOne({ phone: order.customerPhone });
+                if (custProfile) {
+                    custProfile.creditUsed -= order.totalAmount;
+                    if (custProfile.creditUsed < 0) custProfile.creditUsed = 0;
+                    await custProfile.save();
+                }
+            }
+            // --- END NEW LOGIC ---
 
             // Safely refund stock for each item
             for (const item of order.items) {
@@ -165,7 +204,7 @@ async function orderRoutes(fastify, options) {
         }
     });
 
-    // --- NEW: Analytics Aggregation (Phase 4) ---
+    // --- Analytics Aggregation ---
     fastify.get('/api/orders/analytics', async (request, reply) => {
         try {
             // Get all orders completed or dispatched
@@ -219,7 +258,7 @@ async function orderRoutes(fastify, options) {
         }
     });
 
-    // --- NEW: Customer CRM Aggregation (Phase 4) ---
+    // --- Customer CRM Aggregation ---
     fastify.get('/api/orders/customers', async (request, reply) => {
         try {
             const orders = await Order.find({ status: { $ne: 'Cancelled' } });
@@ -275,6 +314,58 @@ async function orderRoutes(fastify, options) {
             reply.status(500).send({ success: false, message: 'Server Error fetching order status' });
         }
     });
+
+    // =========================================================
+    // --- NEW: CUSTOMER CREDIT MANAGEMENT ROUTES (Phase 5) ---
+    // =========================================================
+
+    // Fetch a specific customer's credit profile
+    fastify.get('/api/customers/profile/:phone', async (request, reply) => {
+        try {
+            const cust = await Customer.findOne({ phone: request.params.phone });
+            if (!cust) return { success: true, data: null }; // Doesn't exist yet
+            return { success: true, data: cust };
+        } catch (error) {
+            reply.status(500).send({ success: false, message: 'Error fetching profile' });
+        }
+    });
+
+    // Update Credit Limit & Enable/Disable
+    fastify.put('/api/customers/profile/:phone/limit', async (request, reply) => {
+        try {
+            const { isCreditEnabled, creditLimit } = request.body;
+            let cust = await Customer.findOne({ phone: request.params.phone });
+            
+            if (!cust) return reply.status(404).send({ success: false, message: 'Customer not found. They must place at least 1 order.' });
+            
+            cust.isCreditEnabled = isCreditEnabled;
+            cust.creditLimit = Number(creditLimit);
+            await cust.save();
+            
+            return { success: true, data: cust };
+        } catch (error) {
+            reply.status(500).send({ success: false, message: 'Error updating limit' });
+        }
+    });
+
+    // Record a partial or full payment from a customer
+    fastify.post('/api/customers/profile/:phone/pay', async (request, reply) => {
+        try {
+            const { amount } = request.body;
+            let cust = await Customer.findOne({ phone: request.params.phone });
+            
+            if (!cust) return reply.status(404).send({ success: false, message: 'Customer not found.' });
+            
+            cust.creditUsed -= Number(amount);
+            if (cust.creditUsed < 0) cust.creditUsed = 0; // Prevent negative balances
+            
+            await cust.save();
+            return { success: true, data: cust, message: 'Payment recorded successfully' };
+        } catch (error) {
+            reply.status(500).send({ success: false, message: 'Error recording payment' });
+        }
+    });
+
 }
 
 module.exports = orderRoutes;
