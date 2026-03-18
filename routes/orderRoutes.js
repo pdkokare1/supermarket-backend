@@ -1,6 +1,6 @@
 const Order = require('../models/Order');
 const Product = require('../models/Product'); // <-- Needed for cancelling orders (stock refund)
-const Customer = require('../models/Customer'); // <-- NEW: Needed for persistent credit ledger
+const Customer = require('../models/Customer'); // <-- Needed for persistent credit ledger
 
 // In-memory radio channels for live devices
 let adminConnections = [];
@@ -30,7 +30,7 @@ async function orderRoutes(fastify, options) {
             'Cache-Control': 'no-cache',
             'Connection': 'keep-alive',
             'Access-Control-Allow-Origin': '*',  // <-- RESTORED: Bypasses strict browser blocks
-            'X-Accel-Buffering': 'no'            // <-- NEW: Forces Railway to send data instantly
+            'X-Accel-Buffering': 'no'            // <-- Forces Railway to send data instantly
         });
         reply.raw.write('data: {"message": "Admin Stream Connected"}\n\n');
         
@@ -52,7 +52,7 @@ async function orderRoutes(fastify, options) {
             'Cache-Control': 'no-cache',
             'Connection': 'keep-alive',
             'Access-Control-Allow-Origin': '*',  // <-- RESTORED
-            'X-Accel-Buffering': 'no'            // <-- NEW
+            'X-Accel-Buffering': 'no'            // <-- Forces Railway to send data instantly
         });
         reply.raw.write('data: {"message": "Tracking Stream Connected"}\n\n');
         
@@ -72,7 +72,7 @@ async function orderRoutes(fastify, options) {
                 totalAmount, deliveryType, scheduleTime, paymentMethod 
             } = request.body;
             
-            // --- NEW: Pay Later Credit Check Logic ---
+            // --- Pay Later Credit Check Logic ---
             if (paymentMethod === 'Pay Later') {
                 const customerProfile = await Customer.findOne({ phone: customerPhone });
                 
@@ -88,7 +88,7 @@ async function orderRoutes(fastify, options) {
                 await customerProfile.save();
             }
 
-            // --- NEW: Auto-create/update customer profile permanently in the background ---
+            // --- Auto-create/update customer profile permanently in the background ---
             let custProfile = await Customer.findOne({ phone: customerPhone });
             if (!custProfile) {
                 custProfile = new Customer({ phone: customerPhone, name: customerName });
@@ -97,7 +97,6 @@ async function orderRoutes(fastify, options) {
                 custProfile.name = customerName; // Update name if they changed it
                 await custProfile.save();
             }
-            // --- END NEW LOGIC ---
 
             const newOrder = new Order({
                 customerName, customerPhone, deliveryAddress, items, totalAmount,
@@ -159,7 +158,7 @@ async function orderRoutes(fastify, options) {
             
             order.status = 'Cancelled';
 
-            // --- NEW: Refund Credit Limit if cancelled ---
+            // --- Refund Credit Limit if cancelled ---
             if (order.paymentMethod === 'Pay Later') {
                 const custProfile = await Customer.findOne({ phone: order.customerPhone });
                 if (custProfile) {
@@ -168,7 +167,6 @@ async function orderRoutes(fastify, options) {
                     await custProfile.save();
                 }
             }
-            // --- END NEW LOGIC ---
 
             // Safely refund stock for each item
             for (const item of order.items) {
@@ -316,27 +314,33 @@ async function orderRoutes(fastify, options) {
     });
 
     // =========================================================
-    // --- NEW: CUSTOMER CREDIT MANAGEMENT ROUTES (Phase 5) ---
+    // --- CUSTOMER CREDIT MANAGEMENT ROUTES ---
     // =========================================================
 
     // Fetch a specific customer's credit profile
     fastify.get('/api/customers/profile/:phone', async (request, reply) => {
         try {
             const cust = await Customer.findOne({ phone: request.params.phone });
-            if (!cust) return { success: true, data: null }; // Doesn't exist yet
+            if (!cust) return { success: true, data: null }; 
             return { success: true, data: cust };
         } catch (error) {
             reply.status(500).send({ success: false, message: 'Error fetching profile' });
         }
     });
 
-    // Update Credit Limit & Enable/Disable
+    // Update Credit Limit & Enable/Disable (NOW AUTO-CREATES MISSING USERS)
     fastify.put('/api/customers/profile/:phone/limit', async (request, reply) => {
         try {
-            const { isCreditEnabled, creditLimit } = request.body;
+            const { isCreditEnabled, creditLimit, name } = request.body;
             let cust = await Customer.findOne({ phone: request.params.phone });
             
-            if (!cust) return reply.status(404).send({ success: false, message: 'Customer not found. They must place at least 1 order.' });
+            // If the user isn't in the new Customer DB, create them instantly!
+            if (!cust) {
+                cust = new Customer({ 
+                    phone: request.params.phone, 
+                    name: name || 'Valued Customer' 
+                });
+            }
             
             cust.isCreditEnabled = isCreditEnabled;
             cust.creditLimit = Number(creditLimit);
