@@ -1,4 +1,5 @@
 const Order = require('../models/Order');
+const Product = require('../models/Product'); // <-- NEW: Needed for cancelling orders (stock refund)
 
 // In-memory radio channels for live devices
 let adminConnections = [];
@@ -116,6 +117,139 @@ async function orderRoutes(fastify, options) {
         } catch (error) {
             fastify.log.error('Dispatch Error:', error);
             reply.status(500).send({ success: false, message: 'Server Error dispatching order' });
+        }
+    });
+
+    // --- NEW: Cancel Order & Refund Stock (Phase 4) ---
+    fastify.put('/api/orders/:id/cancel', async (request, reply) => {
+        try {
+            const { reason } = request.body;
+            const order = await Order.findById(request.params.id);
+            
+            if (!order) return reply.status(404).send({ success: false, message: 'Order not found' });
+            
+            order.status = 'Cancelled';
+            // Optional: you could save the reason to a new schema field, but for now we rely on status change.
+
+            // Safely refund stock for each item
+            for (const item of order.items) {
+                try {
+                    const product = await Product.findById(item.productId);
+                    if (product && product.variants) {
+                        const variant = product.variants.id(item.variantId);
+                        if (variant) {
+                            variant.stock += item.qty;
+                            await product.save();
+                        }
+                    }
+                } catch(e) {
+                    fastify.log.error('Stock Refund Error for item:', item, e);
+                }
+            }
+
+            await order.save();
+
+            // Broadcast to Customer if connected
+            if (customerConnections[order._id]) {
+                customerConnections[order._id].forEach(conn => {
+                    if (!conn.destroyed) {
+                        conn.write(`data: ${JSON.stringify({ type: 'STATUS_UPDATE', status: 'Cancelled' })}\n\n`);
+                    }
+                });
+            }
+
+            return { success: true, message: 'Order Cancelled and Stock Refunded', data: order };
+        } catch (error) {
+            fastify.log.error('Cancel Error:', error);
+            reply.status(500).send({ success: false, message: 'Server Error cancelling order' });
+        }
+    });
+
+    // --- NEW: Analytics Aggregation (Phase 4) ---
+    fastify.get('/api/orders/analytics', async (request, reply) => {
+        try {
+            // Get all orders completed or dispatched
+            const orders = await Order.find({ status: { $in: ['Dispatched', 'Completed'] } });
+            
+            let revenueLast7Days = [0,0,0,0,0,0,0]; // Today is index 6
+            const today = new Date();
+            today.setHours(23,59,59,999);
+            const sevenDaysAgo = new Date(today);
+            sevenDaysAgo.setDate(today.getDate() - 6);
+            sevenDaysAgo.setHours(0,0,0,0);
+
+            let itemFrequency = {};
+
+            orders.forEach(o => {
+                const orderDate = new Date(o.createdAt);
+                if (orderDate >= sevenDaysAgo && orderDate <= today) {
+                    // Calculate which day bucket (0-6)
+                    const dayDiff = Math.floor((orderDate - sevenDaysAgo) / (1000 * 60 * 60 * 24));
+                    if(dayDiff >= 0 && dayDiff <= 6) {
+                        revenueLast7Days[dayDiff] += o.totalAmount;
+                    }
+                }
+                
+                // Track top items
+                o.items.forEach(i => {
+                    const key = `${i.name} (${i.selectedVariant})`;
+                    if (!itemFrequency[key]) itemFrequency[key] = { qty: 0, revenue: 0 };
+                    itemFrequency[key].qty += i.qty;
+                    itemFrequency[key].revenue += (i.price * i.qty);
+                });
+            });
+
+            // Sort top items
+            const topItems = Object.entries(itemFrequency)
+                .map(([name, stats]) => ({ name, qty: stats.qty, revenue: stats.revenue }))
+                .sort((a,b) => b.qty - a.qty)
+                .slice(0, 5); // Top 5
+
+            return { 
+                success: true, 
+                data: {
+                    chartLabels: ['Day 1', 'Day 2', 'Day 3', 'Day 4', 'Day 5', 'Yesterday', 'Today'],
+                    revenueData: revenueLast7Days,
+                    topItems: topItems
+                }
+            };
+        } catch (error) {
+            fastify.log.error('Analytics Error:', error);
+            reply.status(500).send({ success: false, message: 'Server Error fetching analytics' });
+        }
+    });
+
+    // --- NEW: Customer CRM Aggregation (Phase 4) ---
+    fastify.get('/api/orders/customers', async (request, reply) => {
+        try {
+            const orders = await Order.find({ status: { $ne: 'Cancelled' } });
+            let customers = {};
+
+            orders.forEach(o => {
+                const phone = o.customerPhone || 'Unknown';
+                if (!customers[phone]) {
+                    customers[phone] = {
+                        name: o.customerName || 'Guest',
+                        phone: phone,
+                        orderCount: 0,
+                        lifetimeValue: 0,
+                        lastOrderDate: o.createdAt
+                    };
+                }
+                customers[phone].orderCount += 1;
+                customers[phone].lifetimeValue += o.totalAmount;
+                if (new Date(o.createdAt) > new Date(customers[phone].lastOrderDate)) {
+                    customers[phone].lastOrderDate = o.createdAt;
+                    customers[phone].name = o.customerName; // Update to latest known name
+                }
+            });
+
+            const customerList = Object.values(customers).sort((a,b) => b.lifetimeValue - a.lifetimeValue);
+
+            return { success: true, count: customerList.length, data: customerList };
+        } catch (error) {
+            fastify.log.error('CRM Error:', error);
+            reply.status(500).send({ success: false, message: 'Server Error fetching customers' });
         }
     });
 
