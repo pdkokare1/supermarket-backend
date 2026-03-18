@@ -3,7 +3,6 @@ const Category = require('../models/Category');
 
 async function productRoutes(fastify, options) {
     
-    // GET /api/products (With Search & Pagination)
     fastify.get('/api/products', async (request, reply) => {
         try {
             let filter = request.query.all === 'true' ? {} : { isActive: true };
@@ -39,7 +38,6 @@ async function productRoutes(fastify, options) {
         }
     });
 
-    // POST /api/products
     fastify.post('/api/products', async (request, reply) => {
         try {
             const { name, category, brand, distributorName, imageUrl, searchTags, variants } = request.body;
@@ -56,7 +54,6 @@ async function productRoutes(fastify, options) {
         }
     });
 
-    // PUT /api/products/:id
     fastify.put('/api/products/:id', async (request, reply) => {
         try {
             const { name, category, brand, distributorName, imageUrl, searchTags, variants } = request.body;
@@ -83,7 +80,6 @@ async function productRoutes(fastify, options) {
         }
     });
 
-    // PUT /api/products/:id/restock
     fastify.put('/api/products/:id/restock', async (request, reply) => {
         try {
             const { variantId, invoiceNumber, addedQuantity, purchasingPrice, newSellingPrice } = request.body;
@@ -116,7 +112,6 @@ async function productRoutes(fastify, options) {
         }
     });
 
-    // POST /api/products/bulk
     fastify.post('/api/products/bulk', async (request, reply) => {
         try {
             const { products } = request.body;
@@ -152,7 +147,6 @@ async function productRoutes(fastify, options) {
         }
     });
 
-    // PUT /api/products/:id/toggle
     fastify.put('/api/products/:id/toggle', async (request, reply) => {
         try {
             const product = await Product.findById(request.params.id);
@@ -170,7 +164,6 @@ async function productRoutes(fastify, options) {
         }
     });
 
-    // GET /api/seed
     fastify.get('/api/seed', async (request, reply) => {
         try {
             await Category.deleteMany({});
@@ -183,7 +176,6 @@ async function productRoutes(fastify, options) {
 
             await Product.deleteMany({});
             const sampleProducts = [
-                // Low Stock Items to Trigger FOMO Badge
                 { 
                     name: 'Amul Taaza Toned Milk', category: 'Dairy & Breakfast', brand: 'Amul', searchTags: 'milk, liquid, morning, dairy, promo-morning', imageUrl: 'https://m.media-amazon.com/images/I/61H4YpTfGLL._SL1500_.jpg', 
                     variants: [{ weightOrVolume: '1 Litre', price: 68, stock: 3, lowStockThreshold: 10, sku: '8901262150171' }] 
