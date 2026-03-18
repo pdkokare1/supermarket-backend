@@ -13,7 +13,7 @@ const variantSchema = new mongoose.Schema({
     price: { type: Number, required: true },
     stock: { type: Number, default: 0 },
     sku: { type: String, default: '' }, 
-    lowStockThreshold: { type: Number, default: 5 }, // <-- NEW: Custom Alert Level
+    lowStockThreshold: { type: Number, default: 5 },
     purchaseHistory: [purchaseHistorySchema] 
 });
 
