@@ -1,5 +1,7 @@
 const Fastify = require('fastify');
 const mongoose = require('mongoose');
+const cron = require('node-cron');
+const Product = require('./models/Product'); // Needed for the cron job
 require('dotenv').config();
 
 // Initialize Fastify with Pino logging enabled
@@ -27,6 +29,33 @@ fastify.get('/', async (request, reply) => {
         status: 'Active',
         message: 'Supermarket Fastify Backend MVP is running and connected!' 
     };
+});
+
+// --- NEW: Automated Low-Stock Alert System (Phase 4) ---
+// Runs every day at 09:00 AM server time
+cron.schedule('0 9 * * *', async () => {
+    fastify.log.info('Running Daily Low-Stock CRON Job...');
+    try {
+        const products = await Product.find({ isActive: true });
+        let lowStockCount = 0;
+        
+        products.forEach(p => {
+            if (p.variants) {
+                p.variants.forEach(v => {
+                    if (v.stock <= (v.lowStockThreshold || 5)) {
+                        lowStockCount++;
+                    }
+                });
+            }
+        });
+
+        if (lowStockCount > 0) {
+            fastify.log.info(`CRON ALERT: You have ${lowStockCount} items running low on stock.`);
+            // In the future, you can put a fetch() here to trigger a free WhatsApp API (like UltraMsg/CallMeBot)
+        }
+    } catch (err) {
+        fastify.log.error('CRON Job Error:', err);
+    }
 });
 
 // Database Connection and Server Initialization
