@@ -1,13 +1,14 @@
+// pdkokare1/supermarket-backend/supermarket-backend-58587a545e316294188febd4173f8e224124d716/routes/orderRoutes.js
+
 const Order = require('../models/Order');
-const Product = require('../models/Product'); // <-- Needed for cancelling orders (stock refund)
-const Customer = require('../models/Customer'); // <-- Needed for persistent credit ledger
+const Product = require('../models/Product');
+const Customer = require('../models/Customer');
 
 // In-memory radio channels for live devices
 let adminConnections = [];
 let customerConnections = {};
 
 // --- Heartbeat Interval ---
-// Keeps connections alive so the cloud proxy doesn't drop them
 setInterval(() => {
     adminConnections = adminConnections.filter(conn => !conn.destroyed);
     adminConnections.forEach(conn => conn.write(':\n\n'));
@@ -21,16 +22,14 @@ setInterval(() => {
 
 async function orderRoutes(fastify, options) {
 
-    // 1. PUSH CHANNEL: ADMIN LIVE STREAM
     fastify.get('/api/orders/stream/admin', (request, reply) => {
         reply.hijack(); 
-        
         reply.raw.writeHead(200, {
             'Content-Type': 'text/event-stream',
             'Cache-Control': 'no-cache',
             'Connection': 'keep-alive',
-            'Access-Control-Allow-Origin': '*',  // <-- RESTORED: Bypasses strict browser blocks
-            'X-Accel-Buffering': 'no'            // <-- Forces Railway to send data instantly
+            'Access-Control-Allow-Origin': '*',  
+            'X-Accel-Buffering': 'no'            
         });
         reply.raw.write('data: {"message": "Admin Stream Connected"}\n\n');
         
@@ -41,18 +40,16 @@ async function orderRoutes(fastify, options) {
         });
     });
 
-    // 2. PUSH CHANNEL: CUSTOMER TRACKING STREAM
     fastify.get('/api/orders/stream/customer/:id', (request, reply) => {
         reply.hijack(); 
-        
         const orderId = request.params.id;
         
         reply.raw.writeHead(200, {
             'Content-Type': 'text/event-stream',
             'Cache-Control': 'no-cache',
             'Connection': 'keep-alive',
-            'Access-Control-Allow-Origin': '*',  // <-- RESTORED
-            'X-Accel-Buffering': 'no'            // <-- Forces Railway to send data instantly
+            'Access-Control-Allow-Origin': '*',  
+            'X-Accel-Buffering': 'no'            
         });
         reply.raw.write('data: {"message": "Tracking Stream Connected"}\n\n');
         
@@ -64,7 +61,6 @@ async function orderRoutes(fastify, options) {
         });
     });
 
-    // 3. POST /api/orders - Checkout (With Real-Time Admin Broadcast)
     fastify.post('/api/orders', async (request, reply) => {
         try {
             const { 
@@ -72,7 +68,6 @@ async function orderRoutes(fastify, options) {
                 totalAmount, deliveryType, scheduleTime, paymentMethod 
             } = request.body;
             
-            // --- Pay Later Credit Check Logic ---
             if (paymentMethod === 'Pay Later') {
                 const customerProfile = await Customer.findOne({ phone: customerPhone });
                 
@@ -82,19 +77,16 @@ async function orderRoutes(fastify, options) {
                 if ((customerProfile.creditUsed + totalAmount) > customerProfile.creditLimit) {
                     return reply.status(400).send({ success: false, message: `Credit limit exceeded. Available credit: ₹${customerProfile.creditLimit - customerProfile.creditUsed}` });
                 }
-                
-                // Deduct from their available credit by increasing their used amount
                 customerProfile.creditUsed += totalAmount;
                 await customerProfile.save();
             }
 
-            // --- Auto-create/update customer profile permanently in the background ---
             let custProfile = await Customer.findOne({ phone: customerPhone });
             if (!custProfile) {
                 custProfile = new Customer({ phone: customerPhone, name: customerName });
                 await custProfile.save();
             } else if (custProfile.name !== customerName) {
-                custProfile.name = customerName; // Update name if they changed it
+                custProfile.name = customerName; 
                 await custProfile.save();
             }
 
@@ -107,7 +99,6 @@ async function orderRoutes(fastify, options) {
 
             await newOrder.save();
             
-            // INSTANTLY PUSH TO ALL CONNECTED ADMIN TABLETS (With Safety Check)
             adminConnections.forEach(conn => {
                 if (!conn.destroyed) {
                     conn.write(`data: ${JSON.stringify({ type: 'NEW_ORDER', order: newOrder })}\n\n`);
@@ -121,7 +112,33 @@ async function orderRoutes(fastify, options) {
         }
     });
 
-    // 4. PUT /api/orders/:id/dispatch - Triggers Customer Broadcast
+    // --- NEW: Generic Status Update Endpoint (For Kanban Board) ---
+    fastify.put('/api/orders/:id/status', async (request, reply) => {
+        try {
+            const { status } = request.body;
+            const order = await Order.findByIdAndUpdate(
+                request.params.id, 
+                { status: status }, 
+                { new: true }
+            );
+            
+            if (!order) return reply.status(404).send({ success: false, message: 'Order not found' });
+
+            if (customerConnections[order._id]) {
+                customerConnections[order._id].forEach(conn => {
+                    if (!conn.destroyed) {
+                        conn.write(`data: ${JSON.stringify({ type: 'STATUS_UPDATE', status: status })}\n\n`);
+                    }
+                });
+            }
+
+            return { success: true, data: order };
+        } catch (error) {
+            fastify.log.error('Status Update Error:', error);
+            reply.status(500).send({ success: false, message: 'Server Error updating status' });
+        }
+    });
+
     fastify.put('/api/orders/:id/dispatch', async (request, reply) => {
         try {
             const order = await Order.findByIdAndUpdate(
@@ -132,7 +149,6 @@ async function orderRoutes(fastify, options) {
             
             if (!order) return reply.status(404).send({ success: false, message: 'Order not found' });
 
-            // INSTANTLY PUSH TO THE SPECIFIC CUSTOMER'S PHONE (With Safety Check)
             if (customerConnections[order._id]) {
                 customerConnections[order._id].forEach(conn => {
                     if (!conn.destroyed) {
@@ -148,7 +164,6 @@ async function orderRoutes(fastify, options) {
         }
     });
 
-    // --- Cancel Order & Refund Stock ---
     fastify.put('/api/orders/:id/cancel', async (request, reply) => {
         try {
             const { reason } = request.body;
@@ -158,7 +173,6 @@ async function orderRoutes(fastify, options) {
             
             order.status = 'Cancelled';
 
-            // --- Refund Credit Limit if cancelled ---
             if (order.paymentMethod === 'Pay Later') {
                 const custProfile = await Customer.findOne({ phone: order.customerPhone });
                 if (custProfile) {
@@ -168,7 +182,6 @@ async function orderRoutes(fastify, options) {
                 }
             }
 
-            // Safely refund stock for each item
             for (const item of order.items) {
                 try {
                     const product = await Product.findById(item.productId);
@@ -186,7 +199,6 @@ async function orderRoutes(fastify, options) {
 
             await order.save();
 
-            // Broadcast to Customer if connected
             if (customerConnections[order._id]) {
                 customerConnections[order._id].forEach(conn => {
                     if (!conn.destroyed) {
@@ -202,13 +214,11 @@ async function orderRoutes(fastify, options) {
         }
     });
 
-    // --- Analytics Aggregation ---
     fastify.get('/api/orders/analytics', async (request, reply) => {
         try {
-            // Get all orders completed or dispatched
             const orders = await Order.find({ status: { $in: ['Dispatched', 'Completed'] } });
             
-            let revenueLast7Days = [0,0,0,0,0,0,0]; // Today is index 6
+            let revenueLast7Days = [0,0,0,0,0,0,0]; 
             const today = new Date();
             today.setHours(23,59,59,999);
             const sevenDaysAgo = new Date(today);
@@ -220,14 +230,12 @@ async function orderRoutes(fastify, options) {
             orders.forEach(o => {
                 const orderDate = new Date(o.createdAt);
                 if (orderDate >= sevenDaysAgo && orderDate <= today) {
-                    // Calculate which day bucket (0-6)
                     const dayDiff = Math.floor((orderDate - sevenDaysAgo) / (1000 * 60 * 60 * 24));
                     if(dayDiff >= 0 && dayDiff <= 6) {
                         revenueLast7Days[dayDiff] += o.totalAmount;
                     }
                 }
                 
-                // Track top items
                 o.items.forEach(i => {
                     const key = `${i.name} (${i.selectedVariant})`;
                     if (!itemFrequency[key]) itemFrequency[key] = { qty: 0, revenue: 0 };
@@ -236,11 +244,10 @@ async function orderRoutes(fastify, options) {
                 });
             });
 
-            // Sort top items
             const topItems = Object.entries(itemFrequency)
                 .map(([name, stats]) => ({ name, qty: stats.qty, revenue: stats.revenue }))
                 .sort((a,b) => b.qty - a.qty)
-                .slice(0, 5); // Top 5
+                .slice(0, 5); 
 
             return { 
                 success: true, 
@@ -256,7 +263,6 @@ async function orderRoutes(fastify, options) {
         }
     });
 
-    // --- Customer CRM Aggregation ---
     fastify.get('/api/orders/customers', async (request, reply) => {
         try {
             const orders = await Order.find({ status: { $ne: 'Cancelled' } });
@@ -277,7 +283,7 @@ async function orderRoutes(fastify, options) {
                 customers[phone].lifetimeValue += o.totalAmount;
                 if (new Date(o.createdAt) > new Date(customers[phone].lastOrderDate)) {
                     customers[phone].lastOrderDate = o.createdAt;
-                    customers[phone].name = o.customerName; // Update to latest known name
+                    customers[phone].name = o.customerName; 
                 }
             });
 
@@ -290,7 +296,6 @@ async function orderRoutes(fastify, options) {
         }
     });
 
-    // 5. GET /api/orders - Standard Fetch
     fastify.get('/api/orders', async (request, reply) => {
         try {
             const orders = await Order.find().sort({ createdAt: -1 });
@@ -301,7 +306,6 @@ async function orderRoutes(fastify, options) {
         }
     });
 
-    // 6. GET /api/orders/:id - Standard Tracking Fetch
     fastify.get('/api/orders/:id', async (request, reply) => {
         try {
             const order = await Order.findById(request.params.id);
@@ -313,11 +317,6 @@ async function orderRoutes(fastify, options) {
         }
     });
 
-    // =========================================================
-    // --- CUSTOMER CREDIT MANAGEMENT ROUTES ---
-    // =========================================================
-
-    // Fetch a specific customer's credit profile
     fastify.get('/api/customers/profile/:phone', async (request, reply) => {
         try {
             const cust = await Customer.findOne({ phone: request.params.phone });
@@ -328,13 +327,11 @@ async function orderRoutes(fastify, options) {
         }
     });
 
-    // Update Credit Limit & Enable/Disable (NOW AUTO-CREATES MISSING USERS)
     fastify.put('/api/customers/profile/:phone/limit', async (request, reply) => {
         try {
             const { isCreditEnabled, creditLimit, name } = request.body;
             let cust = await Customer.findOne({ phone: request.params.phone });
             
-            // If the user isn't in the new Customer DB, create them instantly!
             if (!cust) {
                 cust = new Customer({ 
                     phone: request.params.phone, 
@@ -352,7 +349,6 @@ async function orderRoutes(fastify, options) {
         }
     });
 
-    // Record a partial or full payment from a customer
     fastify.post('/api/customers/profile/:phone/pay', async (request, reply) => {
         try {
             const { amount } = request.body;
@@ -361,7 +357,7 @@ async function orderRoutes(fastify, options) {
             if (!cust) return reply.status(404).send({ success: false, message: 'Customer not found.' });
             
             cust.creditUsed -= Number(amount);
-            if (cust.creditUsed < 0) cust.creditUsed = 0; // Prevent negative balances
+            if (cust.creditUsed < 0) cust.creditUsed = 0; 
             
             await cust.save();
             return { success: true, data: cust, message: 'Payment recorded successfully' };
