@@ -1,5 +1,3 @@
-// pdkokare1/supermarket-backend/supermarket-backend-58587a545e316294188febd4173f8e224124d716/routes/orderRoutes.js
-
 const Order = require('../models/Order');
 const Product = require('../models/Product');
 const Customer = require('../models/Customer');
@@ -112,7 +110,71 @@ async function orderRoutes(fastify, options) {
         }
     });
 
-    // --- NEW: Generic Status Update Endpoint (For Kanban Board) ---
+    // --- NEW: In-Store POS Checkout Route ---
+    fastify.post('/api/orders/pos', async (request, reply) => {
+        try {
+            const { customerPhone, items, totalAmount, paymentMethod } = request.body;
+            let finalCustomerName = 'Walk-in Guest';
+
+            // 1. Handle Customer & Credit
+            if (customerPhone) {
+                let custProfile = await Customer.findOne({ phone: customerPhone });
+                if (custProfile) {
+                    finalCustomerName = custProfile.name;
+                    
+                    if (paymentMethod === 'Pay Later') {
+                        if (!custProfile.isCreditEnabled) return reply.status(400).send({ success: false, message: 'Pay Later disabled.' });
+                        if ((custProfile.creditUsed + totalAmount) > custProfile.creditLimit) {
+                            return reply.status(400).send({ success: false, message: 'Credit limit exceeded.' });
+                        }
+                        custProfile.creditUsed += totalAmount;
+                    }
+                    await custProfile.save();
+                } else {
+                    // Create basic profile if they don't exist but gave a phone
+                    custProfile = new Customer({ phone: customerPhone, name: 'In-Store Customer' });
+                    await custProfile.save();
+                    finalCustomerName = 'In-Store Customer';
+                }
+            }
+
+            // 2. Instantly Deduct Stock
+            for (const item of items) {
+                try {
+                    const product = await Product.findById(item.productId);
+                    if (product && product.variants) {
+                        const variant = product.variants.id(item.variantId);
+                        if (variant && variant.stock >= item.qty) {
+                            variant.stock -= item.qty;
+                            await product.save();
+                        }
+                    }
+                } catch(e) {
+                    fastify.log.error('POS Stock Deduction Error:', e);
+                }
+            }
+
+            // 3. Create Completed Order (Bypasses Delivery Boards)
+            const newOrder = new Order({
+                customerName: finalCustomerName, 
+                customerPhone: customerPhone || '', 
+                deliveryAddress: 'In-Store Purchase', 
+                items: items, 
+                totalAmount: totalAmount,
+                paymentMethod: paymentMethod,
+                deliveryType: 'Instant', 
+                status: 'Completed' // Marks it completely done immediately
+            });
+
+            await newOrder.save();
+
+            return { success: true, message: 'POS Transaction Complete', orderId: newOrder._id, orderData: newOrder };
+        } catch (error) {
+            fastify.log.error('POS Checkout Error:', error);
+            reply.status(500).send({ success: false, message: 'Server Error processing POS transaction' });
+        }
+    });
+
     fastify.put('/api/orders/:id/status', async (request, reply) => {
         try {
             const { status } = request.body;
