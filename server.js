@@ -20,8 +20,9 @@ fastify.register(require('@fastify/cors'), {
 fastify.register(require('./routes/productRoutes'));
 fastify.register(require('./routes/orderRoutes'));
 fastify.register(require('./routes/categoryRoutes'));
-fastify.register(require('./routes/brandRoutes')); // <-- NEW: Registered Brand Routes
-fastify.register(require('./routes/distributorRoutes')); // <-- NEW: Registered Distributor Routes
+fastify.register(require('./routes/brandRoutes')); 
+fastify.register(require('./routes/distributorRoutes')); 
+fastify.register(require('./routes/promotionRoutes')); // <-- NEW: Registered Promotion Routes for Phase 1
 
 // Basic Health Check Route
 fastify.get('/', async (request, reply) => {
@@ -31,7 +32,7 @@ fastify.get('/', async (request, reply) => {
     };
 });
 
-// --- NEW: Automated Low-Stock Alert System (Phase 4) ---
+// --- Automated Low-Stock Alert System ---
 // Runs every day at 09:00 AM server time
 cron.schedule('0 9 * * *', async () => {
     fastify.log.info('Running Daily Low-Stock CRON Job...');
