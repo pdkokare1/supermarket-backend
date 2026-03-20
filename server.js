@@ -22,7 +22,20 @@ fastify.register(require('./routes/orderRoutes'));
 fastify.register(require('./routes/categoryRoutes'));
 fastify.register(require('./routes/brandRoutes')); 
 fastify.register(require('./routes/distributorRoutes')); 
-fastify.register(require('./routes/promotionRoutes')); // <-- NEW: Registered Promotion Routes for Phase 1
+// fastify.register(require('./routes/promotionRoutes')); // Uncomment if you added this in Phase 1
+
+// --- NEW PHASE 5: Global Object to store the CRON job results ---
+let latestInventoryReport = {
+    lowStock: [],
+    deadStock: [],
+    lastGenerated: null
+};
+
+// --- NEW PHASE 5: Endpoint to fetch the CRON job report ---
+fastify.get('/api/inventory/report', async (request, reply) => {
+    return { success: true, data: latestInventoryReport };
+});
+// ----------------------------------------------------------------
 
 // Basic Health Check Route
 fastify.get('/', async (request, reply) => {
@@ -32,28 +45,38 @@ fastify.get('/', async (request, reply) => {
     };
 });
 
-// --- Automated Low-Stock Alert System ---
+// --- UPGRADED PHASE 5: Automated Low-Stock & Dead-Stock CRON Job ---
 // Runs every day at 09:00 AM server time
 cron.schedule('0 9 * * *', async () => {
-    fastify.log.info('Running Daily Low-Stock CRON Job...');
+    fastify.log.info('Running Daily Inventory CRON Job...');
     try {
         const products = await Product.find({ isActive: true });
-        let lowStockCount = 0;
+        let lowStockItems = [];
+        let deadStockItems = [];
         
         products.forEach(p => {
             if (p.variants) {
                 p.variants.forEach(v => {
+                    // Check Low Stock
                     if (v.stock <= (v.lowStockThreshold || 5)) {
-                        lowStockCount++;
+                        lowStockItems.push({ name: p.name, variant: v.weightOrVolume, stock: v.stock });
+                    }
+                    // NEW: Check Dead Stock (e.g., highly overstocked > 15 units)
+                    if (v.stock > 15) {
+                        deadStockItems.push({ name: p.name, variant: v.weightOrVolume, stock: v.stock });
                     }
                 });
             }
         });
 
-        if (lowStockCount > 0) {
-            fastify.log.info(`CRON ALERT: You have ${lowStockCount} items running low on stock.`);
-            // In the future, you can put a fetch() here to trigger a free WhatsApp API (like UltraMsg/CallMeBot)
-        }
+        // Save results to memory so the frontend can fetch it via /api/inventory/report
+        latestInventoryReport = {
+            lowStock: lowStockItems,
+            deadStock: deadStockItems,
+            lastGenerated: new Date()
+        };
+
+        fastify.log.info(`CRON REPORT: ${lowStockItems.length} Low Stock, ${deadStockItems.length} Dead Stock.`);
     } catch (err) {
         fastify.log.error('CRON Job Error:', err);
     }
