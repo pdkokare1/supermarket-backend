@@ -25,6 +25,13 @@ const productSchema = new mongoose.Schema({
     imageUrl: { type: String, default: '' },
     isActive: { type: Boolean, default: true },
     searchTags: { type: String, default: '' },
+    
+    // --- NEW: PHASE 1 TAX/GST FIELDS ---
+    hsnCode: { type: String, default: '' },
+    taxRate: { type: Number, default: 0 }, // e.g., 0, 5, 12, 18
+    taxType: { type: String, enum: ['Inclusive', 'Exclusive'], default: 'Inclusive' },
+    // -----------------------------------
+
     variants: [variantSchema] 
 }, { timestamps: true });
 
