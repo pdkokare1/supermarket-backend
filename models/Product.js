@@ -14,6 +14,7 @@ const variantSchema = new mongoose.Schema({
     stock: { type: Number, default: 0 },
     sku: { type: String, default: '' }, 
     lowStockThreshold: { type: Number, default: 5 },
+    expiryDate: { type: Date, default: null }, // NEW: Added for Expiry Tracking
     purchaseHistory: [purchaseHistorySchema] 
 });
 
