@@ -110,13 +110,12 @@ async function orderRoutes(fastify, options) {
         }
     });
 
-    // --- NEW: In-Store POS Checkout Route ---
     fastify.post('/api/orders/pos', async (request, reply) => {
         try {
-            const { customerPhone, items, totalAmount, paymentMethod } = request.body;
+            // MODIFIED: Added splitDetails to destructuring
+            const { customerPhone, items, totalAmount, paymentMethod, splitDetails } = request.body;
             let finalCustomerName = 'Walk-in Guest';
 
-            // 1. Handle Customer & Credit
             if (customerPhone) {
                 let custProfile = await Customer.findOne({ phone: customerPhone });
                 if (custProfile) {
@@ -131,14 +130,12 @@ async function orderRoutes(fastify, options) {
                     }
                     await custProfile.save();
                 } else {
-                    // Create basic profile if they don't exist but gave a phone
                     custProfile = new Customer({ phone: customerPhone, name: 'In-Store Customer' });
                     await custProfile.save();
                     finalCustomerName = 'In-Store Customer';
                 }
             }
 
-            // 2. Instantly Deduct Stock
             for (const item of items) {
                 try {
                     const product = await Product.findById(item.productId);
@@ -154,7 +151,6 @@ async function orderRoutes(fastify, options) {
                 }
             }
 
-            // 3. Create Completed Order (Bypasses Delivery Boards)
             const newOrder = new Order({
                 customerName: finalCustomerName, 
                 customerPhone: customerPhone || '', 
@@ -162,8 +158,9 @@ async function orderRoutes(fastify, options) {
                 items: items, 
                 totalAmount: totalAmount,
                 paymentMethod: paymentMethod,
+                splitDetails: splitDetails || { cash: 0, upi: 0 }, // MODIFIED: Store split values
                 deliveryType: 'Instant', 
-                status: 'Completed' // Marks it completely done immediately
+                status: 'Completed' 
             });
 
             await newOrder.save();
