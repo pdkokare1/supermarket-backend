@@ -48,29 +48,79 @@ fastify.get('/', async (request, reply) => {
     };
 });
 
-// --- UPGRADED PHASE 5: Automated Low-Stock & Dead-Stock CRON Job ---
+// --- UPGRADED PHASE 5: Automated Low-Stock, Velocity, & Dead-Stock CRON Job ---
 // Runs every day at 09:00 AM server time
 cron.schedule('0 9 * * *', async () => {
-    fastify.log.info('Running Daily Inventory CRON Job...');
+    fastify.log.info('Running Daily Inventory & Velocity CRON Job...');
     try {
+        // 1. Calculate sales velocity from the last 14 days
+        const fourteenDaysAgo = new Date();
+        fourteenDaysAgo.setDate(fourteenDaysAgo.getDate() - 14);
+
+        const recentOrders = await Order.find({
+            createdAt: { $gte: fourteenDaysAgo },
+            status: { $in: ['Completed', 'Dispatched'] } // Only count fulfilled orders
+        });
+
+        // Tally variant sales
+        let variantSales = {}; 
+        recentOrders.forEach(order => {
+            order.items.forEach(item => {
+                if (item.variantId) {
+                    variantSales[item.variantId] = (variantSales[item.variantId] || 0) + item.qty;
+                }
+            });
+        });
+
         const products = await Product.find({ isActive: true });
         let lowStockItems = [];
         let deadStockItems = [];
         
-        products.forEach(p => {
+        // Loop using for...of to allow async saves
+        for (let p of products) {
+            let isModified = false;
+            
             if (p.variants) {
                 p.variants.forEach(v => {
-                    // Check Low Stock
-                    if (v.stock <= (v.lowStockThreshold || 5)) {
-                        lowStockItems.push({ name: p.name, variant: v.weightOrVolume, stock: v.stock });
+                    // Calculate Velocity
+                    const totalSold14Days = variantSales[v._id.toString()] || 0;
+                    const dailyAvg = totalSold14Days / 14;
+                    v.averageDailySales = Number(dailyAvg.toFixed(2));
+
+                    if (dailyAvg > 0) {
+                        v.daysOfStock = Number((v.stock / dailyAvg).toFixed(1));
+                    } else {
+                        v.daysOfStock = 999;
                     }
-                    // NEW: Check Dead Stock (e.g., highly overstocked > 15 units)
-                    if (v.stock > 15) {
-                        deadStockItems.push({ name: p.name, variant: v.weightOrVolume, stock: v.stock });
+                    isModified = true;
+
+                    // Check Low Stock (Original threshold OR new velocity threshold)
+                    // If it will run out in less than 3 days OR falls below manual threshold
+                    if (v.stock <= (v.lowStockThreshold || 5) || (v.daysOfStock < 3 && v.stock > 0)) {
+                        lowStockItems.push({ 
+                            name: p.name, 
+                            variant: v.weightOrVolume, 
+                            stock: v.stock,
+                            daysLeft: v.daysOfStock 
+                        });
+                    }
+                    
+                    // NEW: Check Dead Stock dynamically (e.g., highly overstocked > 15 units AND lasting > 30 days)
+                    if (v.stock > 15 && v.daysOfStock > 30) {
+                        deadStockItems.push({ 
+                            name: p.name, 
+                            variant: v.weightOrVolume, 
+                            stock: v.stock,
+                            daysLeft: v.daysOfStock 
+                        });
                     }
                 });
             }
-        });
+            
+            if (isModified) {
+                await p.save(); // Save velocity back to database
+            }
+        }
 
         // Save results to memory so the frontend can fetch it via /api/inventory/report
         latestInventoryReport = {
