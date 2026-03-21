@@ -25,7 +25,12 @@ const variantSchema = new mongoose.Schema({
     lowStockThreshold: { type: Number, default: 5 },
     expiryDate: { type: Date, default: null }, 
     purchaseHistory: [purchaseHistorySchema],
-    returnHistory: [returnHistorySchema] // NEW
+    returnHistory: [returnHistorySchema], // NEW
+    
+    // --- NEW: SMART SOURCING FIELDS ---
+    averageDailySales: { type: Number, default: 0 },
+    daysOfStock: { type: Number, default: 999 }
+    // ----------------------------------
 });
 
 const productSchema = new mongoose.Schema({
