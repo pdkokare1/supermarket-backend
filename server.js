@@ -3,6 +3,7 @@ const mongoose = require('mongoose');
 const cron = require('node-cron');
 const Product = require('./models/Product'); 
 const Order = require('./models/Order');     
+const Expense = require('./models/Expense'); // NEW: Imported Expense Model
 const nodemailer = require('nodemailer');    
 const axios = require('axios');              
 require('dotenv').config();
@@ -25,10 +26,7 @@ fastify.register(require('./routes/orderRoutes'));
 fastify.register(require('./routes/categoryRoutes'));
 fastify.register(require('./routes/brandRoutes')); 
 fastify.register(require('./routes/distributorRoutes')); 
-// --- NEW PHASE 1 ROUTES (SECURITY & SHIFTS) ---
-fastify.register(require('./routes/authRoutes')); 
-fastify.register(require('./routes/shiftRoutes')); 
-// ----------------------------------------------
+fastify.register(require('./routes/expenseRoutes')); // NEW: Registered Expense Routes
 
 // Global Object to store the CRON job results
 let latestInventoryReport = {
@@ -51,7 +49,6 @@ fastify.get('/', async (request, reply) => {
 });
 
 // --- Automated Low-Stock, Velocity, & Dead-Stock CRON Job ---
-// Runs every day at 09:00 AM server time
 cron.schedule('0 9 * * *', async () => {
     fastify.log.info('Running Daily Inventory & Velocity CRON Job...');
     try {
@@ -130,7 +127,6 @@ cron.schedule('0 9 * * *', async () => {
 });
 
 // --- Automated EOD Report CRON Job (Email & WhatsApp) ---
-// Runs every day at 23:59 (11:59 PM) server time
 cron.schedule('59 23 * * *', async () => {
     fastify.log.info('Running EOD Report CRON Job...');
     try {
@@ -139,6 +135,7 @@ cron.schedule('59 23 * * *', async () => {
         const tomorrow = new Date(today);
         tomorrow.setDate(tomorrow.getDate() + 1);
 
+        // 1. Get Today's Revenue
         const todaysOrders = await Order.find({
             createdAt: { $gte: today, $lt: tomorrow },
             status: { $ne: 'Cancelled' }
@@ -164,14 +161,27 @@ cron.schedule('59 23 * * *', async () => {
             }
         });
 
+        // 2. NEW: Get Today's Expenses from MongoDB to calculate True Net Profit
+        const todayStr = new Date().toDateString();
+        const todaysExpenses = await Expense.find({ dateStr: todayStr });
+        
+        let totalExpenses = 0;
+        todaysExpenses.forEach(ex => totalExpenses += ex.amount);
+        
+        const netProfit = totalRevenue - totalExpenses;
+
+        // 3. Format the Text Report
         const dateString = new Date().toLocaleDateString();
         const reportText = `📈 *DailyPick EOD Report*\nDate: ${dateString}\n\n` +
                            `*Total Orders:* ${todaysOrders.length}\n` +
-                           `*Total Revenue:* ₹${totalRevenue.toFixed(2)}\n\n` +
+                           `*Gross Revenue:* ₹${totalRevenue.toFixed(2)}\n\n` +
                            `*Breakdown:*\n` +
                            `💵 Cash: ₹${cash.toFixed(2)}\n` +
                            `📱 UPI: ₹${upi.toFixed(2)}\n` +
                            `⏳ Pay Later: ₹${payLater.toFixed(2)}\n\n` +
+                           `*Expenses & Profit:*\n` +
+                           `📉 Total Expenses: ₹${totalExpenses.toFixed(2)}\n` +
+                           `💰 Net Profit: ₹${netProfit.toFixed(2)}\n\n` +
                            `Great work today! 🚀`;
 
         if (process.env.EMAIL_USER && process.env.EMAIL_PASS && process.env.TARGET_EMAIL) {
@@ -182,12 +192,12 @@ cron.schedule('59 23 * * *', async () => {
             await transporter.sendMail({
                 from: `"DailyPick Server" <${process.env.EMAIL_USER}>`,
                 to: process.env.TARGET_EMAIL,
-                subject: `EOD Report: ₹${totalRevenue.toFixed(2)} Revenue`,
+                subject: `EOD Report: ₹${netProfit.toFixed(2)} Net Profit`, // Updated Subject line
                 text: reportText
             });
             fastify.log.info('EOD Email sent successfully.');
         } else {
-            fastify.log.warn('Skipped Email EOD: Missing EMAIL_USER, EMAIL_PASS, or TARGET_EMAIL in .env');
+            fastify.log.warn('Skipped Email EOD: Missing variables in .env');
         }
 
         if (process.env.WA_PHONE_NUMBER && process.env.CALLMEBOT_API_KEY) {
@@ -197,7 +207,7 @@ cron.schedule('59 23 * * *', async () => {
             await axios.get(waUrl);
             fastify.log.info('EOD WhatsApp sent successfully.');
         } else {
-            fastify.log.warn('Skipped WhatsApp EOD: Missing WA_PHONE_NUMBER or CALLMEBOT_API_KEY in .env');
+            fastify.log.warn('Skipped WhatsApp EOD: Missing variables in .env');
         }
 
     } catch (err) {
