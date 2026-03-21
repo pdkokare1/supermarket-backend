@@ -8,14 +8,24 @@ const purchaseHistorySchema = new mongoose.Schema({
     sellingPrice: { type: Number, required: true }     
 });
 
+// NEW: Schema to track items sent back to distributors
+const returnHistorySchema = new mongoose.Schema({
+    date: { type: Date, default: Date.now },
+    distributorName: { type: String, required: true },
+    returnedQuantity: { type: Number, required: true },
+    refundAmount: { type: Number, required: true },
+    reason: { type: String, default: 'Expired/Damaged' }
+});
+
 const variantSchema = new mongoose.Schema({
     weightOrVolume: { type: String, required: true },
     price: { type: Number, required: true },
     stock: { type: Number, default: 0 },
     sku: { type: String, default: '' }, 
     lowStockThreshold: { type: Number, default: 5 },
-    expiryDate: { type: Date, default: null }, // NEW: Added for Expiry Tracking
-    purchaseHistory: [purchaseHistorySchema] 
+    expiryDate: { type: Date, default: null }, 
+    purchaseHistory: [purchaseHistorySchema],
+    returnHistory: [returnHistorySchema] // NEW
 });
 
 const productSchema = new mongoose.Schema({
@@ -27,11 +37,9 @@ const productSchema = new mongoose.Schema({
     isActive: { type: Boolean, default: true },
     searchTags: { type: String, default: '' },
     
-    // --- NEW: PHASE 1 TAX/GST FIELDS ---
     hsnCode: { type: String, default: '' },
-    taxRate: { type: Number, default: 0 }, // e.g., 0, 5, 12, 18
+    taxRate: { type: Number, default: 0 }, 
     taxType: { type: String, enum: ['Inclusive', 'Exclusive'], default: 'Inclusive' },
-    // -----------------------------------
 
     variants: [variantSchema] 
 }, { timestamps: true });
