@@ -29,6 +29,11 @@ const orderSchema = new mongoose.Schema({
         type: String, 
         default: 'Cash on Delivery' 
     },
+    // NEW: Split Payment details
+    splitDetails: {
+        cash: { type: Number, default: 0 },
+        upi: { type: Number, default: 0 }
+    },
     // NEW: Routine & Scheduling features
     deliveryType: { 
         type: String, 
