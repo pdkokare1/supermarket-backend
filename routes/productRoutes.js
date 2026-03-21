@@ -18,7 +18,6 @@ async function productRoutes(fastify, options) {
                 filter.category = request.query.category; 
             }
 
-            // NEW: Advanced Filtering for Brand and Distributor
             if (request.query.brand && request.query.brand !== 'All') {
                 filter.brand = request.query.brand;
             }
@@ -48,7 +47,6 @@ async function productRoutes(fastify, options) {
 
     fastify.post('/api/products', async (request, reply) => {
         try {
-            // ADDED: hsnCode, taxRate, taxType
             const { name, category, brand, distributorName, imageUrl, searchTags, variants, hsnCode, taxRate, taxType } = request.body;
             
             const newProduct = new Product({ 
@@ -65,7 +63,6 @@ async function productRoutes(fastify, options) {
 
     fastify.put('/api/products/:id', async (request, reply) => {
         try {
-            // ADDED: hsnCode, taxRate, taxType
             const { name, category, brand, distributorName, imageUrl, searchTags, variants, hsnCode, taxRate, taxType } = request.body;
             
             const updateData = { name, category, brand, distributorName, searchTags, variants, hsnCode, taxRate, taxType };
@@ -122,6 +119,38 @@ async function productRoutes(fastify, options) {
         }
     });
 
+    // --- NEW: Handle Return To Vendor (RTV) Deductions ---
+    fastify.put('/api/products/:id/rtv', async (request, reply) => {
+        try {
+            const { variantId, distributorName, returnedQuantity, refundAmount, reason } = request.body;
+            
+            const product = await Product.findById(request.params.id);
+            if (!product) return reply.status(404).send({ success: false, message: 'Product not found' });
+            
+            const variant = product.variants.id(variantId);
+            if (!variant) return reply.status(404).send({ success: false, message: 'Variant not found' });
+            
+            if (variant.stock < returnedQuantity) {
+                return reply.status(400).send({ success: false, message: 'Not enough stock to return' });
+            }
+
+            variant.returnHistory.push({ 
+                distributorName, 
+                returnedQuantity: Number(returnedQuantity), 
+                refundAmount: Number(refundAmount), 
+                reason 
+            });
+            
+            variant.stock -= Number(returnedQuantity); 
+            
+            await product.save();
+            return { success: true, message: 'RTV processed successfully', data: product };
+        } catch (error) { 
+            fastify.log.error(error); 
+            reply.status(500).send({ success: false, message: 'Server Error processing RTV' }); 
+        }
+    });
+
     fastify.post('/api/products/bulk', async (request, reply) => {
         try {
             const { products } = request.body;
@@ -142,9 +171,9 @@ async function productRoutes(fastify, options) {
                         imageUrl: p.imageUrl || '', 
                         searchTags: p.searchTags || '', 
                         variants: p.variants || [],
-                        hsnCode: p.hsnCode || '', // ADDED
-                        taxRate: p.taxRate || 0,  // ADDED
-                        taxType: p.taxType || 'Inclusive' // ADDED
+                        hsnCode: p.hsnCode || '', 
+                        taxRate: p.taxRate || 0,  
+                        taxType: p.taxType || 'Inclusive' 
                     }}, 
                     { upsert: true } 
                 );
@@ -188,7 +217,6 @@ async function productRoutes(fastify, options) {
             await Category.insertMany(sampleCategories);
 
             await Product.deleteMany({});
-            // ADDED: Sample hsnCode, taxRate, and taxType to seed objects
             const sampleProducts = [
                 { 
                     name: 'Amul Taaza Toned Milk', category: 'Dairy & Breakfast', brand: 'Amul', searchTags: 'milk, liquid, morning, dairy, promo-morning', imageUrl: 'https://m.media-amazon.com/images/I/61H4YpTfGLL._SL1500_.jpg', 
