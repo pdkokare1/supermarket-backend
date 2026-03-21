@@ -1,10 +1,10 @@
 const Fastify = require('fastify');
 const mongoose = require('mongoose');
 const cron = require('node-cron');
-const Product = require('./models/Product'); // Needed for the inventory cron job
-const Order = require('./models/Order');     // NEW: Needed for the EOD cron job
-const nodemailer = require('nodemailer');    // NEW: Needed for Email Reports
-const axios = require('axios');              // NEW: Needed for WhatsApp API
+const Product = require('./models/Product'); 
+const Order = require('./models/Order');     
+const nodemailer = require('nodemailer');    
+const axios = require('axios');              
 require('dotenv').config();
 
 // Initialize Fastify with Pino logging enabled
@@ -25,20 +25,22 @@ fastify.register(require('./routes/orderRoutes'));
 fastify.register(require('./routes/categoryRoutes'));
 fastify.register(require('./routes/brandRoutes')); 
 fastify.register(require('./routes/distributorRoutes')); 
-// fastify.register(require('./routes/promotionRoutes')); // Uncomment if you added this in Phase 1
+// --- NEW PHASE 1 ROUTES (SECURITY & SHIFTS) ---
+fastify.register(require('./routes/authRoutes')); 
+fastify.register(require('./routes/shiftRoutes')); 
+// ----------------------------------------------
 
-// --- NEW PHASE 5: Global Object to store the CRON job results ---
+// Global Object to store the CRON job results
 let latestInventoryReport = {
     lowStock: [],
     deadStock: [],
     lastGenerated: null
 };
 
-// --- NEW PHASE 5: Endpoint to fetch the CRON job report ---
+// Endpoint to fetch the CRON job report
 fastify.get('/api/inventory/report', async (request, reply) => {
     return { success: true, data: latestInventoryReport };
 });
-// ----------------------------------------------------------------
 
 // Basic Health Check Route
 fastify.get('/', async (request, reply) => {
@@ -48,21 +50,19 @@ fastify.get('/', async (request, reply) => {
     };
 });
 
-// --- UPGRADED PHASE 5: Automated Low-Stock, Velocity, & Dead-Stock CRON Job ---
+// --- Automated Low-Stock, Velocity, & Dead-Stock CRON Job ---
 // Runs every day at 09:00 AM server time
 cron.schedule('0 9 * * *', async () => {
     fastify.log.info('Running Daily Inventory & Velocity CRON Job...');
     try {
-        // 1. Calculate sales velocity from the last 14 days
         const fourteenDaysAgo = new Date();
         fourteenDaysAgo.setDate(fourteenDaysAgo.getDate() - 14);
 
         const recentOrders = await Order.find({
             createdAt: { $gte: fourteenDaysAgo },
-            status: { $in: ['Completed', 'Dispatched'] } // Only count fulfilled orders
+            status: { $in: ['Completed', 'Dispatched'] } 
         });
 
-        // Tally variant sales
         let variantSales = {}; 
         recentOrders.forEach(order => {
             order.items.forEach(item => {
@@ -76,13 +76,11 @@ cron.schedule('0 9 * * *', async () => {
         let lowStockItems = [];
         let deadStockItems = [];
         
-        // Loop using for...of to allow async saves
         for (let p of products) {
             let isModified = false;
             
             if (p.variants) {
                 p.variants.forEach(v => {
-                    // Calculate Velocity
                     const totalSold14Days = variantSales[v._id.toString()] || 0;
                     const dailyAvg = totalSold14Days / 14;
                     v.averageDailySales = Number(dailyAvg.toFixed(2));
@@ -94,8 +92,6 @@ cron.schedule('0 9 * * *', async () => {
                     }
                     isModified = true;
 
-                    // Check Low Stock (Original threshold OR new velocity threshold)
-                    // If it will run out in less than 3 days OR falls below manual threshold
                     if (v.stock <= (v.lowStockThreshold || 5) || (v.daysOfStock < 3 && v.stock > 0)) {
                         lowStockItems.push({ 
                             name: p.name, 
@@ -105,7 +101,6 @@ cron.schedule('0 9 * * *', async () => {
                         });
                     }
                     
-                    // NEW: Check Dead Stock dynamically (e.g., highly overstocked > 15 units AND lasting > 30 days)
                     if (v.stock > 15 && v.daysOfStock > 30) {
                         deadStockItems.push({ 
                             name: p.name, 
@@ -118,11 +113,10 @@ cron.schedule('0 9 * * *', async () => {
             }
             
             if (isModified) {
-                await p.save(); // Save velocity back to database
+                await p.save(); 
             }
         }
 
-        // Save results to memory so the frontend can fetch it via /api/inventory/report
         latestInventoryReport = {
             lowStock: lowStockItems,
             deadStock: deadStockItems,
@@ -135,12 +129,11 @@ cron.schedule('0 9 * * *', async () => {
     }
 });
 
-// --- NEW: Automated EOD Report CRON Job (Email & WhatsApp) ---
+// --- Automated EOD Report CRON Job (Email & WhatsApp) ---
 // Runs every day at 23:59 (11:59 PM) server time
 cron.schedule('59 23 * * *', async () => {
     fastify.log.info('Running EOD Report CRON Job...');
     try {
-        // 1. Calculate Today's Sales
         const today = new Date();
         today.setHours(0, 0, 0, 0);
         const tomorrow = new Date(today);
@@ -166,13 +159,11 @@ cron.schedule('59 23 * * *', async () => {
             } else if (o.paymentMethod === 'Pay Later') {
                 payLater += o.totalAmount;
             } else if (o.paymentMethod === 'Split' && o.splitDetails) {
-                // Incorporating our new Split Payment logic
                 cash += (o.splitDetails.cash || 0);
                 upi += (o.splitDetails.upi || 0);
             }
         });
 
-        // 2. Format the Message
         const dateString = new Date().toLocaleDateString();
         const reportText = `📈 *DailyPick EOD Report*\nDate: ${dateString}\n\n` +
                            `*Total Orders:* ${todaysOrders.length}\n` +
@@ -183,7 +174,6 @@ cron.schedule('59 23 * * *', async () => {
                            `⏳ Pay Later: ₹${payLater.toFixed(2)}\n\n` +
                            `Great work today! 🚀`;
 
-        // 3. Send Email via Nodemailer
         if (process.env.EMAIL_USER && process.env.EMAIL_PASS && process.env.TARGET_EMAIL) {
             const transporter = nodemailer.createTransport({
                 service: 'gmail',
@@ -200,7 +190,6 @@ cron.schedule('59 23 * * *', async () => {
             fastify.log.warn('Skipped Email EOD: Missing EMAIL_USER, EMAIL_PASS, or TARGET_EMAIL in .env');
         }
 
-        // 4. Send WhatsApp via CallMeBot API
         if (process.env.WA_PHONE_NUMBER && process.env.CALLMEBOT_API_KEY) {
             const encodedText = encodeURIComponent(reportText);
             const waUrl = `https://api.callmebot.com/whatsapp.php?phone=${process.env.WA_PHONE_NUMBER}&text=${encodedText}&apikey=${process.env.CALLMEBOT_API_KEY}`;
@@ -216,13 +205,11 @@ cron.schedule('59 23 * * *', async () => {
     }
 });
 
-// Database Connection and Server Initialization
 const startServer = async () => {
     try {
         await mongoose.connect(process.env.MONGO_URI);
         fastify.log.info('Successfully connected to MongoDB Atlas');
         
-        // Start the server (0.0.0.0 is required for Railway deployments)
         await fastify.listen({ port: PORT, host: '0.0.0.0' });
     } catch (err) {
         console.error('CRITICAL ERROR CONNECTING TO MONGODB:', err.message);
