@@ -112,14 +112,24 @@ async function orderRoutes(fastify, options) {
 
     fastify.post('/api/orders/pos', async (request, reply) => {
         try {
-            // MODIFIED: Added splitDetails, taxAmount, and discountAmount to destructuring
-            const { customerPhone, items, totalAmount, taxAmount, discountAmount, paymentMethod, splitDetails } = request.body;
+            // MODIFIED: Added pointsRedeemed to destructuring alongside previous tax/discount additions
+            const { customerPhone, items, totalAmount, taxAmount, discountAmount, paymentMethod, splitDetails, pointsRedeemed } = request.body;
             let finalCustomerName = 'Walk-in Guest';
 
             if (customerPhone) {
                 let custProfile = await Customer.findOne({ phone: customerPhone });
                 if (custProfile) {
                     finalCustomerName = custProfile.name;
+                    
+                    // NEW LOYALTY LOGIC: Deduct redeemed points
+                    if (pointsRedeemed && pointsRedeemed > 0) {
+                        custProfile.loyaltyPoints = (custProfile.loyaltyPoints || 0) - pointsRedeemed;
+                        if (custProfile.loyaltyPoints < 0) custProfile.loyaltyPoints = 0;
+                    }
+
+                    // NEW LOYALTY LOGIC: Reward 1 point per ₹100 spent
+                    const earnedPoints = Math.floor(totalAmount / 100);
+                    custProfile.loyaltyPoints = (custProfile.loyaltyPoints || 0) + earnedPoints;
                     
                     if (paymentMethod === 'Pay Later') {
                         if (!custProfile.isCreditEnabled) return reply.status(400).send({ success: false, message: 'Pay Later disabled.' });
@@ -130,7 +140,13 @@ async function orderRoutes(fastify, options) {
                     }
                     await custProfile.save();
                 } else {
-                    custProfile = new Customer({ phone: customerPhone, name: 'In-Store Customer' });
+                    // NEW LOYALTY LOGIC: Reward 1 point per ₹100 spent for brand new customers
+                    const earnedPoints = Math.floor(totalAmount / 100);
+                    custProfile = new Customer({ 
+                        phone: customerPhone, 
+                        name: 'In-Store Customer',
+                        loyaltyPoints: earnedPoints
+                    });
                     await custProfile.save();
                     finalCustomerName = 'In-Store Customer';
                 }
@@ -157,10 +173,10 @@ async function orderRoutes(fastify, options) {
                 deliveryAddress: 'In-Store Purchase', 
                 items: items, 
                 totalAmount: totalAmount,
-                taxAmount: taxAmount || 0,           // NEW: Store tax amount
-                discountAmount: discountAmount || 0, // NEW: Store discount amount
+                taxAmount: taxAmount || 0,           
+                discountAmount: discountAmount || 0, 
                 paymentMethod: paymentMethod,
-                splitDetails: splitDetails || { cash: 0, upi: 0 }, // MODIFIED: Store split values
+                splitDetails: splitDetails || { cash: 0, upi: 0 }, 
                 deliveryType: 'Instant', 
                 status: 'Completed' 
             });
