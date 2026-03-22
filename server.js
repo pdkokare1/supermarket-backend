@@ -15,6 +15,13 @@ const fastify = Fastify({
 
 const PORT = process.env.PORT || 3000;
 
+// --- NEW: Security & API Hardening Plugins ---
+fastify.register(require('@fastify/helmet'));
+fastify.register(require('@fastify/rate-limit'), {
+  max: 100,
+  timeWindow: '1 minute'
+});
+
 // Register CORS middleware for Vercel communication
 fastify.register(require('@fastify/cors'), { 
     origin: '*' 
@@ -77,7 +84,7 @@ cron.schedule('0 9 * * *', async () => {
         const products = await Product.find({ isActive: true });
         let lowStockItems = [];
         let deadStockItems = [];
-        let bulkOps = []; // Optimization: Batch database writes
+        let bulkOps = []; 
         
         for (let p of products) {
             let isModified = false;
@@ -207,7 +214,7 @@ cron.schedule('59 23 * * *', async () => {
             await transporter.sendMail({
                 from: `"DailyPick Server" <${process.env.EMAIL_USER}>`,
                 to: process.env.TARGET_EMAIL,
-                subject: `EOD Report: ₹${netProfit.toFixed(2)} Net Profit`, // Updated Subject line
+                subject: `EOD Report: ₹${netProfit.toFixed(2)} Net Profit`, 
                 text: reportText
             });
             fastify.log.info('EOD Email sent successfully.');
