@@ -112,8 +112,8 @@ async function orderRoutes(fastify, options) {
 
     fastify.post('/api/orders/pos', async (request, reply) => {
         try {
-            // MODIFIED: Added splitDetails to destructuring
-            const { customerPhone, items, totalAmount, paymentMethod, splitDetails } = request.body;
+            // MODIFIED: Added splitDetails, taxAmount, and discountAmount to destructuring
+            const { customerPhone, items, totalAmount, taxAmount, discountAmount, paymentMethod, splitDetails } = request.body;
             let finalCustomerName = 'Walk-in Guest';
 
             if (customerPhone) {
@@ -157,6 +157,8 @@ async function orderRoutes(fastify, options) {
                 deliveryAddress: 'In-Store Purchase', 
                 items: items, 
                 totalAmount: totalAmount,
+                taxAmount: taxAmount || 0,           // NEW: Store tax amount
+                discountAmount: discountAmount || 0, // NEW: Store discount amount
                 paymentMethod: paymentMethod,
                 splitDetails: splitDetails || { cash: 0, upi: 0 }, // MODIFIED: Store split values
                 deliveryType: 'Instant', 
