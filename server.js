@@ -52,11 +52,16 @@ fastify.get('/', async (request, reply) => {
 cron.schedule('0 9 * * *', async () => {
     fastify.log.info('Running Daily Inventory & Velocity CRON Job...');
     try {
-        const fourteenDaysAgo = new Date();
-        fourteenDaysAgo.setDate(fourteenDaysAgo.getDate() - 14);
+        const velocityDays = Number(process.env.VELOCITY_DAYS) || 14;
+        const lowStockThreshold = Number(process.env.LOW_STOCK_THRESHOLD) || 5;
+        const deadStockQty = Number(process.env.DEAD_STOCK_QTY) || 15;
+        const deadStockDays = Number(process.env.DEAD_STOCK_DAYS) || 30;
+
+        const dateAgo = new Date();
+        dateAgo.setDate(dateAgo.getDate() - velocityDays);
 
         const recentOrders = await Order.find({
-            createdAt: { $gte: fourteenDaysAgo },
+            createdAt: { $gte: dateAgo },
             status: { $in: ['Completed', 'Dispatched'] } 
         });
 
@@ -72,14 +77,15 @@ cron.schedule('0 9 * * *', async () => {
         const products = await Product.find({ isActive: true });
         let lowStockItems = [];
         let deadStockItems = [];
+        let bulkOps = []; // Optimization: Batch database writes
         
         for (let p of products) {
             let isModified = false;
             
             if (p.variants) {
                 p.variants.forEach(v => {
-                    const totalSold14Days = variantSales[v._id.toString()] || 0;
-                    const dailyAvg = totalSold14Days / 14;
+                    const totalSold = variantSales[v._id.toString()] || 0;
+                    const dailyAvg = totalSold / velocityDays;
                     v.averageDailySales = Number(dailyAvg.toFixed(2));
 
                     if (dailyAvg > 0) {
@@ -89,7 +95,7 @@ cron.schedule('0 9 * * *', async () => {
                     }
                     isModified = true;
 
-                    if (v.stock <= (v.lowStockThreshold || 5) || (v.daysOfStock < 3 && v.stock > 0)) {
+                    if (v.stock <= (v.lowStockThreshold || lowStockThreshold) || (v.daysOfStock < 3 && v.stock > 0)) {
                         lowStockItems.push({ 
                             name: p.name, 
                             variant: v.weightOrVolume, 
@@ -98,7 +104,7 @@ cron.schedule('0 9 * * *', async () => {
                         });
                     }
                     
-                    if (v.stock > 15 && v.daysOfStock > 30) {
+                    if (v.stock > deadStockQty && v.daysOfStock > deadStockDays) {
                         deadStockItems.push({ 
                             name: p.name, 
                             variant: v.weightOrVolume, 
@@ -110,8 +116,17 @@ cron.schedule('0 9 * * *', async () => {
             }
             
             if (isModified) {
-                await p.save(); 
+                bulkOps.push({
+                    updateOne: {
+                        filter: { _id: p._id },
+                        update: { $set: { variants: p.variants } }
+                    }
+                });
             }
+        }
+
+        if (bulkOps.length > 0) {
+            await Product.bulkWrite(bulkOps);
         }
 
         latestInventoryReport = {
