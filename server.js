@@ -3,7 +3,8 @@ const mongoose = require('mongoose');
 const cron = require('node-cron');
 const Product = require('./models/Product'); 
 const Order = require('./models/Order');     
-const Expense = require('./models/Expense'); // NEW: Imported Expense Model
+const Expense = require('./models/Expense'); 
+const Customer = require('./models/Customer'); // NEW: Imported for Backup
 const nodemailer = require('nodemailer');    
 const axios = require('axios');              
 require('dotenv').config();
@@ -15,7 +16,7 @@ const fastify = Fastify({
 
 const PORT = process.env.PORT || 3000;
 
-// --- NEW: Security & API Hardening Plugins ---
+// --- Security & API Hardening Plugins ---
 fastify.register(require('@fastify/helmet'));
 fastify.register(require('@fastify/rate-limit'), {
   max: 100,
@@ -33,7 +34,7 @@ fastify.register(require('./routes/orderRoutes'));
 fastify.register(require('./routes/categoryRoutes'));
 fastify.register(require('./routes/brandRoutes')); 
 fastify.register(require('./routes/distributorRoutes')); 
-fastify.register(require('./routes/expenseRoutes')); // NEW: Registered Expense Routes
+fastify.register(require('./routes/expenseRoutes')); 
 
 // Global Object to store the CRON job results
 let latestInventoryReport = {
@@ -148,9 +149,9 @@ cron.schedule('0 9 * * *', async () => {
     }
 });
 
-// --- Automated EOD Report CRON Job (Email & WhatsApp) ---
-cron.schedule('59 23 * * *', async () => {
-    fastify.log.info('Running EOD Report CRON Job...');
+// --- Automated EOD Report & Cloud Backup CRON Job ---
+cron.schedule('15 23 * * *', async () => {
+    fastify.log.info('Running 11:15 PM EOD Report & Backup CRON Job...');
     try {
         const today = new Date();
         today.setHours(0, 0, 0, 0);
@@ -183,7 +184,7 @@ cron.schedule('59 23 * * *', async () => {
             }
         });
 
-        // 2. NEW: Get Today's Expenses from MongoDB to calculate True Net Profit
+        // 2. Get Today's Expenses to calculate True Net Profit
         const todayStr = new Date().toDateString();
         const todaysExpenses = await Expense.find({ dateStr: todayStr });
         
@@ -206,6 +207,16 @@ cron.schedule('59 23 * * *', async () => {
                            `💰 Net Profit: ₹${netProfit.toFixed(2)}\n\n` +
                            `Great work today! 🚀`;
 
+        // 4. NEW: Generate Cloud Database Backups
+        const allProducts = await Product.find({});
+        const allCustomers = await Customer.find({});
+        const allOrders = await Order.find({}); // Complete historical archive
+
+        const productsBuffer = Buffer.from(JSON.stringify(allProducts, null, 2), 'utf-8');
+        const customersBuffer = Buffer.from(JSON.stringify(allCustomers, null, 2), 'utf-8');
+        const ordersBuffer = Buffer.from(JSON.stringify(allOrders, null, 2), 'utf-8');
+
+        // 5. Send Email with Backups Attached
         if (process.env.EMAIL_USER && process.env.EMAIL_PASS && process.env.TARGET_EMAIL) {
             const transporter = nodemailer.createTransport({
                 service: 'gmail',
@@ -214,14 +225,20 @@ cron.schedule('59 23 * * *', async () => {
             await transporter.sendMail({
                 from: `"DailyPick Server" <${process.env.EMAIL_USER}>`,
                 to: process.env.TARGET_EMAIL,
-                subject: `EOD Report: ₹${netProfit.toFixed(2)} Net Profit`, 
-                text: reportText
+                subject: `EOD Report & Backup: ₹${netProfit.toFixed(2)} Net Profit`, 
+                text: reportText + `\n\n(Attached: Secure daily JSON backups of your store's database.)`,
+                attachments: [
+                    { filename: `products_backup_${new Date().toISOString().split('T')[0]}.json`, content: productsBuffer },
+                    { filename: `customers_backup_${new Date().toISOString().split('T')[0]}.json`, content: customersBuffer },
+                    { filename: `orders_backup_${new Date().toISOString().split('T')[0]}.json`, content: ordersBuffer }
+                ]
             });
-            fastify.log.info('EOD Email sent successfully.');
+            fastify.log.info('11:15 PM EOD Email & Backup sent successfully.');
         } else {
-            fastify.log.warn('Skipped Email EOD: Missing variables in .env');
+            fastify.log.warn('Skipped Email Backup: Missing variables in .env');
         }
 
+        // 6. Send WhatsApp Notification
         if (process.env.WA_PHONE_NUMBER && process.env.CALLMEBOT_API_KEY) {
             const encodedText = encodeURIComponent(reportText);
             const waUrl = `https://api.callmebot.com/whatsapp.php?phone=${process.env.WA_PHONE_NUMBER}&text=${encodedText}&apikey=${process.env.CALLMEBOT_API_KEY}`;
@@ -233,7 +250,7 @@ cron.schedule('59 23 * * *', async () => {
         }
 
     } catch (err) {
-        fastify.log.error('EOD CRON Job Error:', err);
+        fastify.log.error('11:15 PM EOD CRON Job Error:', err);
     }
 });
 
