@@ -21,6 +21,10 @@ const customerSchema = new mongoose.Schema({
     creditUsed: { 
         type: Number, 
         default: 0 
+    },
+    loyaltyPoints: { 
+        type: Number, 
+        default: 0 
     }
 }, { timestamps: true });
 
