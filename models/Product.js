@@ -8,7 +8,6 @@ const purchaseHistorySchema = new mongoose.Schema({
     sellingPrice: { type: Number, required: true }     
 });
 
-// NEW: Schema to track items sent back to distributors
 const returnHistorySchema = new mongoose.Schema({
     date: { type: Date, default: Date.now },
     distributorName: { type: String, required: true },
@@ -25,12 +24,10 @@ const variantSchema = new mongoose.Schema({
     lowStockThreshold: { type: Number, default: 5 },
     expiryDate: { type: Date, default: null }, 
     purchaseHistory: [purchaseHistorySchema],
-    returnHistory: [returnHistorySchema], // NEW
+    returnHistory: [returnHistorySchema], 
     
-    // --- NEW: SMART SOURCING FIELDS ---
     averageDailySales: { type: Number, default: 0 },
     daysOfStock: { type: Number, default: 999 }
-    // ----------------------------------
 });
 
 const productSchema = new mongoose.Schema({
@@ -40,6 +37,7 @@ const productSchema = new mongoose.Schema({
     distributorName: { type: String, default: '' }, 
     imageUrl: { type: String, default: '' },
     isActive: { type: Boolean, default: true },
+    isArchived: { type: Boolean, default: false }, // NEW: Feature B (Soft Deletes)
     searchTags: { type: String, default: '' },
     
     hsnCode: { type: String, default: '' },
