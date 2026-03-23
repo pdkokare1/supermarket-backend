@@ -37,6 +37,26 @@ async function authRoutes(fastify, options) {
         }
     });
 
+    // NEW: Added to securely verify session validity and role for frontend RBAC checks
+    fastify.get('/api/auth/verify', async (request, reply) => {
+        try {
+            const { id } = request.query;
+            
+            if (!id) return reply.status(400).send({ success: false, message: 'User ID is required' });
+
+            const user = await User.findOne({ _id: id, isActive: true });
+            
+            if (!user) {
+                return reply.status(401).send({ success: false, message: 'Invalid or inactive session.' });
+            }
+            
+            return { success: true, message: 'Session verified', data: user };
+        } catch (error) {
+            fastify.log.error(error);
+            reply.status(500).send({ success: false, message: 'Server Error during verification' });
+        }
+    });
+
 }
 
 module.exports = authRoutes;
