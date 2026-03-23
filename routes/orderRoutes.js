@@ -2,12 +2,11 @@ const mongoose = require('mongoose');
 const Order = require('../models/Order');
 const Product = require('../models/Product');
 const Customer = require('../models/Customer');
+const { Parser } = require('json2csv'); // NEW: For CSV Exports
 
-// In-memory radio channels for live devices
 let adminConnections = [];
 let customerConnections = {};
 
-// --- Heartbeat Interval (Optimized to kill ghost connections) ---
 setInterval(() => {
     adminConnections = adminConnections.filter(conn => {
         if (conn.destroyed || !conn.writable) {
@@ -123,7 +122,6 @@ async function orderRoutes(fastify, options) {
         }
     });
 
-    // POS Checkout with Database Transactions (ACID) to prevent partial stock deduction failures
     fastify.post('/api/orders/pos', async (request, reply) => {
         const session = await mongoose.startSession();
         session.startTransaction();
@@ -310,7 +308,6 @@ async function orderRoutes(fastify, options) {
         }
     });
 
-    // MODIFIED: High-Performance Database Aggregation
     fastify.get('/api/orders/analytics', async (request, reply) => {
         try {
             const today = new Date();
@@ -319,7 +316,6 @@ async function orderRoutes(fastify, options) {
             sevenDaysAgo.setDate(today.getDate() - 6);
             sevenDaysAgo.setHours(0, 0, 0, 0);
 
-            // 1. Revenue Aggregation directly in MongoDB
             const revenueAgg = await Order.aggregate([
                 {
                     $match: {
@@ -355,7 +351,6 @@ async function orderRoutes(fastify, options) {
                 }
             });
 
-            // 2. Top Items Aggregation
             const topItemsAgg = await Order.aggregate([
                 {
                     $match: {
@@ -431,7 +426,6 @@ async function orderRoutes(fastify, options) {
         }
     });
 
-    // MODIFIED: Added graceful limit/pagination for frontend safety
     fastify.get('/api/orders', async (request, reply) => {
         try {
             const limit = parseInt(request.query.limit);
@@ -446,6 +440,59 @@ async function orderRoutes(fastify, options) {
         } catch (error) {
             fastify.log.error('Fetch Error:', error);
             reply.status(500).send({ success: false, message: 'Server Error fetching orders' });
+        }
+    });
+
+    // NEW: Feature A (Orders CSV Export endpoint)
+    fastify.get('/api/orders/export', async (request, reply) => {
+        try {
+            const orders = await Order.find().sort({ createdAt: -1 }).lean();
+            const exportData = orders.map(o => ({
+                OrderID: o._id.toString(),
+                Date: new Date(o.createdAt).toLocaleString(),
+                CustomerName: o.customerName,
+                Phone: o.customerPhone,
+                TotalAmount: o.totalAmount,
+                Status: o.status,
+                PaymentMethod: o.paymentMethod,
+                DeliveryType: o.deliveryType
+            }));
+
+            const json2csvParser = new Parser();
+            const csv = json2csvParser.parse(exportData);
+
+            reply.header('Content-Type', 'text/csv');
+            reply.header('Content-Disposition', `attachment; filename="orders_export_${new Date().toISOString().split('T')[0]}.csv"`);
+            return reply.send(csv);
+        } catch (error) {
+            fastify.log.error('Export Error:', error);
+            reply.status(500).send({ success: false, message: 'Server Error exporting orders' });
+        }
+    });
+
+    // NEW: Feature A (Customers CSV Export endpoint)
+    fastify.get('/api/customers/export', async (request, reply) => {
+        try {
+            const customers = await Customer.find({}).lean();
+            const exportData = customers.map(c => ({
+                Name: c.name,
+                Phone: c.phone,
+                LoyaltyPoints: c.loyaltyPoints || 0,
+                CreditEnabled: c.isCreditEnabled ? 'Yes' : 'No',
+                CreditLimit: c.creditLimit || 0,
+                CreditUsed: c.creditUsed || 0,
+                JoinedDate: new Date(c.createdAt).toLocaleDateString()
+            }));
+
+            const json2csvParser = new Parser();
+            const csv = json2csvParser.parse(exportData);
+
+            reply.header('Content-Type', 'text/csv');
+            reply.header('Content-Disposition', `attachment; filename="customers_export_${new Date().toISOString().split('T')[0]}.csv"`);
+            return reply.send(csv);
+        } catch (error) {
+            fastify.log.error('Export Error:', error);
+            reply.status(500).send({ success: false, message: 'Server Error exporting customers' });
         }
     });
 
