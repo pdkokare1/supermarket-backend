@@ -18,17 +18,42 @@ fastify.register(require('@fastify/cors'), {
     origin: process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : '*'
 });
 
-// --- NEW: JWT Security Registration ---
+// --- JWT Security Registration ---
 fastify.register(require('@fastify/jwt'), {
     secret: process.env.JWT_SECRET || 'fallback_super_secret_key_change_in_production'
 });
 
-// --- NEW: Authentication Middleware (The Lock) ---
 fastify.decorate("authenticate", async function(request, reply) {
     try {
         await request.jwtVerify();
     } catch (err) {
         reply.status(401).send({ success: false, message: 'Unauthorized: Invalid or missing token.' });
+    }
+});
+
+// --- NEW: Global Security Bouncer (The Lock) ---
+fastify.addHook("onRequest", async (request, reply) => {
+    // 1. Always allow browser CORS preflight checks
+    if (request.method === 'OPTIONS') return;
+
+    // 2. Define public routes that do not require a token
+    const publicRoutes = [
+        '/',
+        '/api/auth/login',
+        '/api/auth/setup'
+    ];
+
+    // Check if the current request is heading to a public route
+    const isPublic = publicRoutes.some(route => request.url.startsWith(route));
+
+    // 3. If it's not a public route, verify the secure token
+    if (!isPublic) {
+        try {
+            await request.jwtVerify();
+        } catch (err) {
+            fastify.log.warn(`Blocked unauthorized access attempt to ${request.url}`);
+            reply.status(401).send({ success: false, message: 'Unauthorized: Access Denied. Please log in.' });
+        }
     }
 });
 
@@ -68,7 +93,7 @@ fastify.get('/', async (request, reply) => {
     };
 });
 
-// --- Initialize Background CRON Jobs ---
+// Initialize Background CRON Jobs
 require('./jobs/cronScheduler')(fastify, (newReport) => {
     latestInventoryReport = newReport;
 });
