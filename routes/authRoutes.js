@@ -19,7 +19,15 @@ async function authRoutes(fastify, options) {
         }
     });
 
-    fastify.post('/api/auth/login', async (request, reply) => {
+    // --- SECURED: Specific Rate Limiter blocks PIN brute forcing ---
+    fastify.post('/api/auth/login', {
+        config: {
+            rateLimit: {
+                max: 5, // Maximum 5 attempts
+                timeWindow: '1 minute'
+            }
+        }
+    }, async (request, reply) => {
         try {
             const { username, pin } = request.body;
             
@@ -50,12 +58,11 @@ async function authRoutes(fastify, options) {
                 await user.save();
             }
             
-            // --- NEW: Generate secure JWT Token upon successful login ---
             const token = fastify.jwt.sign({ 
                 id: user._id, 
                 role: user.role, 
                 username: user.username 
-            }, { expiresIn: '7d' }); // Token expires in 7 days for security
+            }, { expiresIn: '7d' }); 
             
             return { success: true, message: 'Login successful', data: user, token: token };
             
