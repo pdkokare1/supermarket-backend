@@ -31,25 +31,31 @@ fastify.decorate("authenticate", async function(request, reply) {
     }
 });
 
-// --- NEW: Global Security Bouncer (The Lock) ---
+// --- NEW: Role-Based Access Control Decorator ---
+fastify.decorate("verifyAdmin", async function(request, reply) {
+    // request.user is populated by the onRequest hook below
+    if (request.user && request.user.role !== 'Admin') {
+        reply.status(403).send({ success: false, message: 'Forbidden: Admin access required.' });
+    }
+});
+
+// --- Global Security Bouncer (The Lock) ---
 fastify.addHook("onRequest", async (request, reply) => {
-    // 1. Always allow browser CORS preflight checks
     if (request.method === 'OPTIONS') return;
 
-    // 2. Define public routes that do not require a token
     const publicRoutes = [
         '/',
         '/api/auth/login',
         '/api/auth/setup'
     ];
 
-    // Check if the current request is heading to a public route
-    const isPublic = publicRoutes.some(route => request.url.startsWith(route));
+    // SECURE: Use exact matching ignoring query parameters
+    const basePath = request.url.split('?')[0];
+    const isPublic = publicRoutes.includes(basePath);
 
-    // 3. If it's not a public route, verify the secure token
     if (!isPublic) {
         try {
-            await request.jwtVerify();
+            await request.jwtVerify(); // Populates request.user
         } catch (err) {
             fastify.log.warn(`Blocked unauthorized access attempt to ${request.url}`);
             reply.status(401).send({ success: false, message: 'Unauthorized: Access Denied. Please log in.' });
@@ -75,7 +81,6 @@ fastify.setErrorHandler(function (error, request, reply) {
     });
 });
 
-// Local State for Inventory Reporting
 let latestInventoryReport = {
     lowStock: [],
     deadStock: [],
@@ -98,9 +103,23 @@ require('./jobs/cronScheduler')(fastify, (newReport) => {
     latestInventoryReport = newReport;
 });
 
+// --- NEW: Graceful Shutdown for Railway ---
+const listeners = ['SIGINT', 'SIGTERM'];
+listeners.forEach((signal) => {
+    process.on(signal, async () => {
+        fastify.log.info(`${signal} received. Shutting down gracefully...`);
+        await fastify.close();
+        await mongoose.connection.close();
+        process.exit(0);
+    });
+});
+
 const startServer = async () => {
     try {
-        await mongoose.connect(process.env.MONGO_URI);
+        // OPTIMIZED: Added connection pooling
+        await mongoose.connect(process.env.MONGO_URI, {
+            maxPoolSize: 50
+        });
         fastify.log.info('Successfully connected to MongoDB Atlas');
         
         await fastify.listen({ port: PORT, host: '0.0.0.0' });
