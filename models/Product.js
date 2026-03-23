@@ -47,4 +47,9 @@ const productSchema = new mongoose.Schema({
     variants: [variantSchema] 
 }, { timestamps: true });
 
+// --- OPTIMIZATION ADDITIONS ---
+// Indexing for faster catalog queries and SKU lookups
+productSchema.index({ isActive: 1, category: 1 });
+productSchema.index({ "variants.sku": 1 });
+
 module.exports = mongoose.model('Product', productSchema);
