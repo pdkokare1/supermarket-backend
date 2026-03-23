@@ -1,6 +1,26 @@
 const User = require('../models/User');
 const bcrypt = require('bcryptjs');
 
+// --- NEW: Strict Validation Schema for Login ---
+const loginSchema = {
+    schema: {
+        body: {
+            type: 'object',
+            required: ['username', 'pin'],
+            properties: {
+                username: { type: 'string' },
+                pin: { type: 'string' }
+            }
+        }
+    },
+    config: {
+        rateLimit: {
+            max: 5, // Maximum 5 attempts
+            timeWindow: '1 minute'
+        }
+    }
+};
+
 async function authRoutes(fastify, options) {
     
     fastify.get('/api/auth/setup', async (request, reply) => {
@@ -19,20 +39,10 @@ async function authRoutes(fastify, options) {
         }
     });
 
-    // --- SECURED: Specific Rate Limiter blocks PIN brute forcing ---
-    fastify.post('/api/auth/login', {
-        config: {
-            rateLimit: {
-                max: 5, // Maximum 5 attempts
-                timeWindow: '1 minute'
-            }
-        }
-    }, async (request, reply) => {
+    // --- SECURED: Applying Strict Request Validation & Rate Limiter ---
+    fastify.post('/api/auth/login', loginSchema, async (request, reply) => {
         try {
             const { username, pin } = request.body;
-            
-            if (!pin) return reply.status(400).send({ success: false, message: 'PIN is required' });
-            if (!username) return reply.status(400).send({ success: false, message: 'Username is required' });
 
             const user = await User.findOne({ 
                 $or: [{ username: username }, { name: username }], 
