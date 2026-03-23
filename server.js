@@ -18,6 +18,20 @@ fastify.register(require('@fastify/cors'), {
     origin: process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : '*'
 });
 
+// --- NEW: JWT Security Registration ---
+fastify.register(require('@fastify/jwt'), {
+    secret: process.env.JWT_SECRET || 'fallback_super_secret_key_change_in_production'
+});
+
+// --- NEW: Authentication Middleware (The Lock) ---
+fastify.decorate("authenticate", async function(request, reply) {
+    try {
+        await request.jwtVerify();
+    } catch (err) {
+        reply.status(401).send({ success: false, message: 'Unauthorized: Invalid or missing token.' });
+    }
+});
+
 // Route Registrations
 fastify.register(require('./routes/productRoutes'));
 fastify.register(require('./routes/orderRoutes'));
