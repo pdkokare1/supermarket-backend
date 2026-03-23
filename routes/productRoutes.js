@@ -35,7 +35,6 @@ async function productRoutes(fastify, options) {
                 query = query.skip(skip).limit(limit); 
             }
             
-            // MODIFIED: Added .lean() for significantly faster read performance
             const products = await query.lean(); 
             const total = await Product.countDocuments(filter);
             
@@ -120,7 +119,6 @@ async function productRoutes(fastify, options) {
         }
     });
 
-    // --- NEW: Handle Return To Vendor (RTV) Deductions ---
     fastify.put('/api/products/:id/rtv', async (request, reply) => {
         try {
             const { variantId, distributorName, returnedQuantity, refundAmount, reason } = request.body;
@@ -159,13 +157,11 @@ async function productRoutes(fastify, options) {
                 return reply.status(400).send({ success: false, message: 'Invalid format' });
             }
             
-            let updatedCount = 0; 
-            let insertedCount = 0;
-            
-            for (const p of products) {
-                const result = await Product.updateOne( 
-                    { name: p.name }, 
-                    { $set: { 
+            // MODIFIED: Replaced individual loops with high-speed MongoDB BulkWrite
+            const bulkOps = products.map(p => ({
+                updateOne: {
+                    filter: { name: p.name },
+                    update: { $set: {
                         category: p.category, 
                         brand: p.brand || '', 
                         distributorName: p.distributorName || '', 
@@ -174,16 +170,18 @@ async function productRoutes(fastify, options) {
                         variants: p.variants || [],
                         hsnCode: p.hsnCode || '', 
                         taxRate: p.taxRate || 0,  
-                        taxType: p.taxType || 'Inclusive' 
-                    }}, 
-                    { upsert: true } 
-                );
-                
-                if (result.upsertedCount > 0) insertedCount++; 
-                else if (result.modifiedCount > 0) updatedCount++;
+                        taxType: p.taxType || 'Inclusive'
+                    }},
+                    upsert: true
+                }
+            }));
+
+            if (bulkOps.length > 0) {
+                const result = await Product.bulkWrite(bulkOps);
+                return { success: true, message: `Imported! Added ${result.upsertedCount}, Updated ${result.modifiedCount}.` };
             }
             
-            return { success: true, message: `Imported! Added ${insertedCount}, Updated ${updatedCount}.` };
+            return { success: true, message: `No products to process.` };
         } catch (error) { 
             fastify.log.error(error); 
             reply.status(500).send({ success: false, message: 'Server Error' }); 
