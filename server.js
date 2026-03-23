@@ -24,8 +24,9 @@ fastify.register(require('@fastify/rate-limit'), {
 });
 
 // Register CORS middleware for Vercel communication
+// MODIFIED: Uses environment variables for security, falls back to '*' to prevent breaking
 fastify.register(require('@fastify/cors'), { 
-    origin: '*' 
+    origin: process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : '*'
 });
 
 // Register API Routes
@@ -208,9 +209,10 @@ cron.schedule('15 23 * * *', async () => {
                            `Great work today! 🚀`;
 
         // 4. NEW: Generate Cloud Database Backups
-        const allProducts = await Product.find({});
-        const allCustomers = await Customer.find({});
-        const allOrders = await Order.find({}); // Complete historical archive
+        // MODIFIED: Added .lean() to prevent memory overload when fetching large histories
+        const allProducts = await Product.find({}).lean();
+        const allCustomers = await Customer.find({}).lean();
+        const allOrders = await Order.find({}).lean(); // Complete historical archive
 
         const productsBuffer = Buffer.from(JSON.stringify(allProducts, null, 2), 'utf-8');
         const customersBuffer = Buffer.from(JSON.stringify(allCustomers, null, 2), 'utf-8');
