@@ -33,6 +33,15 @@ fastify.register(require('./routes/distributorRoutes'));
 fastify.register(require('./routes/expenseRoutes')); 
 fastify.register(require('./routes/authRoutes')); 
 
+// --- NEW: Global Error Handler to prevent server crashes ---
+fastify.setErrorHandler(function (error, request, reply) {
+    fastify.log.error(error);
+    reply.status(error.statusCode || 500).send({
+        success: false,
+        message: error.message || 'Internal Server Error'
+    });
+});
+
 let latestInventoryReport = {
     lowStock: [],
     deadStock: [],
@@ -54,7 +63,8 @@ fastify.get('/', async (request, reply) => {
 cron.schedule('0 6 * * *', async () => {
     fastify.log.info('Running 6:00 AM Routine Deliveries CRON Job...');
     try {
-        const routineOrders = await Order.find({ deliveryType: 'Routine', status: { $ne: 'Cancelled' } });
+        // Optimized with .lean() for read-only speed and reduced RAM
+        const routineOrders = await Order.find({ deliveryType: 'Routine', status: { $ne: 'Cancelled' } }).lean();
         
         for (const ro of routineOrders) {
             const newOrder = new Order({
@@ -87,10 +97,11 @@ cron.schedule('0 9 * * *', async () => {
         const dateAgo = new Date();
         dateAgo.setDate(dateAgo.getDate() - velocityDays);
 
+        // Optimized with .lean() for faster iteration over large datasets
         const recentOrders = await Order.find({
             createdAt: { $gte: dateAgo },
             status: { $in: ['Completed', 'Dispatched'] } 
-        });
+        }).lean();
 
         let variantSales = {}; 
         recentOrders.forEach(order => {
