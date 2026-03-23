@@ -5,6 +5,11 @@ const userSchema = new mongoose.Schema({
         type: String, 
         required: true 
     },
+    username: { 
+        type: String, 
+        unique: true,
+        sparse: true // Allows existing users without a username to coexist safely
+    },
     pin: { 
         type: String, 
         required: true,
