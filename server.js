@@ -31,7 +31,7 @@ fastify.register(require('./routes/categoryRoutes'));
 fastify.register(require('./routes/brandRoutes')); 
 fastify.register(require('./routes/distributorRoutes')); 
 fastify.register(require('./routes/expenseRoutes')); 
-fastify.register(require('./routes/authRoutes')); // Important: Re-registered from modifications
+fastify.register(require('./routes/authRoutes')); 
 
 let latestInventoryReport = {
     lowStock: [],
@@ -48,6 +48,32 @@ fastify.get('/', async (request, reply) => {
         status: 'Active',
         message: 'Supermarket Fastify Backend MVP is running and connected!' 
     };
+});
+
+// --- NEW: Feature C (Routine Deliveries Automation) ---
+cron.schedule('0 6 * * *', async () => {
+    fastify.log.info('Running 6:00 AM Routine Deliveries CRON Job...');
+    try {
+        const routineOrders = await Order.find({ deliveryType: 'Routine', status: { $ne: 'Cancelled' } });
+        
+        for (const ro of routineOrders) {
+            const newOrder = new Order({
+                customerName: ro.customerName,
+                customerPhone: ro.customerPhone,
+                deliveryAddress: ro.deliveryAddress,
+                items: ro.items,
+                totalAmount: ro.totalAmount,
+                paymentMethod: ro.paymentMethod,
+                deliveryType: 'Instant', 
+                scheduleTime: 'Generated via Routine',
+                status: 'Order Placed'
+            });
+            await newOrder.save();
+        }
+        fastify.log.info(`Successfully generated ${routineOrders.length} routine orders for today.`);
+    } catch (err) {
+        fastify.log.error('6:00 AM Routine CRON Job Error:', err);
+    }
 });
 
 cron.schedule('0 9 * * *', async () => {
@@ -196,8 +222,6 @@ cron.schedule('15 23 * * *', async () => {
                            `💰 Net Profit: ₹${netProfit.toFixed(2)}\n\n` +
                            `Great work today! 🚀`;
 
-        // MODIFIED: Prevent OOM by removing full DB buffer. We only backup today's data now. 
-        // Atlas provides native full backups, this acts as your secure daily increment.
         const allProducts = await Product.find({}).lean();
         const allCustomers = await Customer.find({}).lean();
 
