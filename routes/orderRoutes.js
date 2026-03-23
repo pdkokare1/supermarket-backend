@@ -2,7 +2,7 @@ const mongoose = require('mongoose');
 const Order = require('../models/Order');
 const Product = require('../models/Product');
 const Customer = require('../models/Customer');
-const { Parser } = require('json2csv'); // NEW: For CSV Exports
+const { Parser } = require('json2csv'); 
 
 let adminConnections = [];
 let customerConnections = {};
@@ -426,24 +426,66 @@ async function orderRoutes(fastify, options) {
         }
     });
 
+    // --- OPTIMIZED: Paginated Fetch Endpoint ---
     fastify.get('/api/orders', async (request, reply) => {
         try {
-            const limit = parseInt(request.query.limit);
-            let query = Order.find().sort({ createdAt: -1 });
-            
-            if (limit) {
-                query = query.limit(limit);
+            let filter = {};
+
+            // 1. Apply Server-Side Tab Filters
+            if (request.query.tab === 'Instant') filter.deliveryType = { $ne: 'Routine' };
+            if (request.query.tab === 'Routine') filter.deliveryType = 'Routine';
+
+            // 2. Apply Server-Side Date Filters
+            const today = new Date();
+            today.setHours(0, 0, 0, 0);
+            const yesterday = new Date(today);
+            yesterday.setDate(yesterday.getDate() - 1);
+            const sevenDaysAgo = new Date(today);
+            sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+
+            if (request.query.dateFilter === 'Today') {
+                filter.createdAt = { $gte: today };
+            } else if (request.query.dateFilter === 'Yesterday') {
+                filter.createdAt = { $gte: yesterday, $lt: today };
+            } else if (request.query.dateFilter === '7Days') {
+                filter.createdAt = { $gte: sevenDaysAgo };
             }
 
-            const orders = await query.lean();
-            return { success: true, count: orders.length, data: orders };
+            const page = parseInt(request.query.page) || 1;
+            const limit = parseInt(request.query.limit);
+
+            let query = Order.find(filter).sort({ createdAt: -1 });
+
+            if (limit) {
+                const skip = (page - 1) * limit;
+                query = query.skip(skip).limit(limit);
+            }
+
+            // Execute paginated search + global stats concurrently for speed
+            const [orders, total, pendingOrders] = await Promise.all([
+                query.lean(),
+                Order.countDocuments(filter),
+                Order.find({ status: { $in: ['Order Placed', 'Packing'] } }).lean()
+            ]);
+
+            const pendingRevenue = pendingOrders.reduce((sum, o) => sum + o.totalAmount, 0);
+
+            return { 
+                success: true, 
+                count: orders.length, 
+                total: total, 
+                data: orders,
+                stats: {
+                    pendingCount: pendingOrders.length,
+                    pendingRevenue: pendingRevenue
+                }
+            };
         } catch (error) {
             fastify.log.error('Fetch Error:', error);
             reply.status(500).send({ success: false, message: 'Server Error fetching orders' });
         }
     });
 
-    // NEW: Feature A (Orders CSV Export endpoint)
     fastify.get('/api/orders/export', async (request, reply) => {
         try {
             const orders = await Order.find().sort({ createdAt: -1 }).lean();
@@ -470,7 +512,6 @@ async function orderRoutes(fastify, options) {
         }
     });
 
-    // NEW: Feature A (Customers CSV Export endpoint)
     fastify.get('/api/customers/export', async (request, reply) => {
         try {
             const customers = await Customer.find({}).lean();
