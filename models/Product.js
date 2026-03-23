@@ -37,7 +37,7 @@ const productSchema = new mongoose.Schema({
     distributorName: { type: String, default: '' }, 
     imageUrl: { type: String, default: '' },
     isActive: { type: Boolean, default: true },
-    isArchived: { type: Boolean, default: false }, // NEW: Feature B (Soft Deletes)
+    isArchived: { type: Boolean, default: false }, 
     searchTags: { type: String, default: '' },
     
     hsnCode: { type: String, default: '' },
@@ -48,8 +48,9 @@ const productSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 // --- OPTIMIZATION ADDITIONS ---
-// Indexing for faster catalog queries and SKU lookups
 productSchema.index({ isActive: 1, category: 1 });
 productSchema.index({ "variants.sku": 1 });
+// NEW: Index to speed up the default non-archived product queries
+productSchema.index({ isArchived: 1 });
 
 module.exports = mongoose.model('Product', productSchema);
