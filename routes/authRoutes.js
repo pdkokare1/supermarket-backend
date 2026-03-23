@@ -1,4 +1,5 @@
 const User = require('../models/User');
+const bcrypt = require('bcryptjs');
 
 async function authRoutes(fastify, options) {
     
@@ -7,7 +8,8 @@ async function authRoutes(fastify, options) {
         try {
             const adminExists = await User.findOne({ role: 'Admin' });
             if (!adminExists) {
-                const newAdmin = new User({ name: 'Super Admin', pin: '1234', role: 'Admin' });
+                const hashedPin = await bcrypt.hash('1234', 10);
+                const newAdmin = new User({ name: 'Super Admin', pin: hashedPin, role: 'Admin' });
                 await newAdmin.save();
                 return { success: true, message: 'Default Admin created. PIN: 1234' };
             }
@@ -24,20 +26,43 @@ async function authRoutes(fastify, options) {
             
             if (!pin) return reply.status(400).send({ success: false, message: 'PIN is required' });
 
-            const user = await User.findOne({ pin: pin, isActive: true });
+            // Find all active users (since PIN is unique, we must find all and compare)
+            // For a system with pins, we check the unhashed ones for migration, or compare hashes.
+            const users = await User.find({ isActive: true });
+            let matchedUser = null;
+
+            for (let user of users) {
+                const isHashed = user.pin.startsWith('$2a$') || user.pin.startsWith('$2b$');
+                
+                if (isHashed) {
+                    const isValid = await bcrypt.compare(pin, user.pin);
+                    if (isValid) {
+                        matchedUser = user;
+                        break;
+                    }
+                } else {
+                    // MIGRATION FALLBACK: If user still has plaintext PIN in DB
+                    if (user.pin === pin) {
+                        matchedUser = user;
+                        // Silently hash and save for future security
+                        matchedUser.pin = await bcrypt.hash(pin, 10);
+                        await matchedUser.save();
+                        break;
+                    }
+                }
+            }
             
-            if (!user) {
+            if (!matchedUser) {
                 return reply.status(401).send({ success: false, message: 'Invalid PIN.' });
             }
             
-            return { success: true, message: 'Login successful', data: user };
+            return { success: true, message: 'Login successful', data: matchedUser };
         } catch (error) {
             fastify.log.error(error);
             reply.status(500).send({ success: false, message: 'Server Error during login' });
         }
     });
 
-    // NEW: Added to securely verify session validity and role for frontend RBAC checks
     fastify.get('/api/auth/verify', async (request, reply) => {
         try {
             const { id } = request.query;
