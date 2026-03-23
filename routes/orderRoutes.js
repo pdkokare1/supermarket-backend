@@ -112,7 +112,6 @@ async function orderRoutes(fastify, options) {
 
     fastify.post('/api/orders/pos', async (request, reply) => {
         try {
-            // MODIFIED: Added pointsRedeemed to destructuring alongside previous tax/discount additions
             const { customerPhone, items, totalAmount, taxAmount, discountAmount, paymentMethod, splitDetails, pointsRedeemed } = request.body;
             let finalCustomerName = 'Walk-in Guest';
 
@@ -121,13 +120,11 @@ async function orderRoutes(fastify, options) {
                 if (custProfile) {
                     finalCustomerName = custProfile.name;
                     
-                    // NEW LOYALTY LOGIC: Deduct redeemed points
                     if (pointsRedeemed && pointsRedeemed > 0) {
                         custProfile.loyaltyPoints = (custProfile.loyaltyPoints || 0) - pointsRedeemed;
                         if (custProfile.loyaltyPoints < 0) custProfile.loyaltyPoints = 0;
                     }
 
-                    // NEW LOYALTY LOGIC: Reward 1 point per ₹100 spent
                     const earnedPoints = Math.floor(totalAmount / 100);
                     custProfile.loyaltyPoints = (custProfile.loyaltyPoints || 0) + earnedPoints;
                     
@@ -140,7 +137,6 @@ async function orderRoutes(fastify, options) {
                     }
                     await custProfile.save();
                 } else {
-                    // NEW LOYALTY LOGIC: Reward 1 point per ₹100 spent for brand new customers
                     const earnedPoints = Math.floor(totalAmount / 100);
                     custProfile = new Customer({ 
                         phone: customerPhone, 
@@ -440,6 +436,17 @@ async function orderRoutes(fastify, options) {
             return { success: true, data: cust, message: 'Payment recorded successfully' };
         } catch (error) {
             reply.status(500).send({ success: false, message: 'Error recording payment' });
+        }
+    });
+
+    // --- NEW: Phase 5 Endpoint for Khata Scanning ---
+    fastify.get('/api/customers', async (request, reply) => {
+        try {
+            const customers = await Customer.find({});
+            return { success: true, count: customers.length, data: customers };
+        } catch (error) {
+            fastify.log.error('CRM Error:', error);
+            reply.status(500).send({ success: false, message: 'Server Error fetching all customers' });
         }
     });
 
