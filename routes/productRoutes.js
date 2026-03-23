@@ -2,9 +2,29 @@ const Product = require('../models/Product');
 const Category = require('../models/Category');
 const { Parser } = require('json2csv'); 
 
+// --- NEW: Strict Validation Schema for Products ---
+const productSchema = {
+    schema: {
+        body: {
+            type: 'object',
+            required: ['name', 'category'],
+            properties: {
+                name: { type: 'string' },
+                category: { type: 'string' },
+                brand: { type: 'string' },
+                distributorName: { type: 'string' },
+                imageUrl: { type: 'string' },
+                searchTags: { type: 'string' },
+                hsnCode: { type: 'string' },
+                taxRate: { type: 'number' },
+                taxType: { type: 'string', enum: ['Inclusive', 'Exclusive'] }
+            }
+        }
+    }
+};
+
 async function productRoutes(fastify, options) {
     
-    // Public/Cashier accessible - No admin restriction needed here
     fastify.get('/api/products', async (request, reply) => {
         try {
             let filter = request.query.all === 'true' 
@@ -72,8 +92,8 @@ async function productRoutes(fastify, options) {
         }
     });
 
-    // --- SECURED: Only Admins can create products ---
-    fastify.post('/api/products', { preHandler: [fastify.verifyAdmin] }, async (request, reply) => {
+    // --- SECURED: Role Validation + Schema Validation ---
+    fastify.post('/api/products', { preHandler: [fastify.verifyAdmin], ...productSchema }, async (request, reply) => {
         try {
             const { name, category, brand, distributorName, imageUrl, searchTags, variants, hsnCode, taxRate, taxType } = request.body;
             
@@ -89,8 +109,8 @@ async function productRoutes(fastify, options) {
         }
     });
 
-    // --- SECURED: Only Admins can edit products ---
-    fastify.put('/api/products/:id', { preHandler: [fastify.verifyAdmin] }, async (request, reply) => {
+    // --- SECURED: Role Validation + Schema Validation ---
+    fastify.put('/api/products/:id', { preHandler: [fastify.verifyAdmin], ...productSchema }, async (request, reply) => {
         try {
             const { name, category, brand, distributorName, imageUrl, searchTags, variants, hsnCode, taxRate, taxType } = request.body;
             
@@ -116,7 +136,6 @@ async function productRoutes(fastify, options) {
         }
     });
 
-    // --- SECURED: Only Admins can archive products ---
     fastify.put('/api/products/:id/archive', { preHandler: [fastify.verifyAdmin] }, async (request, reply) => {
         try {
             const product = await Product.findById(request.params.id);
@@ -135,7 +154,6 @@ async function productRoutes(fastify, options) {
         }
     });
 
-    // --- SECURED: Only Admins can process restocks ---
     fastify.put('/api/products/:id/restock', { preHandler: [fastify.verifyAdmin] }, async (request, reply) => {
         try {
             const { variantId, invoiceNumber, addedQuantity, purchasingPrice, newSellingPrice } = request.body;
@@ -168,7 +186,6 @@ async function productRoutes(fastify, options) {
         }
     });
 
-    // --- SECURED: Only Admins can process Returns To Vendor ---
     fastify.put('/api/products/:id/rtv', { preHandler: [fastify.verifyAdmin] }, async (request, reply) => {
         try {
             const { variantId, distributorName, returnedQuantity, refundAmount, reason } = request.body;
@@ -200,7 +217,6 @@ async function productRoutes(fastify, options) {
         }
     });
 
-    // --- SECURED: Bulk actions restricted to Admin ---
     fastify.post('/api/products/bulk', { preHandler: [fastify.verifyAdmin] }, async (request, reply) => {
         try {
             const { products } = request.body;
@@ -238,7 +254,6 @@ async function productRoutes(fastify, options) {
         }
     });
 
-    // --- SECURED: Active toggle restricted to Admin ---
     fastify.put('/api/products/:id/toggle', { preHandler: [fastify.verifyAdmin] }, async (request, reply) => {
         try {
             const product = await Product.findById(request.params.id);
