@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const Order = require('../models/Order');
 const Product = require('../models/Product');
 const Customer = require('../models/Customer');
@@ -6,14 +7,26 @@ const Customer = require('../models/Customer');
 let adminConnections = [];
 let customerConnections = {};
 
-// --- Heartbeat Interval ---
+// --- Heartbeat Interval (Optimized to kill ghost connections) ---
 setInterval(() => {
-    adminConnections = adminConnections.filter(conn => !conn.destroyed);
-    adminConnections.forEach(conn => conn.write(':\n\n'));
+    adminConnections = adminConnections.filter(conn => {
+        if (conn.destroyed || !conn.writable) {
+            if (!conn.destroyed) conn.end();
+            return false;
+        }
+        conn.write(':\n\n');
+        return true;
+    });
 
     for (const orderId in customerConnections) {
-        customerConnections[orderId] = customerConnections[orderId].filter(conn => !conn.destroyed);
-        customerConnections[orderId].forEach(conn => conn.write(':\n\n'));
+        customerConnections[orderId] = customerConnections[orderId].filter(conn => {
+            if (conn.destroyed || !conn.writable) {
+                if (!conn.destroyed) conn.end();
+                return false;
+            }
+            conn.write(':\n\n');
+            return true;
+        });
         if (customerConnections[orderId].length === 0) delete customerConnections[orderId];
     }
 }, 15000);
@@ -110,13 +123,17 @@ async function orderRoutes(fastify, options) {
         }
     });
 
+    // POS Checkout with Database Transactions (ACID) to prevent partial stock deduction failures
     fastify.post('/api/orders/pos', async (request, reply) => {
+        const session = await mongoose.startSession();
+        session.startTransaction();
+
         try {
             const { customerPhone, items, totalAmount, taxAmount, discountAmount, paymentMethod, splitDetails, pointsRedeemed } = request.body;
             let finalCustomerName = 'Walk-in Guest';
 
             if (customerPhone) {
-                let custProfile = await Customer.findOne({ phone: customerPhone });
+                let custProfile = await Customer.findOne({ phone: customerPhone }).session(session);
                 if (custProfile) {
                     finalCustomerName = custProfile.name;
                     
@@ -129,13 +146,19 @@ async function orderRoutes(fastify, options) {
                     custProfile.loyaltyPoints = (custProfile.loyaltyPoints || 0) + earnedPoints;
                     
                     if (paymentMethod === 'Pay Later') {
-                        if (!custProfile.isCreditEnabled) return reply.status(400).send({ success: false, message: 'Pay Later disabled.' });
+                        if (!custProfile.isCreditEnabled) {
+                            await session.abortTransaction();
+                            session.endSession();
+                            return reply.status(400).send({ success: false, message: 'Pay Later disabled.' });
+                        }
                         if ((custProfile.creditUsed + totalAmount) > custProfile.creditLimit) {
+                            await session.abortTransaction();
+                            session.endSession();
                             return reply.status(400).send({ success: false, message: 'Credit limit exceeded.' });
                         }
                         custProfile.creditUsed += totalAmount;
                     }
-                    await custProfile.save();
+                    await custProfile.save({ session });
                 } else {
                     const earnedPoints = Math.floor(totalAmount / 100);
                     custProfile = new Customer({ 
@@ -143,23 +166,19 @@ async function orderRoutes(fastify, options) {
                         name: 'In-Store Customer',
                         loyaltyPoints: earnedPoints
                     });
-                    await custProfile.save();
+                    await custProfile.save({ session });
                     finalCustomerName = 'In-Store Customer';
                 }
             }
 
             for (const item of items) {
-                try {
-                    const product = await Product.findById(item.productId);
-                    if (product && product.variants) {
-                        const variant = product.variants.id(item.variantId);
-                        if (variant && variant.stock >= item.qty) {
-                            variant.stock -= item.qty;
-                            await product.save();
-                        }
+                const product = await Product.findById(item.productId).session(session);
+                if (product && product.variants) {
+                    const variant = product.variants.id(item.variantId);
+                    if (variant && variant.stock >= item.qty) {
+                        variant.stock -= item.qty;
+                        await product.save({ session });
                     }
-                } catch(e) {
-                    fastify.log.error('POS Stock Deduction Error:', e);
                 }
             }
 
@@ -177,10 +196,14 @@ async function orderRoutes(fastify, options) {
                 status: 'Completed' 
             });
 
-            await newOrder.save();
+            await newOrder.save({ session });
+            await session.commitTransaction();
+            session.endSession();
 
             return { success: true, message: 'POS Transaction Complete', orderId: newOrder._id, orderData: newOrder };
         } catch (error) {
+            await session.abortTransaction();
+            session.endSession();
             fastify.log.error('POS Checkout Error:', error);
             reply.status(500).send({ success: false, message: 'Server Error processing POS transaction' });
         }
@@ -287,41 +310,79 @@ async function orderRoutes(fastify, options) {
         }
     });
 
+    // MODIFIED: High-Performance Database Aggregation
     fastify.get('/api/orders/analytics', async (request, reply) => {
         try {
-            // MODIFIED: Added .lean() to prevent memory overflow during massive array operations
-            const orders = await Order.find({ status: { $in: ['Dispatched', 'Completed'] } }).lean();
-            
-            let revenueLast7Days = [0,0,0,0,0,0,0]; 
             const today = new Date();
-            today.setHours(23,59,59,999);
+            today.setHours(23, 59, 59, 999);
             const sevenDaysAgo = new Date(today);
             sevenDaysAgo.setDate(today.getDate() - 6);
-            sevenDaysAgo.setHours(0,0,0,0);
+            sevenDaysAgo.setHours(0, 0, 0, 0);
 
-            let itemFrequency = {};
-
-            orders.forEach(o => {
-                const orderDate = new Date(o.createdAt);
-                if (orderDate >= sevenDaysAgo && orderDate <= today) {
-                    const dayDiff = Math.floor((orderDate - sevenDaysAgo) / (1000 * 60 * 60 * 24));
-                    if(dayDiff >= 0 && dayDiff <= 6) {
-                        revenueLast7Days[dayDiff] += o.totalAmount;
+            // 1. Revenue Aggregation directly in MongoDB
+            const revenueAgg = await Order.aggregate([
+                {
+                    $match: {
+                        status: { $in: ['Dispatched', 'Completed'] },
+                        createdAt: { $gte: sevenDaysAgo, $lte: today }
+                    }
+                },
+                {
+                    $project: {
+                        dayDiff: {
+                            $floor: {
+                                $divide: [
+                                    { $subtract: ["$createdAt", sevenDaysAgo] },
+                                    1000 * 60 * 60 * 24
+                                ]
+                            }
+                        },
+                        totalAmount: 1
+                    }
+                },
+                {
+                    $group: {
+                        _id: "$dayDiff",
+                        dailyRevenue: { $sum: "$totalAmount" }
                     }
                 }
-                
-                o.items.forEach(i => {
-                    const key = `${i.name} (${i.selectedVariant})`;
-                    if (!itemFrequency[key]) itemFrequency[key] = { qty: 0, revenue: 0 };
-                    itemFrequency[key].qty += i.qty;
-                    itemFrequency[key].revenue += (i.price * i.qty);
-                });
+            ]);
+
+            let revenueLast7Days = [0, 0, 0, 0, 0, 0, 0];
+            revenueAgg.forEach(item => {
+                if (item._id >= 0 && item._id <= 6) {
+                    revenueLast7Days[item._id] = item.dailyRevenue;
+                }
             });
 
-            const topItems = Object.entries(itemFrequency)
-                .map(([name, stats]) => ({ name, qty: stats.qty, revenue: stats.revenue }))
-                .sort((a,b) => b.qty - a.qty)
-                .slice(0, 5); 
+            // 2. Top Items Aggregation
+            const topItemsAgg = await Order.aggregate([
+                {
+                    $match: {
+                        status: { $in: ['Dispatched', 'Completed'] },
+                        createdAt: { $gte: sevenDaysAgo, $lte: today }
+                    }
+                },
+                { $unwind: "$items" },
+                {
+                    $group: {
+                        _id: {
+                            name: "$items.name",
+                            variant: "$items.selectedVariant"
+                        },
+                        qty: { $sum: "$items.qty" },
+                        revenue: { $sum: { $multiply: ["$items.price", "$items.qty"] } }
+                    }
+                },
+                { $sort: { qty: -1 } },
+                { $limit: 5 }
+            ]);
+
+            const topItems = topItemsAgg.map(item => ({
+                name: `${item._id.name} (${item._id.variant})`,
+                qty: item.qty,
+                revenue: item.revenue
+            }));
 
             return { 
                 success: true, 
@@ -339,7 +400,6 @@ async function orderRoutes(fastify, options) {
 
     fastify.get('/api/orders/customers', async (request, reply) => {
         try {
-            // MODIFIED: Added .lean() for CRM performance processing
             const orders = await Order.find({ status: { $ne: 'Cancelled' } }).lean();
             let customers = {};
 
@@ -371,20 +431,26 @@ async function orderRoutes(fastify, options) {
         }
     });
 
+    // MODIFIED: Added graceful limit/pagination for frontend safety
     fastify.get('/api/orders', async (request, reply) => {
         try {
-            // MODIFIED: Added .lean() to speed up history fetching
-            const orders = await Order.find().sort({ createdAt: -1 }).lean();
+            const limit = parseInt(request.query.limit);
+            let query = Order.find().sort({ createdAt: -1 });
+            
+            if (limit) {
+                query = query.limit(limit);
+            }
+
+            const orders = await query.lean();
             return { success: true, count: orders.length, data: orders };
         } catch (error) {
-            fastify.log.error('Dispatch Error:', error);
+            fastify.log.error('Fetch Error:', error);
             reply.status(500).send({ success: false, message: 'Server Error fetching orders' });
         }
     });
 
     fastify.get('/api/orders/:id', async (request, reply) => {
         try {
-            // MODIFIED: Added .lean() for faster single document retrieval
             const order = await Order.findById(request.params.id).lean();
             if (!order) return reply.status(404).send({ success: false, message: 'Order not found' });
             return { success: true, data: order };
@@ -396,7 +462,6 @@ async function orderRoutes(fastify, options) {
 
     fastify.get('/api/customers/profile/:phone', async (request, reply) => {
         try {
-            // MODIFIED: Added .lean() for faster lookup
             const cust = await Customer.findOne({ phone: request.params.phone }).lean();
             if (!cust) return { success: true, data: null }; 
             return { success: true, data: cust };
@@ -444,10 +509,8 @@ async function orderRoutes(fastify, options) {
         }
     });
 
-    // --- NEW: Phase 5 Endpoint for Khata Scanning ---
     fastify.get('/api/customers', async (request, reply) => {
         try {
-            // MODIFIED: Added .lean() to prevent memory spike
             const customers = await Customer.find({}).lean();
             return { success: true, count: customers.length, data: customers };
         } catch (error) {
