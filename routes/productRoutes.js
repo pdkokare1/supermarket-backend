@@ -1,11 +1,15 @@
 const Product = require('../models/Product');
 const Category = require('../models/Category');
+const { Parser } = require('json2csv'); // NEW: For CSV Exports
 
 async function productRoutes(fastify, options) {
     
     fastify.get('/api/products', async (request, reply) => {
         try {
-            let filter = request.query.all === 'true' ? {} : { isActive: true };
+            // MODIFIED (Approved): Filters out archived products to support Soft Deletes
+            let filter = request.query.all === 'true' 
+                ? { isArchived: { $ne: true } } 
+                : { isActive: true, isArchived: { $ne: true } };
             
             if (request.query.search) { 
                 filter.$or = [ 
@@ -87,6 +91,25 @@ async function productRoutes(fastify, options) {
         }
     });
 
+    // NEW: Feature B (Soft Delete / Archive endpoint)
+    fastify.put('/api/products/:id/archive', async (request, reply) => {
+        try {
+            const product = await Product.findById(request.params.id);
+            if (!product) {
+                return reply.status(404).send({ success: false, message: 'Not found' });
+            }
+            
+            product.isArchived = true; 
+            product.isActive = false; // Auto-disable when archived
+            await product.save();
+            
+            return { success: true, message: `Product archived securely`, data: product };
+        } catch (error) { 
+            fastify.log.error(error); 
+            reply.status(500).send({ success: false, message: 'Server Error' }); 
+        }
+    });
+
     fastify.put('/api/products/:id/restock', async (request, reply) => {
         try {
             const { variantId, invoiceNumber, addedQuantity, purchasingPrice, newSellingPrice } = request.body;
@@ -157,7 +180,6 @@ async function productRoutes(fastify, options) {
                 return reply.status(400).send({ success: false, message: 'Invalid format' });
             }
             
-            // MODIFIED: Replaced individual loops with high-speed MongoDB BulkWrite
             const bulkOps = products.map(p => ({
                 updateOne: {
                     filter: { name: p.name },
@@ -205,6 +227,40 @@ async function productRoutes(fastify, options) {
         }
     });
 
+    // NEW: Feature A (Products CSV Export endpoint)
+    fastify.get('/api/products/export', async (request, reply) => {
+        try {
+            const products = await Product.find({ isArchived: { $ne: true } }).lean();
+            const flatProducts = [];
+
+            products.forEach(p => {
+                p.variants.forEach(v => {
+                    flatProducts.push({
+                        Name: p.name,
+                        Category: p.category,
+                        Brand: p.brand,
+                        Distributor: p.distributorName,
+                        Variant: v.weightOrVolume,
+                        Price: v.price,
+                        Stock: v.stock,
+                        SKU: v.sku,
+                        Status: p.isActive ? 'Active' : 'Inactive'
+                    });
+                });
+            });
+
+            const json2csvParser = new Parser();
+            const csv = json2csvParser.parse(flatProducts);
+
+            reply.header('Content-Type', 'text/csv');
+            reply.header('Content-Disposition', `attachment; filename="products_export_${new Date().toISOString().split('T')[0]}.csv"`);
+            return reply.send(csv);
+        } catch (error) {
+            fastify.log.error('Export Error:', error);
+            reply.status(500).send({ success: false, message: 'Server Error exporting products' });
+        }
+    });
+
     fastify.get('/api/seed', async (request, reply) => {
         try {
             await Category.deleteMany({});
@@ -226,36 +282,6 @@ async function productRoutes(fastify, options) {
                     name: 'Britannia Fresh White Bread', category: 'Dairy & Breakfast', brand: 'Britannia', searchTags: 'bread, bakery, toast, breakfast, promo-morning', imageUrl: 'https://m.media-amazon.com/images/I/71I3uXhYyPL._SL1500_.jpg', 
                     hsnCode: '1905', taxRate: 0, taxType: 'Inclusive',
                     variants: [{ weightOrVolume: '400 g', price: 45, stock: 30, sku: '8901063132030' }] 
-                },
-                { 
-                    name: 'Lay\'s Magic Masala Chips', category: 'Snacks & Munchies', brand: 'Lay\'s', searchTags: 'chips, namkeen, blue, potato, snack, promo-snack', imageUrl: 'https://m.media-amazon.com/images/I/71XmZ7Kq9vL._SL1500_.jpg', 
-                    hsnCode: '2005', taxRate: 12, taxType: 'Inclusive',
-                    variants: [{ weightOrVolume: '50 g', price: 20, stock: 2, lowStockThreshold: 5, sku: '8901491100512' }] 
-                },
-                { 
-                    name: 'Haldiram\'s Aloo Bhujia', category: 'Snacks & Munchies', brand: 'Haldiram', searchTags: 'namkeen, spicy, snack, bhujiya, promo-snack', imageUrl: 'https://m.media-amazon.com/images/I/71+G94Y0U6L._SL1500_.jpg', 
-                    hsnCode: '2106', taxRate: 12, taxType: 'Inclusive',
-                    variants: [{ weightOrVolume: '200 g', price: 55, stock: 80, sku: '8904004400263' }] 
-                },
-                { 
-                    name: 'Pepsi Soft Drink', category: 'Cold Drinks & Juices', brand: 'Pepsi', searchTags: 'cold drink, soda, cola, beverage, promo-summer', imageUrl: 'https://m.media-amazon.com/images/I/51r5I9fWqFL._SL1200_.jpg', 
-                    hsnCode: '2202', taxRate: 28, taxType: 'Inclusive',
-                    variants: [{ weightOrVolume: '750 ml', price: 40, stock: 80, sku: '8902080204144' }] 
-                },
-                { 
-                    name: 'Pears Pure & Gentle Soap', category: 'Personal Care', brand: 'Pears', searchTags: 'bath, body, wash, hygiene', imageUrl: 'https://m.media-amazon.com/images/I/61A83wYQ4oL._SL1500_.jpg', 
-                    hsnCode: '3401', taxRate: 18, taxType: 'Inclusive',
-                    variants: [{ weightOrVolume: '125 g', price: 55, stock: 65, sku: '8901030739941' }] 
-                },
-                { 
-                    name: 'Vim Dishwash Gel Lemon', category: 'Cleaning Essentials', brand: 'Vim', searchTags: 'clean, dishes, liquid, kitchen', imageUrl: 'https://m.media-amazon.com/images/I/51I7s-r-TCL._SL1000_.jpg', 
-                    hsnCode: '3402', taxRate: 18, taxType: 'Inclusive',
-                    variants: [{ weightOrVolume: '250 ml', price: 55, stock: 40, sku: '8901030739942' }] 
-                },
-                { 
-                    name: 'Aashirvaad Shudh Chakki Atta', category: 'Grocery & Kitchen', brand: 'Aashirvaad', searchTags: 'flour, wheat, roti, chapati', imageUrl: 'https://m.media-amazon.com/images/I/81kIitI3KPL._SL1500_.jpg', 
-                    hsnCode: '1101', taxRate: 5, taxType: 'Inclusive',
-                    variants: [{ weightOrVolume: '5 kg', price: 230, stock: 60, sku: '8901725132514' }] 
                 }
             ];
             await Product.insertMany(sampleProducts);
