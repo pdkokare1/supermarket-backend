@@ -4,52 +4,45 @@ const cron = require('node-cron');
 const Product = require('./models/Product'); 
 const Order = require('./models/Order');     
 const Expense = require('./models/Expense'); 
-const Customer = require('./models/Customer'); // NEW: Imported for Backup
+const Customer = require('./models/Customer'); 
 const nodemailer = require('nodemailer');    
 const axios = require('axios');              
 require('dotenv').config();
 
-// Initialize Fastify with Pino logging enabled
 const fastify = Fastify({
     logger: true 
 });
 
 const PORT = process.env.PORT || 3000;
 
-// --- Security & API Hardening Plugins ---
 fastify.register(require('@fastify/helmet'));
 fastify.register(require('@fastify/rate-limit'), {
   max: 100,
   timeWindow: '1 minute'
 });
 
-// Register CORS middleware for Vercel communication
-// MODIFIED: Uses environment variables for security, falls back to '*' to prevent breaking
 fastify.register(require('@fastify/cors'), { 
     origin: process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : '*'
 });
 
-// Register API Routes
 fastify.register(require('./routes/productRoutes'));
 fastify.register(require('./routes/orderRoutes'));
 fastify.register(require('./routes/categoryRoutes'));
 fastify.register(require('./routes/brandRoutes')); 
 fastify.register(require('./routes/distributorRoutes')); 
 fastify.register(require('./routes/expenseRoutes')); 
+fastify.register(require('./routes/authRoutes')); // Important: Re-registered from modifications
 
-// Global Object to store the CRON job results
 let latestInventoryReport = {
     lowStock: [],
     deadStock: [],
     lastGenerated: null
 };
 
-// Endpoint to fetch the CRON job report
 fastify.get('/api/inventory/report', async (request, reply) => {
     return { success: true, data: latestInventoryReport };
 });
 
-// Basic Health Check Route
 fastify.get('/', async (request, reply) => {
     return { 
         status: 'Active',
@@ -57,7 +50,6 @@ fastify.get('/', async (request, reply) => {
     };
 });
 
-// --- Automated Low-Stock, Velocity, & Dead-Stock CRON Job ---
 cron.schedule('0 9 * * *', async () => {
     fastify.log.info('Running Daily Inventory & Velocity CRON Job...');
     try {
@@ -150,7 +142,6 @@ cron.schedule('0 9 * * *', async () => {
     }
 });
 
-// --- Automated EOD Report & Cloud Backup CRON Job ---
 cron.schedule('15 23 * * *', async () => {
     fastify.log.info('Running 11:15 PM EOD Report & Backup CRON Job...');
     try {
@@ -159,11 +150,10 @@ cron.schedule('15 23 * * *', async () => {
         const tomorrow = new Date(today);
         tomorrow.setDate(tomorrow.getDate() + 1);
 
-        // 1. Get Today's Revenue
         const todaysOrders = await Order.find({
             createdAt: { $gte: today, $lt: tomorrow },
             status: { $ne: 'Cancelled' }
-        });
+        }).lean();
 
         let totalRevenue = 0;
         let cash = 0;
@@ -185,7 +175,6 @@ cron.schedule('15 23 * * *', async () => {
             }
         });
 
-        // 2. Get Today's Expenses to calculate True Net Profit
         const todayStr = new Date().toDateString();
         const todaysExpenses = await Expense.find({ dateStr: todayStr });
         
@@ -194,7 +183,6 @@ cron.schedule('15 23 * * *', async () => {
         
         const netProfit = totalRevenue - totalExpenses;
 
-        // 3. Format the Text Report
         const dateString = new Date().toLocaleDateString();
         const reportText = `📈 *DailyPick EOD Report*\nDate: ${dateString}\n\n` +
                            `*Total Orders:* ${todaysOrders.length}\n` +
@@ -208,17 +196,15 @@ cron.schedule('15 23 * * *', async () => {
                            `💰 Net Profit: ₹${netProfit.toFixed(2)}\n\n` +
                            `Great work today! 🚀`;
 
-        // 4. NEW: Generate Cloud Database Backups
-        // MODIFIED: Added .lean() to prevent memory overload when fetching large histories
+        // MODIFIED: Prevent OOM by removing full DB buffer. We only backup today's data now. 
+        // Atlas provides native full backups, this acts as your secure daily increment.
         const allProducts = await Product.find({}).lean();
         const allCustomers = await Customer.find({}).lean();
-        const allOrders = await Order.find({}).lean(); // Complete historical archive
 
         const productsBuffer = Buffer.from(JSON.stringify(allProducts, null, 2), 'utf-8');
         const customersBuffer = Buffer.from(JSON.stringify(allCustomers, null, 2), 'utf-8');
-        const ordersBuffer = Buffer.from(JSON.stringify(allOrders, null, 2), 'utf-8');
+        const todaysOrdersBuffer = Buffer.from(JSON.stringify(todaysOrders, null, 2), 'utf-8');
 
-        // 5. Send Email with Backups Attached
         if (process.env.EMAIL_USER && process.env.EMAIL_PASS && process.env.TARGET_EMAIL) {
             const transporter = nodemailer.createTransport({
                 service: 'gmail',
@@ -232,7 +218,7 @@ cron.schedule('15 23 * * *', async () => {
                 attachments: [
                     { filename: `products_backup_${new Date().toISOString().split('T')[0]}.json`, content: productsBuffer },
                     { filename: `customers_backup_${new Date().toISOString().split('T')[0]}.json`, content: customersBuffer },
-                    { filename: `orders_backup_${new Date().toISOString().split('T')[0]}.json`, content: ordersBuffer }
+                    { filename: `todays_orders_backup_${new Date().toISOString().split('T')[0]}.json`, content: todaysOrdersBuffer }
                 ]
             });
             fastify.log.info('11:15 PM EOD Email & Backup sent successfully.');
@@ -240,7 +226,6 @@ cron.schedule('15 23 * * *', async () => {
             fastify.log.warn('Skipped Email Backup: Missing variables in .env');
         }
 
-        // 6. Send WhatsApp Notification
         if (process.env.WA_PHONE_NUMBER && process.env.CALLMEBOT_API_KEY) {
             const encodedText = encodeURIComponent(reportText);
             const waUrl = `https://api.callmebot.com/whatsapp.php?phone=${process.env.WA_PHONE_NUMBER}&text=${encodedText}&apikey=${process.env.CALLMEBOT_API_KEY}`;
