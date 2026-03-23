@@ -289,7 +289,8 @@ async function orderRoutes(fastify, options) {
 
     fastify.get('/api/orders/analytics', async (request, reply) => {
         try {
-            const orders = await Order.find({ status: { $in: ['Dispatched', 'Completed'] } });
+            // MODIFIED: Added .lean() to prevent memory overflow during massive array operations
+            const orders = await Order.find({ status: { $in: ['Dispatched', 'Completed'] } }).lean();
             
             let revenueLast7Days = [0,0,0,0,0,0,0]; 
             const today = new Date();
@@ -338,7 +339,8 @@ async function orderRoutes(fastify, options) {
 
     fastify.get('/api/orders/customers', async (request, reply) => {
         try {
-            const orders = await Order.find({ status: { $ne: 'Cancelled' } });
+            // MODIFIED: Added .lean() for CRM performance processing
+            const orders = await Order.find({ status: { $ne: 'Cancelled' } }).lean();
             let customers = {};
 
             orders.forEach(o => {
@@ -371,7 +373,8 @@ async function orderRoutes(fastify, options) {
 
     fastify.get('/api/orders', async (request, reply) => {
         try {
-            const orders = await Order.find().sort({ createdAt: -1 });
+            // MODIFIED: Added .lean() to speed up history fetching
+            const orders = await Order.find().sort({ createdAt: -1 }).lean();
             return { success: true, count: orders.length, data: orders };
         } catch (error) {
             fastify.log.error('Dispatch Error:', error);
@@ -381,7 +384,8 @@ async function orderRoutes(fastify, options) {
 
     fastify.get('/api/orders/:id', async (request, reply) => {
         try {
-            const order = await Order.findById(request.params.id);
+            // MODIFIED: Added .lean() for faster single document retrieval
+            const order = await Order.findById(request.params.id).lean();
             if (!order) return reply.status(404).send({ success: false, message: 'Order not found' });
             return { success: true, data: order };
         } catch (error) {
@@ -392,7 +396,8 @@ async function orderRoutes(fastify, options) {
 
     fastify.get('/api/customers/profile/:phone', async (request, reply) => {
         try {
-            const cust = await Customer.findOne({ phone: request.params.phone });
+            // MODIFIED: Added .lean() for faster lookup
+            const cust = await Customer.findOne({ phone: request.params.phone }).lean();
             if (!cust) return { success: true, data: null }; 
             return { success: true, data: cust };
         } catch (error) {
@@ -442,7 +447,8 @@ async function orderRoutes(fastify, options) {
     // --- NEW: Phase 5 Endpoint for Khata Scanning ---
     fastify.get('/api/customers', async (request, reply) => {
         try {
-            const customers = await Customer.find({});
+            // MODIFIED: Added .lean() to prevent memory spike
+            const customers = await Customer.find({}).lean();
             return { success: true, count: customers.length, data: customers };
         } catch (error) {
             fastify.log.error('CRM Error:', error);
