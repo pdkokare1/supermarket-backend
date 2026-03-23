@@ -1,12 +1,12 @@
 const Product = require('../models/Product');
 const Category = require('../models/Category');
-const { Parser } = require('json2csv'); // NEW: For CSV Exports
+const { Parser } = require('json2csv'); 
 
 async function productRoutes(fastify, options) {
     
+    // Public/Cashier accessible - No admin restriction needed here
     fastify.get('/api/products', async (request, reply) => {
         try {
-            // MODIFIED (Approved): Filters out archived products to support Soft Deletes
             let filter = request.query.all === 'true' 
                 ? { isArchived: { $ne: true } } 
                 : { isActive: true, isArchived: { $ne: true } };
@@ -29,7 +29,6 @@ async function productRoutes(fastify, options) {
                 filter.distributorName = request.query.distributor;
             }
 
-            // --- NEW: Server-Side Stock Status Filtering (Fixes Pagination Bug) ---
             if (request.query.stockStatus === 'out') {
                 filter['variants.stock'] = { $lte: 0 };
             } else if (request.query.stockStatus === 'dead') {
@@ -61,7 +60,6 @@ async function productRoutes(fastify, options) {
                 query = query.skip(skip).limit(limit); 
             }
             
-            // --- OPTIMIZATION: Concurrent Database Queries for faster load times ---
             const [products, total] = await Promise.all([
                 query.lean(),
                 Product.countDocuments(filter)
@@ -74,7 +72,8 @@ async function productRoutes(fastify, options) {
         }
     });
 
-    fastify.post('/api/products', async (request, reply) => {
+    // --- SECURED: Only Admins can create products ---
+    fastify.post('/api/products', { preHandler: [fastify.verifyAdmin] }, async (request, reply) => {
         try {
             const { name, category, brand, distributorName, imageUrl, searchTags, variants, hsnCode, taxRate, taxType } = request.body;
             
@@ -90,7 +89,8 @@ async function productRoutes(fastify, options) {
         }
     });
 
-    fastify.put('/api/products/:id', async (request, reply) => {
+    // --- SECURED: Only Admins can edit products ---
+    fastify.put('/api/products/:id', { preHandler: [fastify.verifyAdmin] }, async (request, reply) => {
         try {
             const { name, category, brand, distributorName, imageUrl, searchTags, variants, hsnCode, taxRate, taxType } = request.body;
             
@@ -116,7 +116,8 @@ async function productRoutes(fastify, options) {
         }
     });
 
-    fastify.put('/api/products/:id/archive', async (request, reply) => {
+    // --- SECURED: Only Admins can archive products ---
+    fastify.put('/api/products/:id/archive', { preHandler: [fastify.verifyAdmin] }, async (request, reply) => {
         try {
             const product = await Product.findById(request.params.id);
             if (!product) {
@@ -134,7 +135,8 @@ async function productRoutes(fastify, options) {
         }
     });
 
-    fastify.put('/api/products/:id/restock', async (request, reply) => {
+    // --- SECURED: Only Admins can process restocks ---
+    fastify.put('/api/products/:id/restock', { preHandler: [fastify.verifyAdmin] }, async (request, reply) => {
         try {
             const { variantId, invoiceNumber, addedQuantity, purchasingPrice, newSellingPrice } = request.body;
             
@@ -166,7 +168,8 @@ async function productRoutes(fastify, options) {
         }
     });
 
-    fastify.put('/api/products/:id/rtv', async (request, reply) => {
+    // --- SECURED: Only Admins can process Returns To Vendor ---
+    fastify.put('/api/products/:id/rtv', { preHandler: [fastify.verifyAdmin] }, async (request, reply) => {
         try {
             const { variantId, distributorName, returnedQuantity, refundAmount, reason } = request.body;
             
@@ -197,7 +200,8 @@ async function productRoutes(fastify, options) {
         }
     });
 
-    fastify.post('/api/products/bulk', async (request, reply) => {
+    // --- SECURED: Bulk actions restricted to Admin ---
+    fastify.post('/api/products/bulk', { preHandler: [fastify.verifyAdmin] }, async (request, reply) => {
         try {
             const { products } = request.body;
             if (!Array.isArray(products)) {
@@ -234,7 +238,8 @@ async function productRoutes(fastify, options) {
         }
     });
 
-    fastify.put('/api/products/:id/toggle', async (request, reply) => {
+    // --- SECURED: Active toggle restricted to Admin ---
+    fastify.put('/api/products/:id/toggle', { preHandler: [fastify.verifyAdmin] }, async (request, reply) => {
         try {
             const product = await Product.findById(request.params.id);
             if (!product) {
