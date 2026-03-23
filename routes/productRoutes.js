@@ -28,6 +28,28 @@ async function productRoutes(fastify, options) {
             if (request.query.distributor && request.query.distributor !== 'All') {
                 filter.distributorName = request.query.distributor;
             }
+
+            // --- NEW: Server-Side Stock Status Filtering (Fixes Pagination Bug) ---
+            if (request.query.stockStatus === 'out') {
+                filter['variants.stock'] = { $lte: 0 };
+            } else if (request.query.stockStatus === 'dead') {
+                filter['variants.stock'] = { $gt: 15 };
+            } else if (request.query.stockStatus === 'low') {
+                filter.$expr = {
+                    $anyElementTrue: {
+                        $map: {
+                            input: "$variants",
+                            as: "v",
+                            in: {
+                                $and: [
+                                    { $gt: ["$$v.stock", 0] },
+                                    { $lte: ["$$v.stock", { $ifNull: ["$$v.lowStockThreshold", 5] }] }
+                                ]
+                            }
+                        }
+                    }
+                };
+            }
             
             const page = parseInt(request.query.page) || 1; 
             const limit = parseInt(request.query.limit); 
@@ -39,8 +61,11 @@ async function productRoutes(fastify, options) {
                 query = query.skip(skip).limit(limit); 
             }
             
-            const products = await query.lean(); 
-            const total = await Product.countDocuments(filter);
+            // --- OPTIMIZATION: Concurrent Database Queries for faster load times ---
+            const [products, total] = await Promise.all([
+                query.lean(),
+                Product.countDocuments(filter)
+            ]);
             
             return { success: true, count: products.length, total: total, data: products };
         } catch (error) { 
@@ -91,7 +116,6 @@ async function productRoutes(fastify, options) {
         }
     });
 
-    // NEW: Feature B (Soft Delete / Archive endpoint)
     fastify.put('/api/products/:id/archive', async (request, reply) => {
         try {
             const product = await Product.findById(request.params.id);
@@ -100,7 +124,7 @@ async function productRoutes(fastify, options) {
             }
             
             product.isArchived = true; 
-            product.isActive = false; // Auto-disable when archived
+            product.isActive = false; 
             await product.save();
             
             return { success: true, message: `Product archived securely`, data: product };
@@ -227,7 +251,6 @@ async function productRoutes(fastify, options) {
         }
     });
 
-    // NEW: Feature A (Products CSV Export endpoint)
     fastify.get('/api/products/export', async (request, reply) => {
         try {
             const products = await Product.find({ isArchived: { $ne: true } }).lean();
