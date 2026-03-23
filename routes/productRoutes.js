@@ -35,7 +35,8 @@ async function productRoutes(fastify, options) {
                 query = query.skip(skip).limit(limit); 
             }
             
-            const products = await query; 
+            // MODIFIED: Added .lean() for significantly faster read performance
+            const products = await query.lean(); 
             const total = await Product.countDocuments(filter);
             
             return { success: true, count: products.length, total: total, data: products };
