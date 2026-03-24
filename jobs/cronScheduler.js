@@ -8,6 +8,11 @@ const nodemailer = require('nodemailer');
 const axios = require('axios');              
 const cloudinary = require('cloudinary').v2; 
 
+// --- NEW IMPORTS FOR MEMORY OPTIMIZATION ---
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+
 cloudinary.config({
     cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
     api_key: process.env.CLOUDINARY_API_KEY,
@@ -40,6 +45,41 @@ async function runWithLock(jobName, fastify, task) {
         if (CronLock) await CronLock.updateOne({ jobName }, { $set: { lockedAt: null } }).catch(() => true);
     }
 }
+
+// --- OPTIMIZATION HELPERS: Cursor to File Stream ---
+// Writes large collections directly to disk in chunks to avoid Out-Of-Memory crashes
+const createBackupFile = async (model, filename) => {
+    const filePath = path.join(os.tmpdir(), filename);
+    const writeStream = fs.createWriteStream(filePath);
+    writeStream.write('[\n');
+    const cursor = model.find({}).lean().cursor();
+    
+    let isFirst = true;
+    for await (const doc of cursor) {
+        if (!isFirst) writeStream.write(',\n');
+        writeStream.write(JSON.stringify(doc));
+        isFirst = false;
+    }
+    
+    writeStream.write('\n]');
+    writeStream.end();
+    
+    await new Promise(resolve => writeStream.on('finish', resolve));
+    return filePath;
+};
+
+const uploadFileToCloudinary = (filePath, filename) => {
+    return new Promise((resolve, reject) => {
+        cloudinary.uploader.upload(filePath, { 
+            resource_type: 'raw', 
+            public_id: `backups/${filename}`, 
+            format: 'json' 
+        }, (error, result) => {
+            if (error) reject(error);
+            else resolve(result.secure_url);
+        });
+    });
+};
 
 module.exports = function(fastify, updateInventoryReport) {
     
@@ -85,17 +125,6 @@ module.exports = function(fastify, updateInventoryReport) {
                 const dateAgo = new Date();
                 dateAgo.setDate(dateAgo.getDate() - velocityDays);
 
-                // --- OPTIMIZED LOGIC: MongoDB Aggregation Pipeline ---
-                // --- OLD CODE (KEPT FOR CONSULTATION) ---
-                // const recentOrders = await Order.find({ createdAt: { $gte: dateAgo }, status: { $in: ['Completed', 'Dispatched'] } }).lean();
-                // let variantSales = {}; 
-                // recentOrders.forEach(order => {
-                //     order.items.forEach(item => {
-                //         if (item.variantId) variantSales[item.variantId] = (variantSales[item.variantId] || 0) + item.qty;
-                //     });
-                // });
-
-                // NEW CODE: Do the math inside the database instead of the server RAM
                 const velocityAgg = await Order.aggregate([
                     { 
                         $match: { 
@@ -266,66 +295,64 @@ module.exports = function(fastify, updateInventoryReport) {
                                  `📉 Total Expenses: ₹${totalExpenses.toFixed(2)}\n` +
                                  `💰 Net Profit: ₹${netProfit.toFixed(2)}\n\n`;
 
-                const allProducts = await Product.find({}).lean();
-                const allCustomers = await Customer.find({}).lean();
-
-                const productsBuffer = Buffer.from(JSON.stringify(allProducts, null, 2), 'utf-8');
-                const customersBuffer = Buffer.from(JSON.stringify(allCustomers, null, 2), 'utf-8');
-                const todaysOrdersBuffer = Buffer.from(JSON.stringify(todaysOrders, null, 2), 'utf-8');
-
-                const uploadToCloudinary = (buffer, filename) => {
-                    return new Promise((resolve, reject) => {
-                        const stream = cloudinary.uploader.upload_stream(
-                            { resource_type: 'raw', public_id: `backups/${filename}`, format: 'json' },
-                            (error, result) => {
-                                if (error) reject(error);
-                                else resolve(result.secure_url);
-                            }
-                        );
-                        stream.end(buffer);
-                    });
-                };
-
+                const datePrefix = new Date().toISOString().split('T')[0];
                 let emailAppend = '';
+
                 try {
-                    const datePrefix = new Date().toISOString().split('T')[0];
+                    // --- OPTIMIZATION REPLACEMENT: Buffer replaced with streaming file writes ---
+                    const productsPath = await createBackupFile(Product, `products_${datePrefix}.json`);
+                    const customersPath = await createBackupFile(Customer, `customers_${datePrefix}.json`);
+                    
+                    const ordersPath = path.join(os.tmpdir(), `orders_${datePrefix}.json`);
+                    fs.writeFileSync(ordersPath, JSON.stringify(todaysOrders, null, 2));
+
                     const [prodUrl, custUrl, orderUrl] = await Promise.all([
-                        uploadToCloudinary(productsBuffer, `products_${datePrefix}`),
-                        uploadToCloudinary(customersBuffer, `customers_${datePrefix}`),
-                        uploadToCloudinary(todaysOrdersBuffer, `orders_${datePrefix}`)
+                        uploadFileToCloudinary(productsPath, `products_${datePrefix}`),
+                        uploadFileToCloudinary(customersPath, `customers_${datePrefix}`),
+                        uploadFileToCloudinary(ordersPath, `orders_${datePrefix}`)
                     ]);
+
+                    // Cleanup temporary files
+                    fs.unlinkSync(productsPath);
+                    fs.unlinkSync(customersPath);
+                    fs.unlinkSync(ordersPath);
 
                     emailAppend = `\n\nSecure Database Backups (Valid via Cloudinary):\n📦 Products: ${prodUrl}\n👥 Customers: ${custUrl}\n🛒 Orders: ${orderUrl}`;
                 } catch (cloudinaryErr) {
                     fastify.log.error('Cloudinary Backup Failed:', cloudinaryErr);
-                    emailAppend = `\n\n(Warning: Secure Cloudinary Backups failed. Check API Keys in Railway.)`;
+                    emailAppend = `\n\n(Warning: Secure Cloudinary Backups failed. Check API Keys.)`;
                 }
 
+                // --- ISOLATION: Try/Catch wrappers around external services ---
                 if (process.env.EMAIL_USER && process.env.EMAIL_PASS && process.env.TARGET_EMAIL) {
-                    const transporter = nodemailer.createTransport({
-                        service: 'gmail',
-                        auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS }
-                    });
-                    
-                    await transporter.sendMail({
-                        from: `"DailyPick Server" <${process.env.EMAIL_USER}>`,
-                        to: process.env.TARGET_EMAIL,
-                        subject: `EOD Report & Backup: ₹${netProfit.toFixed(2)} Net Profit`, 
-                        text: reportText + emailAppend
-                    });
-                    fastify.log.info('11:15 PM EOD Email sent successfully.');
-                } else {
-                    fastify.log.warn('Skipped Email Backup: Missing variables in .env');
+                    try {
+                        const transporter = nodemailer.createTransport({
+                            service: 'gmail',
+                            auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS }
+                        });
+                        
+                        await transporter.sendMail({
+                            from: `"DailyPick Server" <${process.env.EMAIL_USER}>`,
+                            to: process.env.TARGET_EMAIL,
+                            subject: `EOD Report & Backup: ₹${netProfit.toFixed(2)} Net Profit`, 
+                            text: reportText + emailAppend
+                        });
+                        fastify.log.info('11:15 PM EOD Email sent successfully.');
+                    } catch (emailErr) {
+                        fastify.log.error('Failed to send EOD Email:', emailErr);
+                    }
                 }
 
                 if (process.env.WA_PHONE_NUMBER && process.env.CALLMEBOT_API_KEY) {
-                    const encodedText = encodeURIComponent(reportText + `Great work today! 🚀`);
-                    const waUrl = `https://api.callmebot.com/whatsapp.php?phone=${process.env.WA_PHONE_NUMBER}&text=${encodedText}&apikey=${process.env.CALLMEBOT_API_KEY}`;
-                    
-                    await axios.get(waUrl);
-                    fastify.log.info('EOD WhatsApp sent successfully.');
-                } else {
-                    fastify.log.warn('Skipped WhatsApp EOD: Missing variables in .env');
+                    try {
+                        const encodedText = encodeURIComponent(reportText + `Great work today! 🚀`);
+                        const waUrl = `https://api.callmebot.com/whatsapp.php?phone=${process.env.WA_PHONE_NUMBER}&text=${encodedText}&apikey=${process.env.CALLMEBOT_API_KEY}`;
+                        
+                        await axios.get(waUrl);
+                        fastify.log.info('EOD WhatsApp sent successfully.');
+                    } catch (waErr) {
+                        fastify.log.error('Failed to send EOD WhatsApp:', waErr);
+                    }
                 }
 
             } catch (err) {
