@@ -3,8 +3,9 @@ const Order = require('../models/Order');
 const Product = require('../models/Product');
 const Customer = require('../models/Customer');
 const { Parser } = require('json2csv'); 
+const axios = require('axios'); // NEW: For WhatsApp Receipts
 
-// --- NEW OPTIMIZED LOGIC: Multi-Server Redis Pub/Sub ---
+// --- OPTIMIZED LOGIC: Multi-Server Redis Pub/Sub ---
 let Redis = null;
 let redisPub = null;
 let redisSub = null;
@@ -60,7 +61,7 @@ setInterval(() => {
     }
 }, 15000);
 
-// --- NEW OPTIMIZED LOGIC: Fastify Schema Validation ---
+// --- OPTIMIZED LOGIC: Fastify Schema Validation ---
 const posCheckoutSchema = {
     schema: {
         body: {
@@ -171,6 +172,13 @@ async function orderRoutes(fastify, options) {
                 });
             }
 
+            // --- NEW FUNCTIONALITY: Automated WhatsApp Delivery Receipts ---
+            if (customerPhone && customerPhone.length >= 10 && process.env.CALLMEBOT_API_KEY && process.env.WA_PHONE_NUMBER) {
+                const msg = `DailyPick Order Received! 🛒\nOrder ID: ${newOrder._id.toString().substring(0,8)}\nTotal: ₹${totalAmount}\nDelivery: ${scheduleTime}\nThanks for shopping!`;
+                const waUrl = `https://api.callmebot.com/whatsapp.php?phone=${customerPhone}&text=${encodeURIComponent(msg)}&apikey=${process.env.CALLMEBOT_API_KEY}`;
+                axios.get(waUrl).catch(() => {}); // Fire and forget so we don't slow down checkout
+            }
+
             return { success: true, message: 'Order Placed Successfully', orderId: newOrder._id };
         } catch (error) {
             fastify.log.error('Checkout Error:', error);
@@ -254,6 +262,14 @@ async function orderRoutes(fastify, options) {
             await newOrder.save({ session });
             await session.commitTransaction();
             session.endSession();
+
+            // --- NEW FUNCTIONALITY: Automated WhatsApp POS Receipts ---
+            if (customerPhone && customerPhone.length >= 10 && process.env.CALLMEBOT_API_KEY && process.env.WA_PHONE_NUMBER) {
+                const loyaltyMsg = pointsRedeemed > 0 ? ` Points Redeemed: ${pointsRedeemed}.` : '';
+                const msg = `Thank you for shopping at DailyPick! 🛒\nTotal: ₹${totalAmount}\n${loyaltyMsg}\nVisit again!`;
+                const waUrl = `https://api.callmebot.com/whatsapp.php?phone=${customerPhone}&text=${encodeURIComponent(msg)}&apikey=${process.env.CALLMEBOT_API_KEY}`;
+                axios.get(waUrl).catch(() => {}); // Fire and forget
+            }
 
             return { success: true, message: 'POS Transaction Complete', orderId: newOrder._id, orderData: newOrder };
         } catch (error) {
@@ -492,13 +508,16 @@ async function orderRoutes(fastify, options) {
         }
     });
 
+    // --- OPTIMIZED: Paginated Fetch Endpoint ---
     fastify.get('/api/orders', async (request, reply) => {
         try {
             let filter = {};
 
+            // 1. Apply Server-Side Tab Filters
             if (request.query.tab === 'Instant') filter.deliveryType = { $ne: 'Routine' };
             if (request.query.tab === 'Routine') filter.deliveryType = 'Routine';
 
+            // 2. Apply Server-Side Date Filters
             const today = new Date();
             today.setHours(0, 0, 0, 0);
             const yesterday = new Date(today);
@@ -524,6 +543,7 @@ async function orderRoutes(fastify, options) {
                 query = query.skip(skip).limit(limit);
             }
 
+            // Execute paginated search + global stats concurrently for speed
             const [orders, total, pendingOrders] = await Promise.all([
                 query.lean(),
                 Order.countDocuments(filter),
