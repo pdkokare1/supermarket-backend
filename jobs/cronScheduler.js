@@ -6,26 +6,21 @@ const Expense = require('../models/Expense');
 const Customer = require('../models/Customer'); 
 const nodemailer = require('nodemailer');    
 const axios = require('axios');              
-const cloudinary = require('cloudinary').v2; // NEW: Cloudinary Integration
+const cloudinary = require('cloudinary').v2; 
 
-// --- NEW FUNCTIONALITY: Cloudinary Configuration ---
 cloudinary.config({
     cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
     api_key: process.env.CLOUDINARY_API_KEY,
     api_secret: process.env.CLOUDINARY_API_SECRET
 });
 
-// --- NEW FUNCTIONALITY: Distributed Concurrency Lock ---
-// Prevents duplicate cron executions if Railway scales to multiple instances
 async function runWithLock(jobName, fastify, task) {
     try {
         const lockSchema = new mongoose.Schema({ jobName: { type: String, unique: true }, lockedAt: Date });
         const CronLock = mongoose.models.CronLock || mongoose.model('CronLock', lockSchema);
         
-        // Ensure lock document exists
         await CronLock.updateOne({ jobName }, { $setOnInsert: { jobName, lockedAt: null } }, { upsert: true }).catch(() => true);
 
-        // Try to acquire the lock (expires after 10 minutes in case of server crash)
         const tenMinsAgo = new Date(Date.now() - 10 * 60 * 1000);
         const lock = await CronLock.findOneAndUpdate(
             { jobName, $or: [{ lockedAt: null }, { lockedAt: { $lt: tenMinsAgo } }] },
@@ -38,8 +33,6 @@ async function runWithLock(jobName, fastify, task) {
         }
 
         await task();
-
-        // Release the lock
         await CronLock.updateOne({ jobName }, { $set: { lockedAt: null } });
     } catch (error) {
         fastify.log.error(`[CRON] Lock Error in ${jobName}:`, error);
@@ -57,13 +50,6 @@ module.exports = function(fastify, updateInventoryReport) {
             try {
                 const routineOrders = await Order.find({ deliveryType: 'Routine', status: { $ne: 'Cancelled' } }).lean();
                 
-                // --- OLD CODE (KEPT FOR CONSULTATION) ---
-                // for (const ro of routineOrders) {
-                //     const newOrder = new Order({ ... });
-                //     await newOrder.save();
-                // }
-
-                // OPTIMIZED: N+1 Query Problem Fixed with insertMany
                 if (routineOrders.length > 0) {
                     const newOrdersToInsert = routineOrders.map(ro => ({
                         customerName: ro.customerName,
@@ -79,7 +65,6 @@ module.exports = function(fastify, updateInventoryReport) {
                     
                     await Order.insertMany(newOrdersToInsert);
                 }
-
                 fastify.log.info(`Successfully generated ${routineOrders.length} routine orders for today.`);
             } catch (err) {
                 fastify.log.error('6:00 AM Routine CRON Job Error:', err);
@@ -100,18 +85,36 @@ module.exports = function(fastify, updateInventoryReport) {
                 const dateAgo = new Date();
                 dateAgo.setDate(dateAgo.getDate() - velocityDays);
 
-                const recentOrders = await Order.find({
-                    createdAt: { $gte: dateAgo },
-                    status: { $in: ['Completed', 'Dispatched'] } 
-                }).lean();
+                // --- OPTIMIZED LOGIC: MongoDB Aggregation Pipeline ---
+                // --- OLD CODE (KEPT FOR CONSULTATION) ---
+                // const recentOrders = await Order.find({ createdAt: { $gte: dateAgo }, status: { $in: ['Completed', 'Dispatched'] } }).lean();
+                // let variantSales = {}; 
+                // recentOrders.forEach(order => {
+                //     order.items.forEach(item => {
+                //         if (item.variantId) variantSales[item.variantId] = (variantSales[item.variantId] || 0) + item.qty;
+                //     });
+                // });
 
-                let variantSales = {}; 
-                recentOrders.forEach(order => {
-                    order.items.forEach(item => {
-                        if (item.variantId) {
-                            variantSales[item.variantId] = (variantSales[item.variantId] || 0) + item.qty;
-                        }
-                    });
+                // NEW CODE: Do the math inside the database instead of the server RAM
+                const velocityAgg = await Order.aggregate([
+                    { 
+                        $match: { 
+                            createdAt: { $gte: dateAgo },
+                            status: { $in: ['Completed', 'Dispatched'] }
+                        } 
+                    },
+                    { $unwind: "$items" },
+                    { 
+                        $group: { 
+                            _id: "$items.variantId", 
+                            totalSold: { $sum: "$items.qty" } 
+                        } 
+                    }
+                ]);
+
+                let variantSales = {};
+                velocityAgg.forEach(v => {
+                    if (v._id) variantSales[v._id.toString()] = v.totalSold;
                 });
 
                 const products = await Product.find({ isActive: true });
@@ -270,7 +273,6 @@ module.exports = function(fastify, updateInventoryReport) {
                 const customersBuffer = Buffer.from(JSON.stringify(allCustomers, null, 2), 'utf-8');
                 const todaysOrdersBuffer = Buffer.from(JSON.stringify(todaysOrders, null, 2), 'utf-8');
 
-                // --- NEW OPTIMIZATION: Cloudinary Raw File Uploads for Backups ---
                 const uploadToCloudinary = (buffer, filename) => {
                     return new Promise((resolve, reject) => {
                         const stream = cloudinary.uploader.upload_stream(
@@ -304,11 +306,6 @@ module.exports = function(fastify, updateInventoryReport) {
                         service: 'gmail',
                         auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS }
                     });
-                    
-                    // --- OLD CODE (KEPT FOR CONSULTATION) ---
-                    // attachments: [
-                    //     { filename: `products_backup.json`, content: productsBuffer }, ...
-                    // ]
                     
                     await transporter.sendMail({
                         from: `"DailyPick Server" <${process.env.EMAIL_USER}>`,
