@@ -76,6 +76,9 @@ fastify.register(require('./routes/brandRoutes'));
 fastify.register(require('./routes/distributorRoutes')); 
 fastify.register(require('./routes/expenseRoutes')); 
 fastify.register(require('./routes/authRoutes')); 
+// FIXED: Added missing route registrations to prevent 404 errors
+fastify.register(require('./routes/promotionRoutes')); 
+fastify.register(require('./routes/shiftRoutes'));
 
 // Global Error Handler
 fastify.setErrorHandler(function (error, request, reply) {
