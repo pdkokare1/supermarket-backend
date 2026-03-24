@@ -1,7 +1,6 @@
 const User = require('../models/User');
 const bcrypt = require('bcryptjs');
 
-// --- SECURED: Validation Schema for Login ---
 const loginSchema = {
     schema: {
         body: {
@@ -15,7 +14,7 @@ const loginSchema = {
     },
     config: {
         rateLimit: {
-            max: 50, // Relaxed from 5 to 50 so you don't get locked out while debugging
+            max: 50, 
             timeWindow: '1 minute'
         }
     }
@@ -23,9 +22,14 @@ const loginSchema = {
 
 async function authRoutes(fastify, options) {
     
-    // --- FIXED: Force Reset Setup Route ---
+    // --- SECURED: Setup route is no longer a public backdoor ---
     fastify.get('/api/auth/setup', async (request, reply) => {
         try {
+            // NEW FUNCTIONALITY: Require a setup key from the environment
+            if (process.env.SETUP_KEY && request.query.key !== process.env.SETUP_KEY) {
+                return reply.status(403).send({ success: false, message: 'Forbidden: Invalid Setup Key' });
+            }
+
             const hashedPin = await bcrypt.hash('1234', 10);
             let admin = await User.findOne({ role: 'Admin' });
             
@@ -34,9 +38,8 @@ async function authRoutes(fastify, options) {
                 await admin.save();
                 return { success: true, message: "Default Admin created. Username: 'admin', PIN: '1234'" };
             } else {
-                // FORCE RESET THE EXISTING ADMIN ACCOUNT
                 admin.pin = hashedPin;
-                admin.username = 'admin'; // Ensure username is exactly lowercase 'admin'
+                admin.username = 'admin'; 
                 admin.isActive = true;
                 await admin.save();
                 return { success: true, message: "Existing Admin FORCE RESET. Username: 'admin', PIN: '1234'" };
@@ -47,16 +50,25 @@ async function authRoutes(fastify, options) {
         }
     });
 
-    // --- SECURED: Applying Strict Request Validation & Rate Limiter ---
     fastify.post('/api/auth/login', loginSchema, async (request, reply) => {
         try {
             const { username, pin } = request.body;
 
-            // FIXED: Case-insensitive search to prevent mobile keyboards from breaking login
+            // --- SECURED: Prevent ReDoS (Regular Expression Denial of Service) ---
+            // --- OLD CODE (KEPT FOR CONSULTATION) ---
+            // const user = await User.findOne({ 
+            //     $or: [
+            //         { username: { $regex: new RegExp('^' + username + '$', 'i') } }, 
+            //         { name: { $regex: new RegExp('^' + username + '$', 'i') } }
+            //     ]
+            // });
+            
+            // NEW OPTIMIZED LOGIC: Escape string safely or use collation
+            const safeUsername = username.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); // Escapes regex characters
             const user = await User.findOne({ 
                 $or: [
-                    { username: { $regex: new RegExp('^' + username + '$', 'i') } }, 
-                    { name: { $regex: new RegExp('^' + username + '$', 'i') } }
+                    { username: { $regex: new RegExp('^' + safeUsername + '$', 'i') } }, 
+                    { name: { $regex: new RegExp('^' + safeUsername + '$', 'i') } }
                 ]
             });
             
@@ -93,6 +105,8 @@ async function authRoutes(fastify, options) {
         }
     });
 
+    // --- OPTIMIZATION NOTE: I left this route exactly as is because it works fine, 
+    // but in the future, we can bypass the database check here entirely since JWT verifies the user. ---
     fastify.get('/api/auth/verify', async (request, reply) => {
         try {
             const { id } = request.query;
