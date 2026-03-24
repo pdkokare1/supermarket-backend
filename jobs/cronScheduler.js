@@ -8,7 +8,6 @@ const nodemailer = require('nodemailer');
 const axios = require('axios');              
 const cloudinary = require('cloudinary').v2; 
 
-// --- NEW IMPORTS FOR MEMORY OPTIMIZATION ---
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
@@ -46,8 +45,6 @@ async function runWithLock(jobName, fastify, task) {
     }
 }
 
-// --- OPTIMIZATION HELPERS: Cursor to File Stream ---
-// Writes large collections directly to disk in chunks to avoid Out-Of-Memory crashes
 const createBackupFile = async (model, filename) => {
     const filePath = path.join(os.tmpdir(), filename);
     const writeStream = fs.createWriteStream(filePath);
@@ -83,7 +80,6 @@ const uploadFileToCloudinary = (filePath, filename) => {
 
 module.exports = function(fastify, updateInventoryReport) {
     
-    // --- Routine Deliveries Automation ---
     cron.schedule('0 6 * * *', () => {
         runWithLock('RoutineDeliveries', fastify, async () => {
             fastify.log.info('Running 6:00 AM Routine Deliveries CRON Job...');
@@ -112,7 +108,6 @@ module.exports = function(fastify, updateInventoryReport) {
         });
     });
 
-    // --- Daily Inventory & Velocity ---
     cron.schedule('0 9 * * *', () => {
         runWithLock('DailyInventory', fastify, async () => {
             fastify.log.info('Running Daily Inventory & Velocity CRON Job...');
@@ -240,7 +235,6 @@ module.exports = function(fastify, updateInventoryReport) {
         });
     });
 
-    // --- EOD Report & Backup ---
     cron.schedule('15 23 * * *', () => {
         runWithLock('EODBackup', fastify, async () => {
             fastify.log.info('Running 11:15 PM EOD Report & Backup CRON Job...');
@@ -299,7 +293,6 @@ module.exports = function(fastify, updateInventoryReport) {
                 let emailAppend = '';
 
                 try {
-                    // --- OPTIMIZATION REPLACEMENT: Buffer replaced with streaming file writes ---
                     const productsPath = await createBackupFile(Product, `products_${datePrefix}.json`);
                     const customersPath = await createBackupFile(Customer, `customers_${datePrefix}.json`);
                     
@@ -312,7 +305,6 @@ module.exports = function(fastify, updateInventoryReport) {
                         uploadFileToCloudinary(ordersPath, `orders_${datePrefix}`)
                     ]);
 
-                    // Cleanup temporary files
                     fs.unlinkSync(productsPath);
                     fs.unlinkSync(customersPath);
                     fs.unlinkSync(ordersPath);
@@ -323,7 +315,6 @@ module.exports = function(fastify, updateInventoryReport) {
                     emailAppend = `\n\n(Warning: Secure Cloudinary Backups failed. Check API Keys.)`;
                 }
 
-                // --- ISOLATION: Try/Catch wrappers around external services ---
                 if (process.env.EMAIL_USER && process.env.EMAIL_PASS && process.env.TARGET_EMAIL) {
                     try {
                         const transporter = nodemailer.createTransport({
@@ -357,6 +348,33 @@ module.exports = function(fastify, updateInventoryReport) {
 
             } catch (err) {
                 fastify.log.error('11:15 PM EOD CRON Job Error:', err);
+            }
+        });
+    });
+
+    // --- COST OPTIMIZATION: 90-Day Cloudinary Automated Cleanup ---
+    // Runs at 2:00 AM every single day
+    cron.schedule('0 2 * * *', () => {
+        runWithLock('CloudinaryCleanup', fastify, async () => {
+            fastify.log.info('Running 2:00 AM Backup Cleanup CRON Job (90 Days Retention)...');
+            try {
+                // Calculate exactly 90 days ago
+                const date90 = new Date();
+                date90.setDate(date90.getDate() - 90);
+                const datePrefix = date90.toISOString().split('T')[0];
+                
+                // Formulate exact public IDs to delete
+                const publicIds = [
+                    `backups/products_${datePrefix}`,
+                    `backups/customers_${datePrefix}`,
+                    `backups/orders_${datePrefix}`
+                ];
+                
+                // Fast deletion without needing Search Tier API
+                const result = await cloudinary.api.delete_resources(publicIds, { type: 'upload', resource_type: 'raw' });
+                fastify.log.info(`Deleted old backups from ${datePrefix}:`, result);
+            } catch(err) {
+                fastify.log.error('Backup Cleanup Error:', err);
             }
         });
     });
