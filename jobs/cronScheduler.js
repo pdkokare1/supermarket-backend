@@ -292,11 +292,16 @@ module.exports = function(fastify, updateInventoryReport) {
                 const datePrefix = new Date().toISOString().split('T')[0];
                 let emailAppend = '';
 
+                // --- OPTIMIZATION: Secure File Cleanup Block ---
+                let productsPath = null;
+                let customersPath = null;
+                let ordersPath = null;
+
                 try {
-                    const productsPath = await createBackupFile(Product, `products_${datePrefix}.json`);
-                    const customersPath = await createBackupFile(Customer, `customers_${datePrefix}.json`);
+                    productsPath = await createBackupFile(Product, `products_${datePrefix}.json`);
+                    customersPath = await createBackupFile(Customer, `customers_${datePrefix}.json`);
                     
-                    const ordersPath = path.join(os.tmpdir(), `orders_${datePrefix}.json`);
+                    ordersPath = path.join(os.tmpdir(), `orders_${datePrefix}.json`);
                     fs.writeFileSync(ordersPath, JSON.stringify(todaysOrders, null, 2));
 
                     const [prodUrl, custUrl, orderUrl] = await Promise.all([
@@ -305,14 +310,15 @@ module.exports = function(fastify, updateInventoryReport) {
                         uploadFileToCloudinary(ordersPath, `orders_${datePrefix}`)
                     ]);
 
-                    fs.unlinkSync(productsPath);
-                    fs.unlinkSync(customersPath);
-                    fs.unlinkSync(ordersPath);
-
                     emailAppend = `\n\nSecure Database Backups (Valid via Cloudinary):\n📦 Products: ${prodUrl}\n👥 Customers: ${custUrl}\n🛒 Orders: ${orderUrl}`;
                 } catch (cloudinaryErr) {
                     fastify.log.error('Cloudinary Backup Failed:', cloudinaryErr);
                     emailAppend = `\n\n(Warning: Secure Cloudinary Backups failed. Check API Keys.)`;
+                } finally {
+                    // Ensures files are deleted from the server hard drive regardless of upload success
+                    if (productsPath && fs.existsSync(productsPath)) fs.unlinkSync(productsPath);
+                    if (customersPath && fs.existsSync(customersPath)) fs.unlinkSync(customersPath);
+                    if (ordersPath && fs.existsSync(ordersPath)) fs.unlinkSync(ordersPath);
                 }
 
                 if (process.env.EMAIL_USER && process.env.EMAIL_PASS && process.env.TARGET_EMAIL) {
