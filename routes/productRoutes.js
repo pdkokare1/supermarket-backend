@@ -1,8 +1,15 @@
 const Product = require('../models/Product');
 const Category = require('../models/Category');
 const { Parser } = require('json2csv'); 
+const cloudinary = require('cloudinary').v2; // NEW: Cloudinary Integration
 
-// --- NEW: Strict Validation Schema for Products ---
+// --- NEW: Configure Cloudinary via Environment Variables ---
+cloudinary.config({
+    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+    api_key: process.env.CLOUDINARY_API_KEY,
+    api_secret: process.env.CLOUDINARY_API_SECRET
+});
+
 const productSchema = {
     schema: {
         body: {
@@ -92,7 +99,33 @@ async function productRoutes(fastify, options) {
         }
     });
 
-    // --- SECURED: Role Validation + Schema Validation ---
+    // --- NEW: Secure Image Upload Route ---
+    fastify.post('/api/products/upload', { preHandler: [fastify.verifyAdmin] }, async (request, reply) => {
+        try {
+            const data = await request.file();
+            if (!data) return reply.status(400).send({ success: false, message: 'No file uploaded' });
+
+            const buffer = await data.toBuffer();
+            
+            // Upload to Cloudinary using RAM buffer stream
+            const uploadResult = await new Promise((resolve, reject) => {
+                const uploadStream = cloudinary.uploader.upload_stream(
+                    { folder: 'dailypick_products' },
+                    (error, result) => {
+                        if (error) reject(error);
+                        else resolve(result);
+                    }
+                );
+                uploadStream.end(buffer);
+            });
+
+            return { success: true, imageUrl: uploadResult.secure_url };
+        } catch (error) {
+            fastify.log.error('Cloudinary Upload Error:', error);
+            reply.status(500).send({ success: false, message: 'Image upload failed' });
+        }
+    });
+
     fastify.post('/api/products', { preHandler: [fastify.verifyAdmin], ...productSchema }, async (request, reply) => {
         try {
             const { name, category, brand, distributorName, imageUrl, searchTags, variants, hsnCode, taxRate, taxType } = request.body;
@@ -109,7 +142,6 @@ async function productRoutes(fastify, options) {
         }
     });
 
-    // --- SECURED: Role Validation + Schema Validation ---
     fastify.put('/api/products/:id', { preHandler: [fastify.verifyAdmin], ...productSchema }, async (request, reply) => {
         try {
             const { name, category, brand, distributorName, imageUrl, searchTags, variants, hsnCode, taxRate, taxType } = request.body;
