@@ -18,6 +18,13 @@ fastify.register(require('@fastify/cors'), {
     origin: process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : '*'
 });
 
+// --- NEW: Multipart support for secure Cloudinary uploads ---
+fastify.register(require('@fastify/multipart'), {
+    limits: {
+        fileSize: 5 * 1024 * 1024 // 5MB Limit
+    }
+});
+
 // --- JWT Security Registration ---
 fastify.register(require('@fastify/jwt'), {
     secret: process.env.JWT_SECRET || 'fallback_super_secret_key_change_in_production'
@@ -31,9 +38,7 @@ fastify.decorate("authenticate", async function(request, reply) {
     }
 });
 
-// --- NEW: Role-Based Access Control Decorator ---
 fastify.decorate("verifyAdmin", async function(request, reply) {
-    // request.user is populated by the onRequest hook below
     if (request.user && request.user.role !== 'Admin') {
         reply.status(403).send({ success: false, message: 'Forbidden: Admin access required.' });
     }
@@ -46,16 +51,16 @@ fastify.addHook("onRequest", async (request, reply) => {
     const publicRoutes = [
         '/',
         '/api/auth/login',
-        '/api/auth/setup'
+        '/api/auth/setup',
+        '/api/products' // Ensuring customers can browse products
     ];
 
-    // SECURE: Use exact matching ignoring query parameters
     const basePath = request.url.split('?')[0];
     const isPublic = publicRoutes.includes(basePath);
 
     if (!isPublic) {
         try {
-            await request.jwtVerify(); // Populates request.user
+            await request.jwtVerify(); 
         } catch (err) {
             fastify.log.warn(`Blocked unauthorized access attempt to ${request.url}`);
             reply.status(401).send({ success: false, message: 'Unauthorized: Access Denied. Please log in.' });
@@ -103,7 +108,6 @@ require('./jobs/cronScheduler')(fastify, (newReport) => {
     latestInventoryReport = newReport;
 });
 
-// --- NEW: Graceful Shutdown for Railway ---
 const listeners = ['SIGINT', 'SIGTERM'];
 listeners.forEach((signal) => {
     process.on(signal, async () => {
@@ -116,7 +120,6 @@ listeners.forEach((signal) => {
 
 const startServer = async () => {
     try {
-        // OPTIMIZED: Added connection pooling
         await mongoose.connect(process.env.MONGO_URI, {
             maxPoolSize: 50
         });
