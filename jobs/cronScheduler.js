@@ -14,8 +14,16 @@ module.exports = function(fastify, updateInventoryReport) {
         try {
             const routineOrders = await Order.find({ deliveryType: 'Routine', status: { $ne: 'Cancelled' } }).lean();
             
-            for (const ro of routineOrders) {
-                const newOrder = new Order({
+            // --- OPTIMIZED: N+1 Query Problem Fixed with insertMany ---
+            // --- OLD CODE (KEPT FOR CONSULTATION) ---
+            // for (const ro of routineOrders) {
+            //     const newOrder = new Order({ ... });
+            //     await newOrder.save();
+            // }
+
+            // NEW OPTIMIZED LOGIC: One single database hit.
+            if (routineOrders.length > 0) {
+                const newOrdersToInsert = routineOrders.map(ro => ({
                     customerName: ro.customerName,
                     customerPhone: ro.customerPhone,
                     deliveryAddress: ro.deliveryAddress,
@@ -25,9 +33,11 @@ module.exports = function(fastify, updateInventoryReport) {
                     deliveryType: 'Instant', 
                     scheduleTime: 'Generated via Routine',
                     status: 'Order Placed'
-                });
-                await newOrder.save();
+                }));
+                
+                await Order.insertMany(newOrdersToInsert);
             }
+
             fastify.log.info(`Successfully generated ${routineOrders.length} routine orders for today.`);
         } catch (err) {
             fastify.log.error('6:00 AM Routine CRON Job Error:', err);
@@ -123,7 +133,6 @@ module.exports = function(fastify, updateInventoryReport) {
                 });
             }
 
-            // --- NEW: Automated Low Stock Email Alert via Nodemailer ---
             if (lowStockItems.length > 0 && process.env.EMAIL_USER && process.env.EMAIL_PASS && process.env.TARGET_EMAIL) {
                 const transporter = nodemailer.createTransport({
                     service: 'gmail',
