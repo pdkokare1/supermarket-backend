@@ -47,10 +47,10 @@ const productSchema = new mongoose.Schema({
     variants: [variantSchema] 
 }, { timestamps: true });
 
-// --- OPTIMIZATION ADDITIONS ---
 productSchema.index({ isActive: 1, category: 1 });
 productSchema.index({ "variants.sku": 1 });
-// NEW: Index to speed up the default non-archived product queries
 productSchema.index({ isArchived: 1 });
+// --- OPTIMIZATION ADDITION: Compound Index for Inventory CRON ---
+productSchema.index({ "variants.stock": 1, "variants.lowStockThreshold": 1 });
 
 module.exports = mongoose.model('Product', productSchema);
