@@ -1,7 +1,7 @@
 const Fastify = require('fastify');
 const mongoose = require('mongoose');
 require('dotenv').config();
-const User = require('./models/User'); // NEW: Needed for token version check
+const User = require('./models/User'); 
 
 const fastify = Fastify({
     logger: process.env.NODE_ENV === 'production' ? { level: 'error' } : true 
@@ -11,7 +11,6 @@ const PORT = process.env.PORT || 3000;
 
 fastify.register(require('@fastify/helmet'));
 
-// --- SECURITY HARDENING: Redis-Backed Global Rate Limiting ---
 let redisClient = null;
 try {
     const Redis = require('ioredis');
@@ -25,7 +24,7 @@ const rateLimitConfig = {
     timeWindow: '1 minute'
 };
 if (redisClient) {
-    rateLimitConfig.redis = redisClient; // Persists rate limits across Railway restarts
+    rateLimitConfig.redis = redisClient; 
 }
 fastify.register(require('@fastify/rate-limit'), rateLimitConfig);
 
@@ -36,7 +35,7 @@ fastify.register(require('@fastify/cors'), {
 
 fastify.register(require('@fastify/multipart'), {
     limits: {
-        fileSize: 5 * 1024 * 1024 // 5MB Limit
+        fileSize: 5 * 1024 * 1024 
     }
 });
 
@@ -53,7 +52,6 @@ fastify.register(require('@fastify/jwt'), {
     secret: process.env.JWT_SECRET || 'TEMPORARY_DEV_SECRET_DO_NOT_USE_IN_PROD'
 });
 
-// --- SECURITY HARDENING: Token Version Validation ---
 fastify.decorate("authenticate", async function(request, reply) {
     try {
         if (request.query && request.query.token) {
@@ -61,7 +59,6 @@ fastify.decorate("authenticate", async function(request, reply) {
         }
         const decoded = await request.jwtVerify();
         
-        // Ensure token hasn't been revoked via a password reset/deactivation
         const user = await User.findById(decoded.id).select('tokenVersion isActive');
         if (!user || !user.isActive || user.tokenVersion !== decoded.tokenVersion) {
             throw new Error('Token revoked or user inactive');
@@ -83,7 +80,8 @@ fastify.addHook("onRequest", async (request, reply) => {
     const publicPrefixes = [
         '/api/auth/login',
         '/api/auth/setup',
-        '/api/products'
+        '/api/products',
+        '/api/health' // Explicitly make healthcheck public
     ];
     
     const basePath = request.url.split('?')[0];
@@ -100,6 +98,8 @@ fastify.addHook("onRequest", async (request, reply) => {
             if (!user || !user.isActive || user.tokenVersion !== decoded.tokenVersion) {
                 throw new Error('Token revoked');
             }
+            
+            request.user = decoded; // Bind user to request for audit logging later
         } catch (err) {
             fastify.log.warn(`Blocked unauthorized access attempt to ${request.url}`);
             reply.status(401).send({ success: false, message: 'Unauthorized: Access Denied. Please log in.' });
@@ -133,6 +133,28 @@ let latestInventoryReport = {
 
 fastify.get('/api/inventory/report', async (request, reply) => {
     return { success: true, data: latestInventoryReport };
+});
+
+// --- NEW FUNCTIONALITY: Dedicated DevOps Health Probe ---
+fastify.get('/api/health', async (request, reply) => {
+    const dbStatus = mongoose.connection.readyState === 1 ? 'Connected' : 'Disconnected';
+    let redisStatus = 'Not Configured';
+    
+    if (redisClient) {
+        try {
+            await redisClient.ping();
+            redisStatus = 'Connected';
+        } catch (e) {
+            redisStatus = 'Disconnected';
+        }
+    }
+    
+    // If DB is offline, throw a 503 so Railway auto-restarts the instance
+    if (dbStatus !== 'Connected') {
+        reply.status(503).send({ status: 'Error', database: dbStatus, redis: redisStatus });
+    } else {
+        reply.send({ status: 'Healthy', database: dbStatus, redis: redisStatus });
+    }
 });
 
 fastify.get('/', async (request, reply) => {
