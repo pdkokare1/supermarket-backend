@@ -24,7 +24,6 @@ async function authRoutes(fastify, options) {
     
     fastify.get('/api/auth/setup', async (request, reply) => {
         try {
-            // --- SECURITY HARDENING: Total production lockdown ---
             if (process.env.NODE_ENV === 'production') {
                 return reply.status(403).send({ success: false, message: 'Forbidden: Setup route disabled in production.' });
             }
@@ -44,8 +43,10 @@ async function authRoutes(fastify, options) {
                 admin.pin = hashedPin;
                 admin.username = 'admin'; 
                 admin.isActive = true;
+                // --- SECURITY HARDENING: Instantly revoke all active sessions on reset ---
+                admin.tokenVersion = (admin.tokenVersion || 0) + 1;
                 await admin.save();
-                return { success: true, message: "Existing Admin FORCE RESET. Username: 'admin', PIN: '1234'" };
+                return { success: true, message: "Existing Admin FORCE RESET. All old sessions revoked. Username: 'admin', PIN: '1234'" };
             }
         } catch (error) {
             fastify.log.error(error);
@@ -84,10 +85,12 @@ async function authRoutes(fastify, options) {
                 await user.save();
             }
             
+            // --- SECURITY HARDENING: Embed tokenVersion in payload ---
             const token = fastify.jwt.sign({ 
                 id: user._id, 
                 role: user.role, 
-                username: user.username 
+                username: user.username,
+                tokenVersion: user.tokenVersion || 0 
             }, { expiresIn: '7d' }); 
             
             return { success: true, message: 'Login successful', data: user, token: token };
