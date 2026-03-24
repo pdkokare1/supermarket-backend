@@ -2,18 +2,21 @@ const mongoose = require('mongoose');
 const Order = require('../models/Order');
 const Product = require('../models/Product');
 const Customer = require('../models/Customer');
+const AuditLog = require('../models/AuditLog'); // NEW: For Security Audit Trails
 const { Parser } = require('json2csv'); 
 const axios = require('axios'); 
 
-// --- OPTIMIZED LOGIC: Multi-Server Redis Pub/Sub ---
+// --- OPTIMIZED LOGIC: Multi-Server Redis Pub/Sub & Caching ---
 let Redis = null;
 let redisPub = null;
 let redisSub = null;
+let redisCache = null; // NEW: Dedicated cache client
 try {
     Redis = require('ioredis');
     if (process.env.REDIS_URL) {
         redisPub = new Redis(process.env.REDIS_URL);
         redisSub = new Redis(process.env.REDIS_URL);
+        redisCache = new Redis(process.env.REDIS_URL);
         
         redisSub.subscribe('ORDER_STREAM_EVENT');
         redisSub.on('message', (channel, message) => {
@@ -61,7 +64,6 @@ setInterval(() => {
     }
 }, 15000);
 
-// --- SECURED: Fastify Schema Validations ---
 const posCheckoutSchema = {
     schema: {
         body: {
@@ -140,7 +142,6 @@ async function orderRoutes(fastify, options) {
         });
     });
 
-    // --- INTEGRITY HARDENING: Transactions added to Online Checkout ---
     fastify.post('/api/orders', onlineCheckoutSchema, async (request, reply) => {
         const session = await mongoose.startSession();
         session.startTransaction();
@@ -175,7 +176,6 @@ async function orderRoutes(fastify, options) {
                 await custProfile.save({ session });
             }
 
-            // NEW FIX: Deduct stock for online orders (was missing entirely)
             for (const item of items) {
                 const product = await Product.findById(item.productId).session(session);
                 if (product && product.variants) {
@@ -197,6 +197,11 @@ async function orderRoutes(fastify, options) {
             await newOrder.save({ session });
             await session.commitTransaction();
             session.endSession();
+            
+            // Clear analytics cache because new revenue arrived
+            if (redisCache) {
+                try { await redisCache.del('orders:analytics'); } catch(e) {}
+            }
             
             const payload = JSON.stringify({ type: 'NEW_ORDER', order: newOrder });
             if (redisPub) {
@@ -299,6 +304,10 @@ async function orderRoutes(fastify, options) {
             await newOrder.save({ session });
             await session.commitTransaction();
             session.endSession();
+            
+            if (redisCache) {
+                try { await redisCache.del('orders:analytics'); } catch(e) {}
+            }
 
             if (customerPhone && customerPhone.length >= 10 && process.env.CALLMEBOT_API_KEY && process.env.WA_PHONE_NUMBER) {
                 const loyaltyMsg = pointsRedeemed > 0 ? ` Points Redeemed: ${pointsRedeemed}.` : '';
@@ -373,7 +382,7 @@ async function orderRoutes(fastify, options) {
         }
     });
 
-    // --- INTEGRITY HARDENING: Cancellation rollback wrapped in transaction ---
+    // --- INTEGRITY HARDENING: Logging Cancellations ---
     fastify.put('/api/orders/:id/cancel', async (request, reply) => {
         const session = await mongoose.startSession();
         session.startTransaction();
@@ -410,8 +419,24 @@ async function orderRoutes(fastify, options) {
             }
 
             await order.save({ session });
+            
+            // --- SECURITY HARDENING: Generate Audit Log ---
+            const logEntry = new AuditLog({
+                userId: request.user ? request.user.id : null,
+                username: request.user ? request.user.username : 'System',
+                action: 'CANCEL_ORDER',
+                targetType: 'Order',
+                targetId: order._id.toString(),
+                details: { reason: reason || 'Not provided', amountRefunded: order.totalAmount }
+            });
+            await logEntry.save({ session });
+            
             await session.commitTransaction();
             session.endSession();
+            
+            if (redisCache) {
+                try { await redisCache.del('orders:analytics'); } catch(e) {}
+            }
 
             const payload = JSON.stringify({ type: 'STATUS_UPDATE', status: 'Cancelled' });
             if (redisPub) {
@@ -435,6 +460,14 @@ async function orderRoutes(fastify, options) {
 
     fastify.get('/api/orders/analytics', async (request, reply) => {
         try {
+            // --- PERFORMANCE OPTIMIZATION: Check Analytics Cache ---
+            if (redisCache) {
+                const cachedAnalytics = await redisCache.get('orders:analytics');
+                if (cachedAnalytics) {
+                    return JSON.parse(cachedAnalytics); // Skips heavy database calculations
+                }
+            }
+            
             const today = new Date();
             today.setHours(23, 59, 59, 999);
             const sevenDaysAgo = new Date(today);
@@ -504,7 +537,7 @@ async function orderRoutes(fastify, options) {
                 revenue: item.revenue
             }));
 
-            return { 
+            const responsePayload = { 
                 success: true, 
                 data: {
                     chartLabels: ['Day 1', 'Day 2', 'Day 3', 'Day 4', 'Day 5', 'Yesterday', 'Today'],
@@ -512,6 +545,13 @@ async function orderRoutes(fastify, options) {
                     topItems: topItems
                 }
             };
+            
+            // --- PERFORMANCE OPTIMIZATION: Set Cache (15 Mins TTL) ---
+            if (redisCache) {
+                await redisCache.set('orders:analytics', JSON.stringify(responsePayload), 'EX', 900);
+            }
+
+            return responsePayload;
         } catch (error) {
             fastify.log.error('Analytics Error:', error);
             reply.status(500).send({ success: false, message: 'Server Error fetching analytics' });
