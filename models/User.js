@@ -23,6 +23,11 @@ const userSchema = new mongoose.Schema({
     isActive: {
         type: Boolean,
         default: true
+    },
+    // --- SECURITY HARDENING: Token Versioning ---
+    tokenVersion: { 
+        type: Number, 
+        default: 0 
     }
 }, { timestamps: true });
 
