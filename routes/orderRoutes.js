@@ -41,24 +41,15 @@ try {
 let adminConnections = [];
 let customerConnections = {};
 
+// --- OPTIMIZATION: Non-blocking SSE Heartbeat ---
 setInterval(() => {
-    adminConnections = adminConnections.filter(conn => {
-        if (conn.destroyed || !conn.writable) {
-            if (!conn.destroyed) conn.end();
-            return false;
-        }
-        conn.write(':\n\n'); // Heartbeat to keep connection alive through proxies
-        return true;
+    adminConnections.forEach(conn => {
+        if (!conn.destroyed && conn.writable) conn.write(':\n\n'); 
     });
 
     for (const orderId in customerConnections) {
-        customerConnections[orderId] = customerConnections[orderId].filter(conn => {
-            if (conn.destroyed || !conn.writable) {
-                if (!conn.destroyed) conn.end();
-                return false;
-            }
-            conn.write(':\n\n'); // Heartbeat
-            return true;
+        customerConnections[orderId].forEach(conn => {
+            if (!conn.destroyed && conn.writable) conn.write(':\n\n');
         });
         if (customerConnections[orderId].length === 0) delete customerConnections[orderId];
     }
@@ -108,8 +99,6 @@ async function orderRoutes(fastify, options) {
         reply.raw.writeHead(200, {
             'Content-Type': 'text/event-stream',
             'Cache-Control': 'no-cache',
-            // HTTP/2 explicitly forbids the Connection: keep-alive header. 
-            // Modern reverse proxies (Railway/Nginx) handle the connection persistence automatically.
             'Access-Control-Allow-Origin': '*',  
             'X-Accel-Buffering': 'no'            
         });
@@ -129,7 +118,6 @@ async function orderRoutes(fastify, options) {
         reply.raw.writeHead(200, {
             'Content-Type': 'text/event-stream',
             'Cache-Control': 'no-cache',
-            // Connection header removed for HTTP/2 compliance
             'Access-Control-Allow-Origin': '*',  
             'X-Accel-Buffering': 'no'            
         });
@@ -177,15 +165,13 @@ async function orderRoutes(fastify, options) {
                 await custProfile.save({ session });
             }
 
+            // --- OPTIMIZATION: Atomic Database Stock Subtraction (Prevents WriteConflicts) ---
             for (const item of items) {
-                const product = await Product.findById(item.productId).session(session);
-                if (product && product.variants) {
-                    const variant = product.variants.id(item.variantId);
-                    if (variant) {
-                        variant.stock -= item.qty;
-                        await product.save({ session });
-                    }
-                }
+                await Product.updateOne(
+                    { _id: item.productId, "variants._id": item.variantId },
+                    { $inc: { "variants.$.stock": -item.qty } },
+                    { session }
+                );
             }
 
             const newOrder = new Order({
@@ -199,7 +185,6 @@ async function orderRoutes(fastify, options) {
             await session.commitTransaction();
             session.endSession();
             
-            // Clear analytics cache because new revenue arrived
             if (redisCache) {
                 try { await redisCache.del('orders:analytics'); } catch(e) {}
             }
@@ -277,15 +262,17 @@ async function orderRoutes(fastify, options) {
                 }
             }
 
+            // --- OPTIMIZATION: Atomic Database Stock Subtraction ---
             for (const item of items) {
-                const product = await Product.findById(item.productId).session(session);
-                if (product && product.variants) {
-                    const variant = product.variants.id(item.variantId);
-                    if (variant && variant.stock >= item.qty) {
-                        variant.stock -= item.qty;
-                        await product.save({ session });
-                    }
-                }
+                await Product.updateOne(
+                    { 
+                        _id: item.productId, 
+                        "variants._id": item.variantId,
+                        "variants.stock": { $gte: item.qty } // Replicates the condition perfectly
+                    },
+                    { $inc: { "variants.$.stock": -item.qty } },
+                    { session }
+                );
             }
 
             const newOrder = new Order({
@@ -409,14 +396,11 @@ async function orderRoutes(fastify, options) {
             }
 
             for (const item of order.items) {
-                const product = await Product.findById(item.productId).session(session);
-                if (product && product.variants) {
-                    const variant = product.variants.id(item.variantId);
-                    if (variant) {
-                        variant.stock += item.qty;
-                        await product.save({ session });
-                    }
-                }
+                await Product.updateOne(
+                    { _id: item.productId, "variants._id": item.variantId },
+                    { $inc: { "variants.$.stock": item.qty } },
+                    { session }
+                );
             }
 
             await order.save({ session });
@@ -461,11 +445,10 @@ async function orderRoutes(fastify, options) {
 
     fastify.get('/api/orders/analytics', async (request, reply) => {
         try {
-            // --- PERFORMANCE OPTIMIZATION: Check Analytics Cache ---
             if (redisCache) {
                 const cachedAnalytics = await redisCache.get('orders:analytics');
                 if (cachedAnalytics) {
-                    return JSON.parse(cachedAnalytics); // Skips heavy database calculations
+                    return JSON.parse(cachedAnalytics); 
                 }
             }
             
@@ -547,7 +530,6 @@ async function orderRoutes(fastify, options) {
                 }
             };
             
-            // --- PERFORMANCE OPTIMIZATION: Set Cache (15 Mins TTL) ---
             if (redisCache) {
                 await redisCache.set('orders:analytics', JSON.stringify(responsePayload), 'EX', 900);
             }
@@ -559,31 +541,25 @@ async function orderRoutes(fastify, options) {
         }
     });
 
+    // --- OPTIMIZATION: Zero-Memory Database Aggregation ---
     fastify.get('/api/orders/customers', async (request, reply) => {
         try {
-            const orders = await Order.find({ status: { $ne: 'Cancelled' } }).lean();
-            let customers = {};
-
-            orders.forEach(o => {
-                const phone = o.customerPhone || 'Unknown';
-                if (!customers[phone]) {
-                    customers[phone] = {
-                        name: o.customerName || 'Guest',
-                        phone: phone,
-                        orderCount: 0,
-                        lifetimeValue: 0,
-                        lastOrderDate: o.createdAt
-                    };
-                }
-                customers[phone].orderCount += 1;
-                customers[phone].lifetimeValue += o.totalAmount;
-                if (new Date(o.createdAt) > new Date(customers[phone].lastOrderDate)) {
-                    customers[phone].lastOrderDate = o.createdAt;
-                    customers[phone].name = o.customerName; 
-                }
-            });
-
-            const customerList = Object.values(customers).sort((a,b) => b.lifetimeValue - a.lifetimeValue);
+            const customerList = await Order.aggregate([
+                { $match: { status: { $ne: 'Cancelled' } } },
+                { $sort: { createdAt: 1 } }, 
+                { 
+                    $group: {
+                        _id: { $ifNull: ["$customerPhone", "Unknown"] },
+                        name: { $last: { $ifNull: ["$customerName", "Guest"] } },
+                        phone: { $last: { $ifNull: ["$customerPhone", "Unknown"] } },
+                        orderCount: { $sum: 1 },
+                        lifetimeValue: { $sum: "$totalAmount" },
+                        lastOrderDate: { $max: "$createdAt" }
+                    }
+                },
+                { $sort: { lifetimeValue: -1 } },
+                { $project: { _id: 0 } } 
+            ]);
 
             return { success: true, count: customerList.length, data: customerList };
         } catch (error) {
