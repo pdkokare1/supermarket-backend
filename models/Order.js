@@ -29,20 +29,24 @@ const orderSchema = new mongoose.Schema({
         type: String, 
         default: 'Cash on Delivery' 
     },
-    // NEW: Split Payment details
     splitDetails: {
         cash: { type: Number, default: 0 },
         upi: { type: Number, default: 0 }
     },
-    // NEW: Routine & Scheduling features
     deliveryType: { 
         type: String, 
-        default: 'Instant' // Can be 'Instant' or 'Routine'
+        default: 'Instant' 
     },
     scheduleTime: { 
         type: String, 
-        default: 'ASAP' // Can be 'ASAP', 'Daily at 7 AM', 'Daily at 6 PM', etc.
+        default: 'ASAP' 
     }
 }, { timestamps: true });
+
+// --- NEW OPTIMIZED LOGIC: Database Indexing for High-Speed Queries ---
+// These indexes tell MongoDB to pre-sort data exactly how your app requests it.
+orderSchema.index({ status: 1, createdAt: -1 }); // Speeds up the main Admin Dashboard
+orderSchema.index({ deliveryType: 1, status: 1 }); // Speeds up the 6:00 AM Cron Job
+orderSchema.index({ customerPhone: 1 }); // Speeds up POS Loyalty & Customer Deep-Dive lookups
 
 module.exports = mongoose.model('Order', orderSchema);
