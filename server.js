@@ -1,9 +1,8 @@
 const Fastify = require('fastify');
 const mongoose = require('mongoose');
 require('dotenv').config();
+const User = require('./models/User'); // NEW: Needed for token version check
 
-// --- OPTIMIZATION: Dynamic Logging ---
-// Effect: Reduces CPU and storage overhead in production environments.
 const fastify = Fastify({
     logger: process.env.NODE_ENV === 'production' ? { level: 'error' } : true 
 });
@@ -11,10 +10,25 @@ const fastify = Fastify({
 const PORT = process.env.PORT || 3000;
 
 fastify.register(require('@fastify/helmet'));
-fastify.register(require('@fastify/rate-limit'), {
-  max: 100,
-  timeWindow: '1 minute'
-});
+
+// --- SECURITY HARDENING: Redis-Backed Global Rate Limiting ---
+let redisClient = null;
+try {
+    const Redis = require('ioredis');
+    if (process.env.REDIS_URL) {
+        redisClient = new Redis(process.env.REDIS_URL);
+    }
+} catch(e) {}
+
+const rateLimitConfig = {
+    max: 100,
+    timeWindow: '1 minute'
+};
+if (redisClient) {
+    rateLimitConfig.redis = redisClient; // Persists rate limits across Railway restarts
+}
+fastify.register(require('@fastify/rate-limit'), rateLimitConfig);
+
 
 fastify.register(require('@fastify/cors'), { 
     origin: process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : '*'
@@ -26,8 +40,6 @@ fastify.register(require('@fastify/multipart'), {
     }
 });
 
-// --- SECURITY HARDENING: Strict JWT Enforcement ---
-// Effect: Prevents the server from booting in production with an unsafe fallback key.
 if (!process.env.JWT_SECRET) {
     if (process.env.NODE_ENV === 'production') {
         fastify.log.error("CRITICAL: JWT_SECRET is missing in production. Server shutting down.");
@@ -41,12 +53,19 @@ fastify.register(require('@fastify/jwt'), {
     secret: process.env.JWT_SECRET || 'TEMPORARY_DEV_SECRET_DO_NOT_USE_IN_PROD'
 });
 
+// --- SECURITY HARDENING: Token Version Validation ---
 fastify.decorate("authenticate", async function(request, reply) {
     try {
         if (request.query && request.query.token) {
             request.headers.authorization = `Bearer ${request.query.token}`;
         }
-        await request.jwtVerify();
+        const decoded = await request.jwtVerify();
+        
+        // Ensure token hasn't been revoked via a password reset/deactivation
+        const user = await User.findById(decoded.id).select('tokenVersion isActive');
+        if (!user || !user.isActive || user.tokenVersion !== decoded.tokenVersion) {
+            throw new Error('Token revoked or user inactive');
+        }
     } catch (err) {
         reply.status(401).send({ success: false, message: 'Unauthorized: Invalid or missing token.' });
     }
@@ -75,7 +94,12 @@ fastify.addHook("onRequest", async (request, reply) => {
             if (request.query && request.query.token) {
                 request.headers.authorization = `Bearer ${request.query.token}`;
             }
-            await request.jwtVerify(); 
+            const decoded = await request.jwtVerify(); 
+            
+            const user = await User.findById(decoded.id).select('tokenVersion isActive');
+            if (!user || !user.isActive || user.tokenVersion !== decoded.tokenVersion) {
+                throw new Error('Token revoked');
+            }
         } catch (err) {
             fastify.log.warn(`Blocked unauthorized access attempt to ${request.url}`);
             reply.status(401).send({ success: false, message: 'Unauthorized: Access Denied. Please log in.' });
@@ -83,7 +107,6 @@ fastify.addHook("onRequest", async (request, reply) => {
     }
 });
 
-// Route Registrations
 fastify.register(require('./routes/productRoutes'));
 fastify.register(require('./routes/orderRoutes'));
 fastify.register(require('./routes/categoryRoutes'));
@@ -123,13 +146,11 @@ require('./jobs/cronScheduler')(fastify, (newReport) => {
     latestInventoryReport = newReport;
 });
 
-// --- OPTIMIZATION: Graceful Shutdown with Timeout ---
 const listeners = ['SIGINT', 'SIGTERM'];
 listeners.forEach((signal) => {
     process.on(signal, async () => {
         fastify.log.info(`${signal} received. Shutting down gracefully...`);
         
-        // Force exit after 10 seconds if connections hang
         setTimeout(() => {
             fastify.log.error('Forcing shutdown after timeout.');
             process.exit(1);
