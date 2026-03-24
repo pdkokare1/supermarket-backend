@@ -32,6 +32,9 @@ fastify.register(require('@fastify/jwt'), {
 
 fastify.decorate("authenticate", async function(request, reply) {
     try {
+        if (request.query && request.query.token) {
+            request.headers.authorization = `Bearer ${request.query.token}`;
+        }
         await request.jwtVerify();
     } catch (err) {
         reply.status(401).send({ success: false, message: 'Unauthorized: Invalid or missing token.' });
@@ -60,6 +63,11 @@ fastify.addHook("onRequest", async (request, reply) => {
 
     if (!isPublic) {
         try {
+            // FIXED: Native browser SSE (EventSource) cannot send headers.
+            // We intercept the ?token= query parameter and manually inject it as a Bearer token.
+            if (request.query && request.query.token) {
+                request.headers.authorization = `Bearer ${request.query.token}`;
+            }
             await request.jwtVerify(); 
         } catch (err) {
             fastify.log.warn(`Blocked unauthorized access attempt to ${request.url}`);
@@ -76,7 +84,6 @@ fastify.register(require('./routes/brandRoutes'));
 fastify.register(require('./routes/distributorRoutes')); 
 fastify.register(require('./routes/expenseRoutes')); 
 fastify.register(require('./routes/authRoutes')); 
-// FIXED: Added missing route registrations to prevent 404 errors
 fastify.register(require('./routes/promotionRoutes')); 
 fastify.register(require('./routes/shiftRoutes'));
 
