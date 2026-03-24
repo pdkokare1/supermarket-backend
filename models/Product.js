@@ -3,30 +3,30 @@ const mongoose = require('mongoose');
 const purchaseHistorySchema = new mongoose.Schema({
     date: { type: Date, default: Date.now },
     invoiceNumber: { type: String, required: true },
-    addedQuantity: { type: Number, required: true },
-    purchasingPrice: { type: Number, required: true }, 
-    sellingPrice: { type: Number, required: true }     
+    addedQuantity: { type: Number, required: true, min: 1 }, // Hardening
+    purchasingPrice: { type: Number, required: true, min: 0 }, 
+    sellingPrice: { type: Number, required: true, min: 0 }     
 });
 
 const returnHistorySchema = new mongoose.Schema({
     date: { type: Date, default: Date.now },
     distributorName: { type: String, required: true },
-    returnedQuantity: { type: Number, required: true },
-    refundAmount: { type: Number, required: true },
+    returnedQuantity: { type: Number, required: true, min: 1 }, // Hardening
+    refundAmount: { type: Number, required: true, min: 0 },
     reason: { type: String, default: 'Expired/Damaged' }
 });
 
 const variantSchema = new mongoose.Schema({
     weightOrVolume: { type: String, required: true },
-    price: { type: Number, required: true },
-    stock: { type: Number, default: 0 },
+    price: { type: Number, required: true, min: 0 }, // Hardening
+    stock: { type: Number, default: 0, min: 0 }, // Prevents negative ghost stock
     sku: { type: String, default: '' }, 
-    lowStockThreshold: { type: Number, default: 5 },
+    lowStockThreshold: { type: Number, default: 5, min: 0 },
     expiryDate: { type: Date, default: null }, 
     purchaseHistory: [purchaseHistorySchema],
     returnHistory: [returnHistorySchema], 
     
-    averageDailySales: { type: Number, default: 0 },
+    averageDailySales: { type: Number, default: 0, min: 0 },
     daysOfStock: { type: Number, default: 999 }
 });
 
@@ -41,7 +41,7 @@ const productSchema = new mongoose.Schema({
     searchTags: { type: String, default: '' },
     
     hsnCode: { type: String, default: '' },
-    taxRate: { type: Number, default: 0 }, 
+    taxRate: { type: Number, default: 0, min: 0 }, // Hardening
     taxType: { type: String, enum: ['Inclusive', 'Exclusive'], default: 'Inclusive' },
 
     variants: [variantSchema] 
@@ -50,7 +50,6 @@ const productSchema = new mongoose.Schema({
 productSchema.index({ isActive: 1, category: 1 });
 productSchema.index({ "variants.sku": 1 });
 productSchema.index({ isArchived: 1 });
-// --- OPTIMIZATION ADDITION: Compound Index for Inventory CRON ---
 productSchema.index({ "variants.stock": 1, "variants.lowStockThreshold": 1 });
 
 module.exports = mongoose.model('Product', productSchema);
