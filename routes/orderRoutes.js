@@ -47,7 +47,7 @@ setInterval(() => {
             if (!conn.destroyed) conn.end();
             return false;
         }
-        conn.write(':\n\n');
+        conn.write(':\n\n'); // Heartbeat to keep connection alive through proxies
         return true;
     });
 
@@ -57,7 +57,7 @@ setInterval(() => {
                 if (!conn.destroyed) conn.end();
                 return false;
             }
-            conn.write(':\n\n');
+            conn.write(':\n\n'); // Heartbeat
             return true;
         });
         if (customerConnections[orderId].length === 0) delete customerConnections[orderId];
@@ -108,7 +108,8 @@ async function orderRoutes(fastify, options) {
         reply.raw.writeHead(200, {
             'Content-Type': 'text/event-stream',
             'Cache-Control': 'no-cache',
-            'Connection': 'keep-alive',
+            // HTTP/2 explicitly forbids the Connection: keep-alive header. 
+            // Modern reverse proxies (Railway/Nginx) handle the connection persistence automatically.
             'Access-Control-Allow-Origin': '*',  
             'X-Accel-Buffering': 'no'            
         });
@@ -128,7 +129,7 @@ async function orderRoutes(fastify, options) {
         reply.raw.writeHead(200, {
             'Content-Type': 'text/event-stream',
             'Cache-Control': 'no-cache',
-            'Connection': 'keep-alive',
+            // Connection header removed for HTTP/2 compliance
             'Access-Control-Allow-Origin': '*',  
             'X-Accel-Buffering': 'no'            
         });
