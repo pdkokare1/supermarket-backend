@@ -3,7 +3,7 @@ const Order = require('../models/Order');
 const Product = require('../models/Product');
 const Customer = require('../models/Customer');
 const { Parser } = require('json2csv'); 
-const axios = require('axios'); // NEW: For WhatsApp Receipts
+const axios = require('axios'); 
 
 // --- OPTIMIZED LOGIC: Multi-Server Redis Pub/Sub ---
 let Redis = null;
@@ -61,7 +61,7 @@ setInterval(() => {
     }
 }, 15000);
 
-// --- OPTIMIZED LOGIC: Fastify Schema Validation ---
+// --- SECURED: Fastify Schema Validations ---
 const posCheckoutSchema = {
     schema: {
         body: {
@@ -75,6 +75,25 @@ const posCheckoutSchema = {
                 discountAmount: { type: 'number' },
                 paymentMethod: { type: 'string' },
                 pointsRedeemed: { type: 'number' }
+            }
+        }
+    }
+};
+
+const onlineCheckoutSchema = {
+    schema: {
+        body: {
+            type: 'object',
+            required: ['items', 'totalAmount', 'customerName', 'customerPhone', 'deliveryAddress'],
+            properties: {
+                customerName: { type: 'string' },
+                customerPhone: { type: 'string' },
+                deliveryAddress: { type: 'string' },
+                items: { type: 'array' },
+                totalAmount: { type: 'number' },
+                paymentMethod: { type: 'string' },
+                deliveryType: { type: 'string' },
+                scheduleTime: { type: 'string' }
             }
         }
     }
@@ -121,7 +140,11 @@ async function orderRoutes(fastify, options) {
         });
     });
 
-    fastify.post('/api/orders', async (request, reply) => {
+    // --- INTEGRITY HARDENING: Transactions added to Online Checkout ---
+    fastify.post('/api/orders', onlineCheckoutSchema, async (request, reply) => {
+        const session = await mongoose.startSession();
+        session.startTransaction();
+
         try {
             const { 
                 customerName, customerPhone, deliveryAddress, items, 
@@ -129,25 +152,39 @@ async function orderRoutes(fastify, options) {
             } = request.body;
             
             if (paymentMethod === 'Pay Later') {
-                const customerProfile = await Customer.findOne({ phone: customerPhone });
+                const customerProfile = await Customer.findOne({ phone: customerPhone }).session(session);
                 
                 if (!customerProfile || !customerProfile.isCreditEnabled) {
+                    await session.abortTransaction(); session.endSession();
                     return reply.status(400).send({ success: false, message: 'Pay Later is not enabled for this account.' });
                 }
                 if ((customerProfile.creditUsed + totalAmount) > customerProfile.creditLimit) {
+                    await session.abortTransaction(); session.endSession();
                     return reply.status(400).send({ success: false, message: `Credit limit exceeded. Available credit: ₹${customerProfile.creditLimit - customerProfile.creditUsed}` });
                 }
                 customerProfile.creditUsed += totalAmount;
-                await customerProfile.save();
+                await customerProfile.save({ session });
             }
 
-            let custProfile = await Customer.findOne({ phone: customerPhone });
+            let custProfile = await Customer.findOne({ phone: customerPhone }).session(session);
             if (!custProfile) {
                 custProfile = new Customer({ phone: customerPhone, name: customerName });
-                await custProfile.save();
+                await custProfile.save({ session });
             } else if (custProfile.name !== customerName) {
                 custProfile.name = customerName; 
-                await custProfile.save();
+                await custProfile.save({ session });
+            }
+
+            // NEW FIX: Deduct stock for online orders (was missing entirely)
+            for (const item of items) {
+                const product = await Product.findById(item.productId).session(session);
+                if (product && product.variants) {
+                    const variant = product.variants.id(item.variantId);
+                    if (variant) {
+                        variant.stock -= item.qty;
+                        await product.save({ session });
+                    }
+                }
             }
 
             const newOrder = new Order({
@@ -157,14 +194,14 @@ async function orderRoutes(fastify, options) {
                 scheduleTime: scheduleTime || 'ASAP'
             });
 
-            await newOrder.save();
+            await newOrder.save({ session });
+            await session.commitTransaction();
+            session.endSession();
             
-            // --- SECURED: Multi-server broadcast logic ---
             const payload = JSON.stringify({ type: 'NEW_ORDER', order: newOrder });
             if (redisPub) {
                 redisPub.publish('ORDER_STREAM_EVENT', JSON.stringify({ target: 'admin', payload }));
             } else {
-                // --- OLD CODE (KEPT FOR CONSULTATION) ---
                 adminConnections.forEach(conn => {
                     if (!conn.destroyed) {
                         conn.write(`data: ${payload}\n\n`);
@@ -172,21 +209,21 @@ async function orderRoutes(fastify, options) {
                 });
             }
 
-            // --- NEW FUNCTIONALITY: Automated WhatsApp Delivery Receipts ---
             if (customerPhone && customerPhone.length >= 10 && process.env.CALLMEBOT_API_KEY && process.env.WA_PHONE_NUMBER) {
                 const msg = `DailyPick Order Received! 🛒\nOrder ID: ${newOrder._id.toString().substring(0,8)}\nTotal: ₹${totalAmount}\nDelivery: ${scheduleTime}\nThanks for shopping!`;
                 const waUrl = `https://api.callmebot.com/whatsapp.php?phone=${customerPhone}&text=${encodeURIComponent(msg)}&apikey=${process.env.CALLMEBOT_API_KEY}`;
-                axios.get(waUrl).catch(() => {}); // Fire and forget so we don't slow down checkout
+                axios.get(waUrl).catch(() => {}); 
             }
 
             return { success: true, message: 'Order Placed Successfully', orderId: newOrder._id };
         } catch (error) {
+            await session.abortTransaction();
+            session.endSession();
             fastify.log.error('Checkout Error:', error);
             reply.status(500).send({ success: false, message: 'Server Error processing checkout' });
         }
     });
 
-    // Notice we pass the posCheckoutSchema here to speed up route processing natively
     fastify.post('/api/orders/pos', posCheckoutSchema, async (request, reply) => {
         const session = await mongoose.startSession();
         session.startTransaction();
@@ -263,12 +300,11 @@ async function orderRoutes(fastify, options) {
             await session.commitTransaction();
             session.endSession();
 
-            // --- NEW FUNCTIONALITY: Automated WhatsApp POS Receipts ---
             if (customerPhone && customerPhone.length >= 10 && process.env.CALLMEBOT_API_KEY && process.env.WA_PHONE_NUMBER) {
                 const loyaltyMsg = pointsRedeemed > 0 ? ` Points Redeemed: ${pointsRedeemed}.` : '';
                 const msg = `Thank you for shopping at DailyPick! 🛒\nTotal: ₹${totalAmount}\n${loyaltyMsg}\nVisit again!`;
                 const waUrl = `https://api.callmebot.com/whatsapp.php?phone=${customerPhone}&text=${encodeURIComponent(msg)}&apikey=${process.env.CALLMEBOT_API_KEY}`;
-                axios.get(waUrl).catch(() => {}); // Fire and forget
+                axios.get(waUrl).catch(() => {}); 
             }
 
             return { success: true, message: 'POS Transaction Complete', orderId: newOrder._id, orderData: newOrder };
@@ -337,40 +373,45 @@ async function orderRoutes(fastify, options) {
         }
     });
 
+    // --- INTEGRITY HARDENING: Cancellation rollback wrapped in transaction ---
     fastify.put('/api/orders/:id/cancel', async (request, reply) => {
+        const session = await mongoose.startSession();
+        session.startTransaction();
+
         try {
             const { reason } = request.body;
-            const order = await Order.findById(request.params.id);
+            const order = await Order.findById(request.params.id).session(session);
             
-            if (!order) return reply.status(404).send({ success: false, message: 'Order not found' });
+            if (!order) {
+                await session.abortTransaction(); session.endSession();
+                return reply.status(404).send({ success: false, message: 'Order not found' });
+            }
             
             order.status = 'Cancelled';
 
             if (order.paymentMethod === 'Pay Later') {
-                const custProfile = await Customer.findOne({ phone: order.customerPhone });
+                const custProfile = await Customer.findOne({ phone: order.customerPhone }).session(session);
                 if (custProfile) {
                     custProfile.creditUsed -= order.totalAmount;
                     if (custProfile.creditUsed < 0) custProfile.creditUsed = 0;
-                    await custProfile.save();
+                    await custProfile.save({ session });
                 }
             }
 
             for (const item of order.items) {
-                try {
-                    const product = await Product.findById(item.productId);
-                    if (product && product.variants) {
-                        const variant = product.variants.id(item.variantId);
-                        if (variant) {
-                            variant.stock += item.qty;
-                            await product.save();
-                        }
+                const product = await Product.findById(item.productId).session(session);
+                if (product && product.variants) {
+                    const variant = product.variants.id(item.variantId);
+                    if (variant) {
+                        variant.stock += item.qty;
+                        await product.save({ session });
                     }
-                } catch(e) {
-                    fastify.log.error('Stock Refund Error for item:', item, e);
                 }
             }
 
-            await order.save();
+            await order.save({ session });
+            await session.commitTransaction();
+            session.endSession();
 
             const payload = JSON.stringify({ type: 'STATUS_UPDATE', status: 'Cancelled' });
             if (redisPub) {
@@ -385,6 +426,8 @@ async function orderRoutes(fastify, options) {
 
             return { success: true, message: 'Order Cancelled and Stock Refunded', data: order };
         } catch (error) {
+            await session.abortTransaction();
+            session.endSession();
             fastify.log.error('Cancel Error:', error);
             reply.status(500).send({ success: false, message: 'Server Error cancelling order' });
         }
@@ -508,16 +551,13 @@ async function orderRoutes(fastify, options) {
         }
     });
 
-    // --- OPTIMIZED: Paginated Fetch Endpoint ---
     fastify.get('/api/orders', async (request, reply) => {
         try {
             let filter = {};
 
-            // 1. Apply Server-Side Tab Filters
             if (request.query.tab === 'Instant') filter.deliveryType = { $ne: 'Routine' };
             if (request.query.tab === 'Routine') filter.deliveryType = 'Routine';
 
-            // 2. Apply Server-Side Date Filters
             const today = new Date();
             today.setHours(0, 0, 0, 0);
             const yesterday = new Date(today);
@@ -543,7 +583,6 @@ async function orderRoutes(fastify, options) {
                 query = query.skip(skip).limit(limit);
             }
 
-            // Execute paginated search + global stats concurrently for speed
             const [orders, total, pendingOrders] = await Promise.all([
                 query.lean(),
                 Order.countDocuments(filter),
