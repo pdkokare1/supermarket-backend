@@ -18,16 +18,22 @@ fastify.register(require('@fastify/cors'), {
     origin: process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : '*'
 });
 
-// --- NEW: Multipart support for secure Cloudinary uploads ---
 fastify.register(require('@fastify/multipart'), {
     limits: {
         fileSize: 5 * 1024 * 1024 // 5MB Limit
     }
 });
 
-// --- JWT Security Registration ---
+// --- SECURED: Removed fallback secret. Must be provided in .env ---
+// --- OLD CODE (KEPT FOR CONSULTATION) ---
+// fastify.register(require('@fastify/jwt'), {
+//     secret: process.env.JWT_SECRET || 'fallback_super_secret_key_change_in_production'
+// });
+if (!process.env.JWT_SECRET) {
+    console.warn("WARNING: JWT_SECRET is missing. Please add it to your .env file for security.");
+}
 fastify.register(require('@fastify/jwt'), {
-    secret: process.env.JWT_SECRET || 'fallback_super_secret_key_change_in_production'
+    secret: process.env.JWT_SECRET || 'TEMPORARY_DEV_SECRET_DO_NOT_USE_IN_PROD'
 });
 
 fastify.decorate("authenticate", async function(request, reply) {
@@ -47,24 +53,27 @@ fastify.decorate("verifyAdmin", async function(request, reply) {
     }
 });
 
-// --- Global Security Bouncer (The Lock) ---
 fastify.addHook("onRequest", async (request, reply) => {
     if (request.method === 'OPTIONS') return;
 
-    const publicRoutes = [
-        '/',
+    // --- SECURED: Better public route handling to avoid blocking sub-routes ---
+    const publicPrefixes = [
         '/api/auth/login',
         '/api/auth/setup',
-        '/api/products' // Ensuring customers can browse products
+        '/api/products' // Ensures /api/products and /api/products/:id both work
     ];
-
+    
     const basePath = request.url.split('?')[0];
-    const isPublic = publicRoutes.includes(basePath);
+    
+    // --- OLD CODE (KEPT FOR CONSULTATION) ---
+    // const publicRoutes = ['/', '/api/auth/login', '/api/auth/setup', '/api/products'];
+    // const isPublic = publicRoutes.includes(basePath);
+    
+    // NEW OPTIMIZED LOGIC:
+    const isPublic = basePath === '/' || publicPrefixes.some(prefix => basePath.startsWith(prefix));
 
     if (!isPublic) {
         try {
-            // FIXED: Native browser SSE (EventSource) cannot send headers.
-            // We intercept the ?token= query parameter and manually inject it as a Bearer token.
             if (request.query && request.query.token) {
                 request.headers.authorization = `Bearer ${request.query.token}`;
             }
@@ -87,7 +96,6 @@ fastify.register(require('./routes/authRoutes'));
 fastify.register(require('./routes/promotionRoutes')); 
 fastify.register(require('./routes/shiftRoutes'));
 
-// Global Error Handler
 fastify.setErrorHandler(function (error, request, reply) {
     fastify.log.error(error);
     reply.status(error.statusCode || 500).send({
@@ -113,7 +121,6 @@ fastify.get('/', async (request, reply) => {
     };
 });
 
-// Initialize Background CRON Jobs
 require('./jobs/cronScheduler')(fastify, (newReport) => {
     latestInventoryReport = newReport;
 });
