@@ -49,7 +49,6 @@ const productSchema = {
     }
 };
 
-// --- SECURITY HARDENING: Validation Schemas for Stock Manipulation ---
 const restockSchema = {
     schema: {
         body: {
@@ -86,7 +85,6 @@ async function productRoutes(fastify, options) {
     
     fastify.get('/api/products', async (request, reply) => {
         try {
-            // OPTIMIZATION: Sort query keys alphabetically so the cache key is deterministic
             const sortedQuery = Object.keys(request.query).sort().reduce((acc, key) => {
                 acc[key] = request.query[key];
                 return acc;
@@ -173,7 +171,6 @@ async function productRoutes(fastify, options) {
             const data = await request.file();
             if (!data) return reply.status(400).send({ success: false, message: 'No file uploaded' });
 
-            const buffer = await data.toBuffer();
             const uploadResult = await new Promise((resolve, reject) => {
                 const uploadStream = cloudinary.uploader.upload_stream(
                     { folder: 'dailypick_products' },
@@ -182,7 +179,8 @@ async function productRoutes(fastify, options) {
                         else resolve(result);
                     }
                 );
-                uploadStream.end(buffer);
+                // --- OPTIMIZATION: Zero-RAM Streaming ---
+                data.file.pipe(uploadStream);
             });
 
             return { success: true, imageUrl: uploadResult.secure_url };
@@ -249,7 +247,6 @@ async function productRoutes(fastify, options) {
         }
     });
 
-    // --- APPLIED SCHEMAS FOR INVENTORY MATH ---
     fastify.put('/api/products/:id/restock', { preHandler: [fastify.verifyAdmin], ...restockSchema }, async (request, reply) => {
         try {
             const { variantId, invoiceNumber, addedQuantity, purchasingPrice, newSellingPrice } = request.body;
