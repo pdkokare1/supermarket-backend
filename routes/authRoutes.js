@@ -23,16 +23,24 @@ const loginSchema = {
 
 async function authRoutes(fastify, options) {
     
+    // --- FIXED: Force Reset Setup Route ---
     fastify.get('/api/auth/setup', async (request, reply) => {
         try {
-            const adminExists = await User.findOne({ role: 'Admin' });
-            if (!adminExists) {
-                const hashedPin = await bcrypt.hash('1234', 10);
-                const newAdmin = new User({ name: 'Super Admin', username: 'admin', pin: hashedPin, role: 'Admin' });
-                await newAdmin.save();
+            const hashedPin = await bcrypt.hash('1234', 10);
+            let admin = await User.findOne({ role: 'Admin' });
+            
+            if (!admin) {
+                admin = new User({ name: 'Super Admin', username: 'admin', pin: hashedPin, role: 'Admin', isActive: true });
+                await admin.save();
                 return { success: true, message: "Default Admin created. Username: 'admin', PIN: '1234'" };
+            } else {
+                // FORCE RESET THE EXISTING ADMIN ACCOUNT
+                admin.pin = hashedPin;
+                admin.username = 'admin'; // Ensure username is exactly lowercase 'admin'
+                admin.isActive = true;
+                await admin.save();
+                return { success: true, message: "Existing Admin FORCE RESET. Username: 'admin', PIN: '1234'" };
             }
-            return { success: true, message: 'Admin already exists.' };
         } catch (error) {
             fastify.log.error(error);
             reply.status(500).send({ success: false, message: 'Server Error' });
