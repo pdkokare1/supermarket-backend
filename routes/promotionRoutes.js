@@ -15,7 +15,7 @@ async function promotionRoutes(fastify, options) {
     });
 
     // Create a new promotion
-    fastify.post('/api/promotions', async (request, reply) => {
+    fastify.post('/api/promotions', { preHandler: [fastify.verifyAdmin] }, async (request, reply) => {
         try {
             const { name, type, value, minCartValue, applicableCategory, startDate, endDate } = request.body;
             
@@ -32,7 +32,7 @@ async function promotionRoutes(fastify, options) {
     });
 
     // Toggle active status
-    fastify.put('/api/promotions/:id/toggle', async (request, reply) => {
+    fastify.put('/api/promotions/:id/toggle', { preHandler: [fastify.verifyAdmin] }, async (request, reply) => {
         try {
             const promo = await Promotion.findById(request.params.id);
             if (!promo) return reply.status(404).send({ success: false, message: 'Not found' });
