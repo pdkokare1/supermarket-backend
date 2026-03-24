@@ -19,7 +19,8 @@ const orderSchema = new mongoose.Schema({
     },
     totalAmount: { 
         type: Number, 
-        required: true 
+        required: true,
+        min: 0 // Deep Hardening
     },
     status: { 
         type: String, 
@@ -30,8 +31,8 @@ const orderSchema = new mongoose.Schema({
         default: 'Cash on Delivery' 
     },
     splitDetails: {
-        cash: { type: Number, default: 0 },
-        upi: { type: Number, default: 0 }
+        cash: { type: Number, default: 0, min: 0 },
+        upi: { type: Number, default: 0, min: 0 }
     },
     deliveryType: { 
         type: String, 
@@ -43,10 +44,8 @@ const orderSchema = new mongoose.Schema({
     }
 }, { timestamps: true });
 
-// --- NEW OPTIMIZED LOGIC: Database Indexing for High-Speed Queries ---
-// These indexes tell MongoDB to pre-sort data exactly how your app requests it.
-orderSchema.index({ status: 1, createdAt: -1 }); // Speeds up the main Admin Dashboard
-orderSchema.index({ deliveryType: 1, status: 1 }); // Speeds up the 6:00 AM Cron Job
-orderSchema.index({ customerPhone: 1 }); // Speeds up POS Loyalty & Customer Deep-Dive lookups
+orderSchema.index({ status: 1, createdAt: -1 }); 
+orderSchema.index({ deliveryType: 1, status: 1 }); 
+orderSchema.index({ customerPhone: 1 }); 
 
 module.exports = mongoose.model('Order', orderSchema);
