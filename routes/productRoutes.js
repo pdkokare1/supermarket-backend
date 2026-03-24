@@ -9,7 +9,6 @@ cloudinary.config({
     api_secret: process.env.CLOUDINARY_API_SECRET
 });
 
-// --- NEW OPTIMIZED LOGIC: Redis Caching Initialization ---
 let Redis = null;
 let redisCache = null;
 try {
@@ -21,7 +20,6 @@ try {
     // Graceful fallback if ioredis is not installed
 }
 
-// Helper to flush product cache when items are updated
 const invalidateProductCache = async () => {
     if (redisCache) {
         try {
@@ -51,12 +49,50 @@ const productSchema = {
     }
 };
 
+// --- SECURITY HARDENING: Validation Schemas for Stock Manipulation ---
+const restockSchema = {
+    schema: {
+        body: {
+            type: 'object',
+            required: ['variantId', 'addedQuantity', 'purchasingPrice', 'newSellingPrice'],
+            properties: {
+                variantId: { type: 'string' },
+                invoiceNumber: { type: 'string' },
+                addedQuantity: { type: 'number', minimum: 1 },
+                purchasingPrice: { type: 'number', minimum: 0 },
+                newSellingPrice: { type: 'number', minimum: 0 }
+            }
+        }
+    }
+};
+
+const rtvSchema = {
+    schema: {
+        body: {
+            type: 'object',
+            required: ['variantId', 'returnedQuantity', 'refundAmount'],
+            properties: {
+                variantId: { type: 'string' },
+                distributorName: { type: 'string' },
+                returnedQuantity: { type: 'number', minimum: 1 },
+                refundAmount: { type: 'number', minimum: 0 },
+                reason: { type: 'string' }
+            }
+        }
+    }
+};
+
 async function productRoutes(fastify, options) {
     
     fastify.get('/api/products', async (request, reply) => {
         try {
-            // --- NEW OPTIMIZED LOGIC: Redis Cache Check ---
-            const cacheKey = `products:${JSON.stringify(request.query)}`;
+            // OPTIMIZATION: Sort query keys alphabetically so the cache key is deterministic
+            const sortedQuery = Object.keys(request.query).sort().reduce((acc, key) => {
+                acc[key] = request.query[key];
+                return acc;
+            }, {});
+            
+            const cacheKey = `products:${JSON.stringify(sortedQuery)}`;
             if (redisCache) {
                 const cachedResponse = await redisCache.get(cacheKey);
                 if (cachedResponse) {
@@ -103,12 +139,9 @@ async function productRoutes(fastify, options) {
             const page = parseInt(request.query.page) || 1; 
             const limit = parseInt(request.query.limit); 
             
-            // --- NEW OPTIMIZED LOGIC: Server-Side Sorting ---
-            // --- OLD CODE (KEPT FOR CONSULTATION) ---
-            // let query = Product.find(filter).sort({ createdAt: -1 });
             let sortQuery = { createdAt: -1 };
             if (request.query.sort === 'name_asc') sortQuery = { name: 1 };
-            if (request.query.sort === 'stock_low') sortQuery = { "variants.stock": 1 }; // Approximated by MongoDB variant array
+            if (request.query.sort === 'stock_low') sortQuery = { "variants.stock": 1 }; 
             
             let query = Product.find(filter).sort(sortQuery);
             
@@ -124,9 +157,8 @@ async function productRoutes(fastify, options) {
             
             const responseData = { success: true, count: products.length, total: total, data: products };
             
-            // --- NEW OPTIMIZED LOGIC: Save to Redis Cache ---
             if (redisCache) {
-                await redisCache.set(cacheKey, JSON.stringify(responseData), 'EX', 3600); // 1 hour expiry
+                await redisCache.set(cacheKey, JSON.stringify(responseData), 'EX', 3600); 
             }
 
             return responseData;
@@ -169,7 +201,7 @@ async function productRoutes(fastify, options) {
             });
             
             await newProduct.save();
-            await invalidateProductCache(); // NEW: Invalidate Cache
+            await invalidateProductCache(); 
             return { success: true, message: 'Product added', data: newProduct };
         } catch (error) { 
             fastify.log.error(error); 
@@ -192,7 +224,7 @@ async function productRoutes(fastify, options) {
             
             if (!updatedProduct) return reply.status(404).send({ success: false, message: 'Not found' });
             
-            await invalidateProductCache(); // NEW: Invalidate Cache
+            await invalidateProductCache(); 
             return { success: true, message: 'Product updated', data: updatedProduct };
         } catch (error) { 
             fastify.log.error(error); 
@@ -209,7 +241,7 @@ async function productRoutes(fastify, options) {
             product.isActive = false; 
             await product.save();
             
-            await invalidateProductCache(); // NEW: Invalidate Cache
+            await invalidateProductCache(); 
             return { success: true, message: `Product archived securely`, data: product };
         } catch (error) { 
             fastify.log.error(error); 
@@ -217,7 +249,8 @@ async function productRoutes(fastify, options) {
         }
     });
 
-    fastify.put('/api/products/:id/restock', { preHandler: [fastify.verifyAdmin] }, async (request, reply) => {
+    // --- APPLIED SCHEMAS FOR INVENTORY MATH ---
+    fastify.put('/api/products/:id/restock', { preHandler: [fastify.verifyAdmin], ...restockSchema }, async (request, reply) => {
         try {
             const { variantId, invoiceNumber, addedQuantity, purchasingPrice, newSellingPrice } = request.body;
             
@@ -238,7 +271,7 @@ async function productRoutes(fastify, options) {
             variant.price = Number(newSellingPrice);
             
             await product.save();
-            await invalidateProductCache(); // NEW: Invalidate Cache
+            await invalidateProductCache(); 
             return { success: true, message: 'Restock processed successfully', data: product };
         } catch (error) { 
             fastify.log.error(error); 
@@ -246,7 +279,7 @@ async function productRoutes(fastify, options) {
         }
     });
 
-    fastify.put('/api/products/:id/rtv', { preHandler: [fastify.verifyAdmin] }, async (request, reply) => {
+    fastify.put('/api/products/:id/rtv', { preHandler: [fastify.verifyAdmin], ...rtvSchema }, async (request, reply) => {
         try {
             const { variantId, distributorName, returnedQuantity, refundAmount, reason } = request.body;
             
@@ -262,7 +295,7 @@ async function productRoutes(fastify, options) {
             variant.stock -= Number(returnedQuantity); 
             
             await product.save();
-            await invalidateProductCache(); // NEW: Invalidate Cache
+            await invalidateProductCache(); 
             return { success: true, message: 'RTV processed successfully', data: product };
         } catch (error) { 
             fastify.log.error(error); 
@@ -289,7 +322,7 @@ async function productRoutes(fastify, options) {
 
             if (bulkOps.length > 0) {
                 const result = await Product.bulkWrite(bulkOps);
-                await invalidateProductCache(); // NEW: Invalidate Cache
+                await invalidateProductCache(); 
                 return { success: true, message: `Imported! Added ${result.upsertedCount}, Updated ${result.modifiedCount}.` };
             }
             return { success: true, message: `No products to process.` };
@@ -307,7 +340,7 @@ async function productRoutes(fastify, options) {
             product.isActive = !product.isActive; 
             await product.save();
             
-            await invalidateProductCache(); // NEW: Invalidate Cache
+            await invalidateProductCache(); 
             return { success: true, message: `Toggled`, data: product };
         } catch (error) { 
             fastify.log.error(error); 
