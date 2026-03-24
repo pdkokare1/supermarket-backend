@@ -20,11 +20,18 @@ try {
     // Graceful fallback if ioredis is not installed
 }
 
+// --- OPTIMIZATION: Non-Blocking Cache Invalidation ---
 const invalidateProductCache = async () => {
     if (redisCache) {
         try {
-            const keys = await redisCache.keys('products:*');
-            if (keys.length > 0) await redisCache.del(keys);
+            let cursor = '0';
+            do {
+                const [newCursor, keys] = await redisCache.scan(cursor, 'MATCH', 'products:*', 'COUNT', 100);
+                cursor = newCursor;
+                if (keys.length > 0) {
+                    await redisCache.del(...keys);
+                }
+            } while (cursor !== '0');
         } catch(e) {}
     }
 };
