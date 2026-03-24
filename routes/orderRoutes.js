@@ -4,6 +4,36 @@ const Product = require('../models/Product');
 const Customer = require('../models/Customer');
 const { Parser } = require('json2csv'); 
 
+// --- NEW OPTIMIZED LOGIC: Multi-Server Redis Pub/Sub ---
+let Redis = null;
+let redisPub = null;
+let redisSub = null;
+try {
+    Redis = require('ioredis');
+    if (process.env.REDIS_URL) {
+        redisPub = new Redis(process.env.REDIS_URL);
+        redisSub = new Redis(process.env.REDIS_URL);
+        
+        redisSub.subscribe('ORDER_STREAM_EVENT');
+        redisSub.on('message', (channel, message) => {
+            if (channel === 'ORDER_STREAM_EVENT') {
+                const parsed = JSON.parse(message);
+                if (parsed.target === 'admin') {
+                    adminConnections.forEach(conn => {
+                        if (!conn.destroyed) conn.write(`data: ${parsed.payload}\n\n`);
+                    });
+                } else if (parsed.target === 'customer' && customerConnections[parsed.orderId]) {
+                    customerConnections[parsed.orderId].forEach(conn => {
+                        if (!conn.destroyed) conn.write(`data: ${parsed.payload}\n\n`);
+                    });
+                }
+            }
+        });
+    }
+} catch (e) {
+    // Fails silently. Will use local array if ioredis is not installed.
+}
+
 let adminConnections = [];
 let customerConnections = {};
 
@@ -29,6 +59,25 @@ setInterval(() => {
         if (customerConnections[orderId].length === 0) delete customerConnections[orderId];
     }
 }, 15000);
+
+// --- NEW OPTIMIZED LOGIC: Fastify Schema Validation ---
+const posCheckoutSchema = {
+    schema: {
+        body: {
+            type: 'object',
+            required: ['items', 'totalAmount'],
+            properties: {
+                customerPhone: { type: 'string' },
+                items: { type: 'array' },
+                totalAmount: { type: 'number' },
+                taxAmount: { type: 'number' },
+                discountAmount: { type: 'number' },
+                paymentMethod: { type: 'string' },
+                pointsRedeemed: { type: 'number' }
+            }
+        }
+    }
+};
 
 async function orderRoutes(fastify, options) {
 
@@ -109,11 +158,18 @@ async function orderRoutes(fastify, options) {
 
             await newOrder.save();
             
-            adminConnections.forEach(conn => {
-                if (!conn.destroyed) {
-                    conn.write(`data: ${JSON.stringify({ type: 'NEW_ORDER', order: newOrder })}\n\n`);
-                }
-            });
+            // --- SECURED: Multi-server broadcast logic ---
+            const payload = JSON.stringify({ type: 'NEW_ORDER', order: newOrder });
+            if (redisPub) {
+                redisPub.publish('ORDER_STREAM_EVENT', JSON.stringify({ target: 'admin', payload }));
+            } else {
+                // --- OLD CODE (KEPT FOR CONSULTATION) ---
+                adminConnections.forEach(conn => {
+                    if (!conn.destroyed) {
+                        conn.write(`data: ${payload}\n\n`);
+                    }
+                });
+            }
 
             return { success: true, message: 'Order Placed Successfully', orderId: newOrder._id };
         } catch (error) {
@@ -122,7 +178,8 @@ async function orderRoutes(fastify, options) {
         }
     });
 
-    fastify.post('/api/orders/pos', async (request, reply) => {
+    // Notice we pass the posCheckoutSchema here to speed up route processing natively
+    fastify.post('/api/orders/pos', posCheckoutSchema, async (request, reply) => {
         const session = await mongoose.startSession();
         session.startTransaction();
 
@@ -218,12 +275,15 @@ async function orderRoutes(fastify, options) {
             
             if (!order) return reply.status(404).send({ success: false, message: 'Order not found' });
 
-            if (customerConnections[order._id]) {
-                customerConnections[order._id].forEach(conn => {
-                    if (!conn.destroyed) {
-                        conn.write(`data: ${JSON.stringify({ type: 'STATUS_UPDATE', status: status })}\n\n`);
-                    }
-                });
+            const payload = JSON.stringify({ type: 'STATUS_UPDATE', status: status });
+            if (redisPub) {
+                redisPub.publish('ORDER_STREAM_EVENT', JSON.stringify({ target: 'customer', orderId: order._id, payload }));
+            } else {
+                if (customerConnections[order._id]) {
+                    customerConnections[order._id].forEach(conn => {
+                        if (!conn.destroyed) conn.write(`data: ${payload}\n\n`);
+                    });
+                }
             }
 
             return { success: true, data: order };
@@ -243,12 +303,15 @@ async function orderRoutes(fastify, options) {
             
             if (!order) return reply.status(404).send({ success: false, message: 'Order not found' });
 
-            if (customerConnections[order._id]) {
-                customerConnections[order._id].forEach(conn => {
-                    if (!conn.destroyed) {
-                        conn.write(`data: ${JSON.stringify({ type: 'STATUS_UPDATE', status: 'Dispatched' })}\n\n`);
-                    }
-                });
+            const payload = JSON.stringify({ type: 'STATUS_UPDATE', status: 'Dispatched' });
+            if (redisPub) {
+                redisPub.publish('ORDER_STREAM_EVENT', JSON.stringify({ target: 'customer', orderId: order._id, payload }));
+            } else {
+                if (customerConnections[order._id]) {
+                    customerConnections[order._id].forEach(conn => {
+                        if (!conn.destroyed) conn.write(`data: ${payload}\n\n`);
+                    });
+                }
             }
 
             return { success: true, data: order };
@@ -293,12 +356,15 @@ async function orderRoutes(fastify, options) {
 
             await order.save();
 
-            if (customerConnections[order._id]) {
-                customerConnections[order._id].forEach(conn => {
-                    if (!conn.destroyed) {
-                        conn.write(`data: ${JSON.stringify({ type: 'STATUS_UPDATE', status: 'Cancelled' })}\n\n`);
-                    }
-                });
+            const payload = JSON.stringify({ type: 'STATUS_UPDATE', status: 'Cancelled' });
+            if (redisPub) {
+                redisPub.publish('ORDER_STREAM_EVENT', JSON.stringify({ target: 'customer', orderId: order._id, payload }));
+            } else {
+                if (customerConnections[order._id]) {
+                    customerConnections[order._id].forEach(conn => {
+                        if (!conn.destroyed) conn.write(`data: ${payload}\n\n`);
+                    });
+                }
             }
 
             return { success: true, message: 'Order Cancelled and Stock Refunded', data: order };
@@ -426,16 +492,13 @@ async function orderRoutes(fastify, options) {
         }
     });
 
-    // --- OPTIMIZED: Paginated Fetch Endpoint ---
     fastify.get('/api/orders', async (request, reply) => {
         try {
             let filter = {};
 
-            // 1. Apply Server-Side Tab Filters
             if (request.query.tab === 'Instant') filter.deliveryType = { $ne: 'Routine' };
             if (request.query.tab === 'Routine') filter.deliveryType = 'Routine';
 
-            // 2. Apply Server-Side Date Filters
             const today = new Date();
             today.setHours(0, 0, 0, 0);
             const yesterday = new Date(today);
@@ -461,7 +524,6 @@ async function orderRoutes(fastify, options) {
                 query = query.skip(skip).limit(limit);
             }
 
-            // Execute paginated search + global stats concurrently for speed
             const [orders, total, pendingOrders] = await Promise.all([
                 query.lean(),
                 Order.countDocuments(filter),
