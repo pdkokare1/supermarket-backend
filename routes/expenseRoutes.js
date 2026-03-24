@@ -2,8 +2,11 @@ const Expense = require('../models/Expense');
 
 async function expenseRoutes(fastify, options) {
     
-    // Log a new expense
-    fastify.post('/api/expenses', async (request, reply) => {
+    // --- OLD CODE (KEPT FOR CONSULTATION) ---
+    // fastify.post('/api/expenses', async (request, reply) => { ...
+
+    // --- SECURED: Added Admin RBAC hook ---
+    fastify.post('/api/expenses', { preHandler: [fastify.verifyAdmin] }, async (request, reply) => {
         try {
             const { desc, amount, dateStr, timeStr } = request.body;
             
@@ -17,8 +20,11 @@ async function expenseRoutes(fastify, options) {
         }
     });
 
-    // Fetch expenses (Optional date filter)
-    fastify.get('/api/expenses', async (request, reply) => {
+    // --- OLD CODE (KEPT FOR CONSULTATION) ---
+    // fastify.get('/api/expenses', async (request, reply) => { ...
+
+    // --- SECURED: Added Admin RBAC hook ---
+    fastify.get('/api/expenses', { preHandler: [fastify.verifyAdmin] }, async (request, reply) => {
         try {
             const { dateStr } = request.query;
             let filter = {};
@@ -27,7 +33,6 @@ async function expenseRoutes(fastify, options) {
                 filter.dateStr = dateStr;
             }
             
-            // Return newest expenses first
             const expenses = await Expense.find(filter).sort({ createdAt: -1 });
             
             return { success: true, data: expenses };
