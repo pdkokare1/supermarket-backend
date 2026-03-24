@@ -14,8 +14,8 @@ const loginSchema = {
     },
     config: {
         rateLimit: {
-            max: 50, 
-            timeWindow: '1 minute'
+            max: 5, 
+            timeWindow: '15 minutes'
         }
     }
 };
