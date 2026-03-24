@@ -32,8 +32,14 @@ if (redisClient) {
 }
 fastify.register(require('@fastify/rate-limit'), rateLimitConfig);
 
+// --- RESTORED & SECURED CORS POLICY ---
 fastify.register(require('@fastify/cors'), { 
-    origin: process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : false
+    origin: process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : [
+        'https://dailypick-admin.vercel.app',
+        'http://localhost:3000',
+        'http://localhost:5500',
+        'http://127.0.0.1:5500'
+    ]
 });
 
 // --- PERFORMANCE: High-Speed Response Compression ---
