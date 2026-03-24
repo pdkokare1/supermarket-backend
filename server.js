@@ -2,8 +2,10 @@ const Fastify = require('fastify');
 const mongoose = require('mongoose');
 require('dotenv').config();
 
+// --- OPTIMIZATION: Dynamic Logging ---
+// Effect: Reduces CPU and storage overhead in production environments.
 const fastify = Fastify({
-    logger: true 
+    logger: process.env.NODE_ENV === 'production' ? { level: 'error' } : true 
 });
 
 const PORT = process.env.PORT || 3000;
@@ -24,14 +26,17 @@ fastify.register(require('@fastify/multipart'), {
     }
 });
 
-// --- SECURED: Removed fallback secret. Must be provided in .env ---
-// --- OLD CODE (KEPT FOR CONSULTATION) ---
-// fastify.register(require('@fastify/jwt'), {
-//     secret: process.env.JWT_SECRET || 'fallback_super_secret_key_change_in_production'
-// });
+// --- SECURITY HARDENING: Strict JWT Enforcement ---
+// Effect: Prevents the server from booting in production with an unsafe fallback key.
 if (!process.env.JWT_SECRET) {
-    console.warn("WARNING: JWT_SECRET is missing. Please add it to your .env file for security.");
+    if (process.env.NODE_ENV === 'production') {
+        fastify.log.error("CRITICAL: JWT_SECRET is missing in production. Server shutting down.");
+        process.exit(1);
+    } else {
+        fastify.log.warn("WARNING: JWT_SECRET is missing. Using temporary dev secret.");
+    }
 }
+
 fastify.register(require('@fastify/jwt'), {
     secret: process.env.JWT_SECRET || 'TEMPORARY_DEV_SECRET_DO_NOT_USE_IN_PROD'
 });
@@ -56,20 +61,13 @@ fastify.decorate("verifyAdmin", async function(request, reply) {
 fastify.addHook("onRequest", async (request, reply) => {
     if (request.method === 'OPTIONS') return;
 
-    // --- SECURED: Better public route handling to avoid blocking sub-routes ---
     const publicPrefixes = [
         '/api/auth/login',
         '/api/auth/setup',
-        '/api/products' // Ensures /api/products and /api/products/:id both work
+        '/api/products'
     ];
     
     const basePath = request.url.split('?')[0];
-    
-    // --- OLD CODE (KEPT FOR CONSULTATION) ---
-    // const publicRoutes = ['/', '/api/auth/login', '/api/auth/setup', '/api/products'];
-    // const isPublic = publicRoutes.includes(basePath);
-    
-    // NEW OPTIMIZED LOGIC:
     const isPublic = basePath === '/' || publicPrefixes.some(prefix => basePath.startsWith(prefix));
 
     if (!isPublic) {
@@ -125,10 +123,18 @@ require('./jobs/cronScheduler')(fastify, (newReport) => {
     latestInventoryReport = newReport;
 });
 
+// --- OPTIMIZATION: Graceful Shutdown with Timeout ---
 const listeners = ['SIGINT', 'SIGTERM'];
 listeners.forEach((signal) => {
     process.on(signal, async () => {
         fastify.log.info(`${signal} received. Shutting down gracefully...`);
+        
+        // Force exit after 10 seconds if connections hang
+        setTimeout(() => {
+            fastify.log.error('Forcing shutdown after timeout.');
+            process.exit(1);
+        }, 10000).unref();
+
         await fastify.close();
         await mongoose.connection.close();
         process.exit(0);
