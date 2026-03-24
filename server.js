@@ -32,9 +32,8 @@ if (redisClient) {
 }
 fastify.register(require('@fastify/rate-limit'), rateLimitConfig);
 
-
 fastify.register(require('@fastify/cors'), { 
-    origin: process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : '*'
+    origin: process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : false
 });
 
 // --- PERFORMANCE: High-Speed Response Compression ---
@@ -60,23 +59,16 @@ fastify.register(require('@fastify/swagger-ui'), {
 });
 
 if (!process.env.JWT_SECRET) {
-    if (process.env.NODE_ENV === 'production') {
-        fastify.log.error("CRITICAL: JWT_SECRET is missing in production. Server shutting down.");
-        process.exit(1);
-    } else {
-        fastify.log.warn("WARNING: JWT_SECRET is missing. Using temporary dev secret.");
-    }
+    fastify.log.error("CRITICAL: JWT_SECRET is missing. Server shutting down to prevent unauthorized token minting.");
+    process.exit(1);
 }
 
 fastify.register(require('@fastify/jwt'), {
-    secret: process.env.JWT_SECRET || 'TEMPORARY_DEV_SECRET_DO_NOT_USE_IN_PROD'
+    secret: process.env.JWT_SECRET
 });
 
 fastify.decorate("authenticate", async function(request, reply) {
     try {
-        if (request.query && request.query.token) {
-            request.headers.authorization = `Bearer ${request.query.token}`;
-        }
         const decoded = await request.jwtVerify();
         
         const user = await User.findById(decoded.id).select('tokenVersion isActive');
@@ -110,9 +102,6 @@ fastify.addHook("onRequest", async (request, reply) => {
 
     if (!isPublic) {
         try {
-            if (request.query && request.query.token) {
-                request.headers.authorization = `Bearer ${request.query.token}`;
-            }
             const decoded = await request.jwtVerify(); 
             
             const user = await User.findById(decoded.id).select('tokenVersion isActive');
@@ -199,10 +188,6 @@ fastify.get('/', async (request, reply) => {
     };
 });
 
-require('./jobs/cronScheduler')(fastify, (newReport) => {
-    latestInventoryReport = newReport;
-});
-
 const listeners = ['SIGINT', 'SIGTERM'];
 listeners.forEach((signal) => {
     process.on(signal, async () => {
@@ -220,34 +205,55 @@ listeners.forEach((signal) => {
 });
 
 const startServer = async () => {
+    let retries = 5;
+    while (retries) {
+        try {
+            await mongoose.connect(process.env.MONGO_URI, {
+                maxPoolSize: 50
+            });
+            fastify.log.info(`Successfully connected to MongoDB Atlas by Worker ${process.pid}`);
+            break;
+        } catch (err) {
+            console.error(`CRITICAL ERROR CONNECTING TO MONGODB. Retries left: ${retries - 1}`, err.message);
+            retries -= 1;
+            if (retries === 0) process.exit(1);
+            await new Promise(res => setTimeout(res, 5000));
+        }
+    }
+
     try {
-        await mongoose.connect(process.env.MONGO_URI, {
-            maxPoolSize: 50
-        });
-        fastify.log.info(`Successfully connected to MongoDB Atlas by Worker ${process.pid}`);
-        
         await fastify.listen({ port: PORT, host: '0.0.0.0' });
     } catch (err) {
-        console.error('CRITICAL ERROR CONNECTING TO MONGODB:', err.message);
+        fastify.log.error(err);
         process.exit(1);
     }
 };
 
-// --- SCALING: Multi-Core Clustering ---
-// Safely utilizes all available CPU cores on Hostinger/Railway without deleting any startup code
-if (cluster.isPrimary && process.env.NODE_ENV === 'production') {
+// --- SCALING & JOB SCHEDULING ---
+if (process.env.ENABLE_CLUSTERING === 'true' && cluster.isPrimary) {
+    // Primary Node: Initializes the cron job exactly once and forks workers
+    require('./jobs/cronScheduler')(fastify, (newReport) => {
+        latestInventoryReport = newReport;
+    });
+
     const numCPUs = os.cpus().length;
     console.log(`[CLUSTER] Primary Process ${process.pid} running. Distributing traffic across ${numCPUs} CPUs...`);
     
     for (let i = 0; i < numCPUs; i++) {
-        cluster.fork(); // Spawn a child process for each core
+        cluster.fork(); 
     }
 
     cluster.on('exit', (worker, code, signal) => {
         console.log(`[CLUSTER] Worker ${worker.process.pid} died or crashed. Auto-restarting...`);
-        cluster.fork(); // Self-healing: instantly replace the dead worker
+        cluster.fork(); 
     });
+} else if (process.env.ENABLE_CLUSTERING !== 'true') {
+    // Standalone Mode (Railway/Vercel default): Initializes cron and runs server on one process
+    require('./jobs/cronScheduler')(fastify, (newReport) => {
+        latestInventoryReport = newReport;
+    });
+    startServer();
 } else {
-    // Workers execute the actual server startup
+    // Clustered Worker Nodes: Exclusively handle traffic
     startServer();
 }
