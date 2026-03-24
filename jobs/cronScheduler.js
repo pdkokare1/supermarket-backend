@@ -12,7 +12,6 @@ module.exports = function(fastify, updateInventoryReport) {
     cron.schedule('0 6 * * *', async () => {
         fastify.log.info('Running 6:00 AM Routine Deliveries CRON Job...');
         try {
-            // Optimized with .lean() for read-only speed and reduced RAM
             const routineOrders = await Order.find({ deliveryType: 'Routine', status: { $ne: 'Cancelled' } }).lean();
             
             for (const ro of routineOrders) {
@@ -47,7 +46,6 @@ module.exports = function(fastify, updateInventoryReport) {
             const dateAgo = new Date();
             dateAgo.setDate(dateAgo.getDate() - velocityDays);
 
-            // Optimized with .lean() for faster iteration over large datasets
             const recentOrders = await Order.find({
                 createdAt: { $gte: dateAgo },
                 status: { $in: ['Completed', 'Dispatched'] } 
@@ -117,13 +115,37 @@ module.exports = function(fastify, updateInventoryReport) {
                 await Product.bulkWrite(bulkOps);
             }
 
-            // Sync the report back to server.js securely
             if (updateInventoryReport) {
                 updateInventoryReport({
                     lowStock: lowStockItems,
                     deadStock: deadStockItems,
                     lastGenerated: new Date()
                 });
+            }
+
+            // --- NEW: Automated Low Stock Email Alert via Nodemailer ---
+            if (lowStockItems.length > 0 && process.env.EMAIL_USER && process.env.EMAIL_PASS && process.env.TARGET_EMAIL) {
+                const transporter = nodemailer.createTransport({
+                    service: 'gmail',
+                    auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS }
+                });
+                
+                let htmlList = lowStockItems.map(item => `<li><strong>${item.name} (${item.variant})</strong> - Stock: <span style="color:red;">${item.stock}</span> (Runway: ${item.daysLeft} days)</li>`).join('');
+                
+                const htmlContent = `
+                    <h2 style="color: #dc2626;">Daily Inventory Alert: Low Stock ⚠️</h2>
+                    <p>The following <strong>${lowStockItems.length} items</strong> have fallen below their minimum stock threshold or have less than 3 days of runway left:</p>
+                    <ul>${htmlList}</ul>
+                    <p>Log in to the DailyPick Admin Panel to process Supplier Purchase Orders.</p>
+                `;
+
+                await transporter.sendMail({
+                    from: `"DailyPick Server" <${process.env.EMAIL_USER}>`,
+                    to: process.env.TARGET_EMAIL,
+                    subject: `⚠️ Action Required: ${lowStockItems.length} items need restock`, 
+                    html: htmlContent
+                });
+                fastify.log.info('9:00 AM Low Stock Email Alert sent successfully.');
             }
 
             fastify.log.info(`CRON REPORT: ${lowStockItems.length} Low Stock, ${deadStockItems.length} Dead Stock.`);
