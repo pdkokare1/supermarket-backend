@@ -1,9 +1,6 @@
 const Expense = require('../models/Expense');
 
 async function expenseRoutes(fastify, options) {
-    
-    // --- OLD CODE (KEPT FOR CONSULTATION) ---
-    // fastify.post('/api/expenses', async (request, reply) => { ...
 
     // --- SECURED: Added Admin RBAC hook ---
     fastify.post('/api/expenses', { preHandler: [fastify.verifyAdmin] }, async (request, reply) => {
@@ -19,9 +16,6 @@ async function expenseRoutes(fastify, options) {
             reply.status(500).send({ success: false, message: 'Server Error saving expense' });
         }
     });
-
-    // --- OLD CODE (KEPT FOR CONSULTATION) ---
-    // fastify.get('/api/expenses', async (request, reply) => { ...
 
     // --- SECURED: Added Admin RBAC hook ---
     fastify.get('/api/expenses', { preHandler: [fastify.verifyAdmin] }, async (request, reply) => {
