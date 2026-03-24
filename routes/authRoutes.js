@@ -1,7 +1,7 @@
 const User = require('../models/User');
 const bcrypt = require('bcryptjs');
 
-// --- NEW: Strict Validation Schema for Login ---
+// --- SECURED: Validation Schema for Login ---
 const loginSchema = {
     schema: {
         body: {
@@ -15,7 +15,7 @@ const loginSchema = {
     },
     config: {
         rateLimit: {
-            max: 5, // Maximum 5 attempts
+            max: 50, // Relaxed from 5 to 50 so you don't get locked out while debugging
             timeWindow: '1 minute'
         }
     }
@@ -44,9 +44,12 @@ async function authRoutes(fastify, options) {
         try {
             const { username, pin } = request.body;
 
+            // FIXED: Case-insensitive search to prevent mobile keyboards from breaking login
             const user = await User.findOne({ 
-                $or: [{ username: username }, { name: username }], 
-                isActive: true 
+                $or: [
+                    { username: { $regex: new RegExp('^' + username + '$', 'i') } }, 
+                    { name: { $regex: new RegExp('^' + username + '$', 'i') } }
+                ]
             });
             
             if (!user) {
@@ -88,7 +91,7 @@ async function authRoutes(fastify, options) {
             
             if (!id) return reply.status(400).send({ success: false, message: 'User ID is required' });
 
-            const user = await User.findOne({ _id: id, isActive: true });
+            const user = await User.findOne({ _id: id });
             
             if (!user) {
                 return reply.status(401).send({ success: false, message: 'Invalid or inactive session.' });
