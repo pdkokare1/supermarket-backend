@@ -89,6 +89,7 @@ fastify.decorate("authenticate", async function(request, reply) {
 fastify.decorate("verifyAdmin", async function(request, reply) {
     if (request.user && request.user.role !== 'Admin') {
         reply.status(403).send({ success: false, message: 'Forbidden: Admin access required.' });
+        throw new Error('Forbidden: Admin access required.'); 
     }
 });
 
@@ -180,10 +181,24 @@ fastify.get('/api/health', async (request, reply) => {
         }
     }
     
+    const memoryUsage = process.memoryUsage();
+    const systemHealth = {
+        status: dbStatus === 'Connected' ? 'Healthy' : 'Error',
+        database: dbStatus,
+        redis: redisStatus,
+        uptime: process.uptime(),
+        memory: {
+            free: `${(os.freemem() / 1024 / 1024).toFixed(2)} MB`,
+            total: `${(os.totalmem() / 1024 / 1024).toFixed(2)} MB`,
+            rss: `${(memoryUsage.rss / 1024 / 1024).toFixed(2)} MB`
+        },
+        cpuLoad: os.loadavg()
+    };
+    
     if (dbStatus !== 'Connected') {
-        reply.status(503).send({ status: 'Error', database: dbStatus, redis: redisStatus });
+        reply.status(503).send(systemHealth);
     } else {
-        reply.send({ status: 'Healthy', database: dbStatus, redis: redisStatus });
+        reply.send(systemHealth);
     }
 });
 
@@ -206,19 +221,21 @@ listeners.forEach((signal) => {
 
         await fastify.close();
         await mongoose.connection.close();
+        if (redisClient) await redisClient.quit();
         process.exit(0);
     });
 });
 
-const startServer = async () => {
+const connectDB = async () => {
+    if (mongoose.connection.readyState === 1 || mongoose.connection.readyState === 2) return true;
     let retries = 5;
     while (retries) {
         try {
             await mongoose.connect(process.env.MONGO_URI, {
                 maxPoolSize: 50
             });
-            fastify.log.info(`Successfully connected to MongoDB Atlas by Worker ${process.pid}`);
-            break;
+            fastify.log.info(`Successfully connected to MongoDB Atlas by Process ${process.pid}`);
+            return true;
         } catch (err) {
             console.error(`CRITICAL ERROR CONNECTING TO MONGODB. Retries left: ${retries - 1}`, err.message);
             retries -= 1;
@@ -226,7 +243,10 @@ const startServer = async () => {
             await new Promise(res => setTimeout(res, 5000));
         }
     }
+};
 
+const startServer = async () => {
+    await connectDB();
     try {
         await fastify.listen({ port: PORT, host: '0.0.0.0' });
     } catch (err) {
@@ -237,28 +257,35 @@ const startServer = async () => {
 
 // --- SCALING & JOB SCHEDULING ---
 if (process.env.ENABLE_CLUSTERING === 'true' && cluster.isPrimary) {
-    // Primary Node: Initializes the cron job exactly once and forks workers
-    require('./jobs/cronScheduler')(fastify, (newReport) => {
-        latestInventoryReport = newReport;
-    });
+    // Primary Node: Connects to DB, initializes the cron job exactly once, and forks workers
+    connectDB().then(() => {
+        require('./jobs/cronScheduler')(fastify, (newReport) => {
+            latestInventoryReport = newReport;
+        });
 
-    const numCPUs = os.cpus().length;
-    console.log(`[CLUSTER] Primary Process ${process.pid} running. Distributing traffic across ${numCPUs} CPUs...`);
-    
-    for (let i = 0; i < numCPUs; i++) {
-        cluster.fork(); 
-    }
+        const numCPUs = os.cpus().length;
+        console.log(`[CLUSTER] Primary Process ${process.pid} running. Distributing traffic across ${numCPUs} CPUs...`);
+        
+        for (let i = 0; i < numCPUs; i++) {
+            cluster.fork(); 
+        }
 
-    cluster.on('exit', (worker, code, signal) => {
-        console.log(`[CLUSTER] Worker ${worker.process.pid} died or crashed. Auto-restarting...`);
-        cluster.fork(); 
+        cluster.on('exit', (worker, code, signal) => {
+            console.log(`[CLUSTER] Worker ${worker.process.pid} died or crashed. Auto-restarting...`);
+            cluster.fork(); 
+        });
     });
 } else if (process.env.ENABLE_CLUSTERING !== 'true') {
-    // Standalone Mode (Railway/Vercel default): Initializes cron and runs server on one process
-    require('./jobs/cronScheduler')(fastify, (newReport) => {
-        latestInventoryReport = newReport;
+    // Standalone Mode (Railway/Vercel default): Connects DB, initializes cron and runs server on one process
+    connectDB().then(() => {
+        require('./jobs/cronScheduler')(fastify, (newReport) => {
+            latestInventoryReport = newReport;
+        });
+        fastify.listen({ port: PORT, host: '0.0.0.0' }).catch(err => {
+            fastify.log.error(err);
+            process.exit(1);
+        });
     });
-    startServer();
 } else {
     // Clustered Worker Nodes: Exclusively handle traffic
     startServer();
