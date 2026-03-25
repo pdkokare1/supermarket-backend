@@ -1,8 +1,20 @@
 const Category = require('../models/Category');
 
+const categorySchema = {
+    schema: {
+        body: {
+            type: 'object',
+            required: ['name'],
+            properties: {
+                name: { type: 'string' }
+            }
+        }
+    }
+};
+
 async function categoryRoutes(fastify, options) {
     // GET /api/categories - Fetch all categories
-    fastify.get('/api/categories', async (request, reply) => {
+    fastify.get('/api/categories', { preHandler: [fastify.authenticate] }, async (request, reply) => {
         try {
             const categories = await Category.find().sort({ name: 1 });
             return { success: true, count: categories.length, data: categories };
@@ -13,7 +25,7 @@ async function categoryRoutes(fastify, options) {
     });
 
     // POST /api/categories - Add a new category
-    fastify.post('/api/categories', async (request, reply) => {
+    fastify.post('/api/categories', { preHandler: [fastify.authenticate, fastify.verifyAdmin], ...categorySchema }, async (request, reply) => {
         try {
             const { name } = request.body;
             const newCategory = new Category({ name });
