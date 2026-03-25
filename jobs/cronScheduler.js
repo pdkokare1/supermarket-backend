@@ -5,7 +5,6 @@ const Order = require('../models/Order');
 const Expense = require('../models/Expense'); 
 const Customer = require('../models/Customer'); 
 const nodemailer = require('nodemailer');    
-const axios = require('axios');              
 const cloudinary = require('cloudinary').v2; 
 
 const fs = require('fs');
@@ -45,11 +44,12 @@ async function runWithLock(jobName, fastify, task) {
     }
 }
 
-const createBackupFile = async (model, filename) => {
+// --- OPTIMIZATION: Streaming to prevent OOM errors, now accepts a query ---
+const createBackupFile = async (model, filename, query = {}) => {
     const filePath = path.join(os.tmpdir(), filename);
     const writeStream = fs.createWriteStream(filePath);
     writeStream.write('[\n');
-    const cursor = model.find({}).lean().cursor();
+    const cursor = model.find(query).lean().cursor();
     
     let isFirst = true;
     for await (const doc of cursor) {
@@ -84,6 +84,7 @@ module.exports = function(fastify, updateInventoryReport) {
         runWithLock('RoutineDeliveries', fastify, async () => {
             fastify.log.info('Running 6:00 AM Routine Deliveries CRON Job...');
             try {
+                // Lean is safe here as the data size for a single day routine is usually small, but cursor could be used if it scales massively
                 const routineOrders = await Order.find({ deliveryType: 'Routine', status: { $ne: 'Cancelled' } }).lean();
                 
                 if (routineOrders.length > 0) {
@@ -141,12 +142,13 @@ module.exports = function(fastify, updateInventoryReport) {
                     if (v._id) variantSales[v._id.toString()] = v.totalSold;
                 });
 
-                const products = await Product.find({ isActive: true });
+                // --- PERFORMANCE: Cursor Iteration to prevent Memory Leaks ---
+                const productCursor = Product.find({ isActive: true }).cursor();
                 let lowStockItems = [];
                 let deadStockItems = [];
                 let bulkOps = []; 
                 
-                for (let p of products) {
+                for await (let p of productCursor) {
                     let isModified = false;
                     
                     if (p.variants) {
@@ -292,7 +294,6 @@ module.exports = function(fastify, updateInventoryReport) {
                 const datePrefix = new Date().toISOString().split('T')[0];
                 let emailAppend = '';
 
-                // --- OPTIMIZATION: Secure File Cleanup Block ---
                 let productsPath = null;
                 let customersPath = null;
                 let ordersPath = null;
@@ -301,8 +302,11 @@ module.exports = function(fastify, updateInventoryReport) {
                     productsPath = await createBackupFile(Product, `products_${datePrefix}.json`);
                     customersPath = await createBackupFile(Customer, `customers_${datePrefix}.json`);
                     
-                    ordersPath = path.join(os.tmpdir(), `orders_${datePrefix}.json`);
-                    fs.writeFileSync(ordersPath, JSON.stringify(todaysOrders, null, 2));
+                    // --- PERFORMANCE: Streaming the orders backup via query to stop event-loop freezes ---
+                    ordersPath = await createBackupFile(Order, `orders_${datePrefix}.json`, {
+                        createdAt: { $gte: today, $lt: tomorrow },
+                        status: { $ne: 'Cancelled' }
+                    });
 
                     const [prodUrl, custUrl, orderUrl] = await Promise.all([
                         uploadFileToCloudinary(productsPath, `products_${datePrefix}`),
@@ -314,8 +318,15 @@ module.exports = function(fastify, updateInventoryReport) {
                 } catch (cloudinaryErr) {
                     fastify.log.error('Cloudinary Backup Failed:', cloudinaryErr);
                     emailAppend = `\n\n(Warning: Secure Cloudinary Backups failed. Check API Keys.)`;
+                    
+                    // Fallback alert for critical backup failure
+                    if (process.env.WA_PHONE_NUMBER && process.env.CALLMEBOT_API_KEY) {
+                        try {
+                            const errorText = encodeURIComponent(`CRITICAL: Cloudinary Backup Failed for ${dateString}.`);
+                            await fetch(`https://api.callmebot.com/whatsapp.php?phone=${process.env.WA_PHONE_NUMBER}&text=${errorText}&apikey=${process.env.CALLMEBOT_API_KEY}`);
+                        } catch(e) {}
+                    }
                 } finally {
-                    // Ensures files are deleted from the server hard drive regardless of upload success
                     if (productsPath && fs.existsSync(productsPath)) fs.unlinkSync(productsPath);
                     if (customersPath && fs.existsSync(customersPath)) fs.unlinkSync(customersPath);
                     if (ordersPath && fs.existsSync(ordersPath)) fs.unlinkSync(ordersPath);
@@ -345,7 +356,8 @@ module.exports = function(fastify, updateInventoryReport) {
                         const encodedText = encodeURIComponent(reportText + `Great work today! 🚀`);
                         const waUrl = `https://api.callmebot.com/whatsapp.php?phone=${process.env.WA_PHONE_NUMBER}&text=${encodedText}&apikey=${process.env.CALLMEBOT_API_KEY}`;
                         
-                        await axios.get(waUrl);
+                        // --- PERFORMANCE: Replaced Axios with native fetch ---
+                        await fetch(waUrl);
                         fastify.log.info('EOD WhatsApp sent successfully.');
                     } catch (waErr) {
                         fastify.log.error('Failed to send EOD WhatsApp:', waErr);
@@ -358,25 +370,20 @@ module.exports = function(fastify, updateInventoryReport) {
         });
     });
 
-    // --- COST OPTIMIZATION: 90-Day Cloudinary Automated Cleanup ---
-    // Runs at 2:00 AM every single day
     cron.schedule('0 2 * * *', () => {
         runWithLock('CloudinaryCleanup', fastify, async () => {
             fastify.log.info('Running 2:00 AM Backup Cleanup CRON Job (90 Days Retention)...');
             try {
-                // Calculate exactly 90 days ago
                 const date90 = new Date();
                 date90.setDate(date90.getDate() - 90);
                 const datePrefix = date90.toISOString().split('T')[0];
                 
-                // Formulate exact public IDs to delete
                 const publicIds = [
                     `backups/products_${datePrefix}`,
                     `backups/customers_${datePrefix}`,
                     `backups/orders_${datePrefix}`
                 ];
                 
-                // Fast deletion without needing Search Tier API
                 const result = await cloudinary.api.delete_resources(publicIds, { type: 'upload', resource_type: 'raw' });
                 fastify.log.info(`Deleted old backups from ${datePrefix}:`, result);
             } catch(err) {
