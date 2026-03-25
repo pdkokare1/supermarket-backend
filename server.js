@@ -34,15 +34,10 @@ fastify.register(require('@fastify/rate-limit'), rateLimitConfig);
 
 // --- RESTORED & SECURED CORS POLICY ---
 fastify.register(require('@fastify/cors'), { 
-    origin: process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',').map(origin => origin.trim()) : [
-        'https://dailypick-admin.vercel.app',
-        'http://localhost:3000',
-        'http://localhost:5500',
-        'http://127.0.0.1:5500'
-    ],
+    origin: true, 
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     credentials: true,
-    allowedHeaders: ['Content-Type', 'Authorization']
+    allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'Origin', 'X-Requested-With']
 });
 
 // --- PERFORMANCE: High-Speed Response Compression ---
@@ -98,7 +93,7 @@ fastify.decorate("verifyAdmin", async function(request, reply) {
     }
 });
 
-// EXPLICIT ROUTE REGISTRATION (Safest for Vercel/Railway Deployments)
+// EXPLICIT ROUTE REGISTRATION 
 fastify.register(require('./routes/productRoutes'));
 fastify.register(require('./routes/orderRoutes'));
 fastify.register(require('./routes/categoryRoutes'));
@@ -191,7 +186,7 @@ listeners.forEach((signal) => {
         setTimeout(() => {
             fastify.log.error('Forcing shutdown after timeout. Some active processes may have been terminated.');
             process.exit(1);
-        }, 15000).unref(); // Increased timeout to 15s to allow cron streams to finish
+        }, 15000).unref(); 
 
         try {
             await fastify.close();
