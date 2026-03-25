@@ -1,7 +1,19 @@
 const Brand = require('../models/Brand');
 
+const brandSchema = {
+    schema: {
+        body: {
+            type: 'object',
+            required: ['name'],
+            properties: {
+                name: { type: 'string' }
+            }
+        }
+    }
+};
+
 async function brandRoutes(fastify, options) {
-    fastify.get('/api/brands', async (request, reply) => {
+    fastify.get('/api/brands', { preHandler: [fastify.authenticate] }, async (request, reply) => {
         try {
             const brands = await Brand.find().sort({ name: 1 });
             return { success: true, count: brands.length, data: brands };
@@ -11,7 +23,7 @@ async function brandRoutes(fastify, options) {
         }
     });
 
-    fastify.post('/api/brands', async (request, reply) => {
+    fastify.post('/api/brands', { preHandler: [fastify.authenticate, fastify.verifyAdmin], ...brandSchema }, async (request, reply) => {
         try {
             const { name } = request.body;
             const newBrand = new Brand({ name });
