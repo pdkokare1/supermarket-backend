@@ -20,6 +20,18 @@ const loginSchema = {
     }
 };
 
+const verifySchema = {
+    schema: {
+        querystring: {
+            type: 'object',
+            required: ['id'],
+            properties: {
+                id: { type: 'string' }
+            }
+        }
+    }
+};
+
 async function authRoutes(fastify, options) {
     
     fastify.get('/api/auth/setup', async (request, reply) => {
@@ -101,12 +113,11 @@ async function authRoutes(fastify, options) {
         }
     });
 
-    fastify.get('/api/auth/verify', async (request, reply) => {
+    // Added schema and explicit preHandler authentication
+    fastify.get('/api/auth/verify', { schema: verifySchema.schema, preHandler: [fastify.authenticate] }, async (request, reply) => {
         try {
             const { id } = request.query;
             
-            if (!id) return reply.status(400).send({ success: false, message: 'User ID is required' });
-
             const user = await User.findOne({ _id: id });
             
             if (!user) {
