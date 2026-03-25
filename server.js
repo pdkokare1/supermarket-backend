@@ -93,37 +93,7 @@ fastify.decorate("verifyAdmin", async function(request, reply) {
     }
 });
 
-fastify.addHook("onRequest", async (request, reply) => {
-    if (request.method === 'OPTIONS') return;
-
-    const publicPrefixes = [
-        '/api/auth/login',
-        '/api/auth/setup',
-        '/api/products',
-        '/api/health', 
-        '/api/docs' // Exempt Swagger UI from JWT checks
-    ];
-    
-    const basePath = request.url.split('?')[0];
-    const isPublic = basePath === '/' || publicPrefixes.some(prefix => basePath.startsWith(prefix));
-
-    if (!isPublic) {
-        try {
-            const decoded = await request.jwtVerify(); 
-            
-            const user = await User.findById(decoded.id).select('tokenVersion isActive');
-            if (!user || !user.isActive || user.tokenVersion !== decoded.tokenVersion) {
-                throw new Error('Token revoked');
-            }
-            
-            request.user = decoded; 
-        } catch (err) {
-            fastify.log.warn(`Blocked unauthorized access attempt to ${request.url}`);
-            reply.status(401).send({ success: false, message: 'Unauthorized: Access Denied. Please log in.' });
-        }
-    }
-});
-
+// EXPLICIT ROUTE REGISTRATION (Safest for Vercel/Railway Deployments)
 fastify.register(require('./routes/productRoutes'));
 fastify.register(require('./routes/orderRoutes'));
 fastify.register(require('./routes/categoryRoutes'));
