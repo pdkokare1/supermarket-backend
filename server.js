@@ -49,13 +49,13 @@ fastify.register(require('@fastify/multipart'), {
     }
 });
 
-// --- NEW CAPABILITY: Cookie Parsing for Refresh Tokens ---
+// --- CAPABILITY: Cookie Parsing for Refresh Tokens ---
 fastify.register(require('@fastify/cookie'), {
-    secret: process.env.COOKIE_SECRET || process.env.JWT_SECRET || 'fallback-secret-123',
+    secret: process.env.COOKIE_SECRET || 'fallback-secret-123',
     hook: 'onRequest'
 });
 
-// --- NEW CAPABILITY: Real-Time WebSockets ---
+// --- CAPABILITY: Real-Time WebSockets ---
 fastify.register(require('@fastify/websocket'));
 
 // --- DEVOPS: Auto-Generated API Documentation ---
@@ -71,15 +71,19 @@ fastify.register(require('@fastify/swagger-ui'), {
     uiConfig: { docExpansion: 'none', deepLinking: false }
 });
 
-if (!process.env.JWT_SECRET) {
-    fastify.log.error("CRITICAL: JWT_SECRET is missing. Server shutting down to prevent unauthorized token minting.");
+// --- SECURITY: Enterprise RS256 Asymmetric Encryption ---
+if (!process.env.JWT_PRIVATE_KEY || !process.env.JWT_PUBLIC_KEY) {
+    fastify.log.error("CRITICAL: JWT_PRIVATE_KEY or JWT_PUBLIC_KEY is missing. Server shutting down.");
     process.exit(1);
 }
 
-// --- SECURITY: Enforce Algorithm ---
 fastify.register(require('@fastify/jwt'), {
-    secret: process.env.JWT_SECRET,
-    sign: { algorithm: 'HS256' }
+    secret: {
+        // The .replace() ensures Railway's environment variable formatting doesn't break the PEM structure
+        private: process.env.JWT_PRIVATE_KEY.replace(/\\n/g, '\n'),
+        public: process.env.JWT_PUBLIC_KEY.replace(/\\n/g, '\n')
+    },
+    sign: { algorithm: 'RS256' }
 });
 
 fastify.decorate("authenticate", async function(request, reply) {
@@ -102,8 +106,7 @@ fastify.decorate("verifyAdmin", async function(request, reply) {
     }
 });
 
-// --- NEW UTILITY: Global WebSocket Broadcaster ---
-// This allows any route to easily push live updates to the frontend POS
+// --- UTILITY: Global WebSocket Broadcaster ---
 fastify.decorate('broadcastToPOS', function (message) {
     if (!fastify.websocketServer) return;
     fastify.websocketServer.clients.forEach(function each(client) {
@@ -113,7 +116,7 @@ fastify.decorate('broadcastToPOS', function (message) {
     });
 });
 
-// --- NEW ROUTE: WebSocket Connection Endpoint ---
+// --- ROUTE: WebSocket Connection Endpoint ---
 fastify.register(async function (fastify) {
     fastify.get('/api/ws/pos', { websocket: true }, (connection, req) => {
         connection.socket.on('message', message => {
