@@ -97,6 +97,21 @@ const cancelSchema = { schema: { body: { type: 'object', required: ['reason'], p
 const limitSchema = { schema: { body: { type: 'object', required: ['isCreditEnabled', 'creditLimit'], properties: { isCreditEnabled: { type: 'boolean' }, creditLimit: { type: 'number' }, name: { type: 'string' } } } } };
 const paySchema = { schema: { body: { type: 'object', required: ['amount'], properties: { amount: { type: 'number', minimum: 0 } } } } };
 
+// --- NEW PERFORMANCE SCHEMA: Fastify Query Parsing ---
+const getOrdersSchema = {
+    schema: {
+        querystring: {
+            type: 'object',
+            properties: {
+                tab: { type: 'string' },
+                dateFilter: { type: 'string' },
+                page: { type: 'string' },
+                limit: { type: 'string' }
+            }
+        }
+    }
+};
+
 async function orderRoutes(fastify, options) {
 
     fastify.get('/api/orders/stream/admin', { preHandler: [fastify.authenticate, fastify.verifyAdmin] }, (request, reply) => {
@@ -205,6 +220,9 @@ async function orderRoutes(fastify, options) {
                 });
             }
 
+            // --- NEW: Real-Time POS Notification ---
+            if (fastify.broadcastToPOS) fastify.broadcastToPOS({ type: 'NEW_ORDER', orderId: newOrder._id });
+
             if (customerPhone && customerPhone.length >= 10 && process.env.CALLMEBOT_API_KEY && process.env.WA_PHONE_NUMBER) {
                 const msg = `DailyPick Order Received! 🛒\nOrder ID: ${newOrder._id.toString().substring(0,8)}\nTotal: ₹${totalAmount}\nDelivery: ${scheduleTime}\nThanks for shopping!`;
                 const waUrl = `https://api.callmebot.com/whatsapp.php?phone=${customerPhone}&text=${encodeURIComponent(msg)}&apikey=${process.env.CALLMEBOT_API_KEY}`;
@@ -304,6 +322,9 @@ async function orderRoutes(fastify, options) {
                 try { await redisCache.del('orders:analytics'); } catch(e) {}
             }
 
+            // --- NEW: Real-Time POS Notification ---
+            if (fastify.broadcastToPOS) fastify.broadcastToPOS({ type: 'NEW_ORDER', orderId: newOrder._id, source: 'POS' });
+
             if (customerPhone && customerPhone.length >= 10 && process.env.CALLMEBOT_API_KEY && process.env.WA_PHONE_NUMBER) {
                 const loyaltyMsg = pointsRedeemed > 0 ? ` Points Redeemed: ${pointsRedeemed}.` : '';
                 const msg = `Thank you for shopping at DailyPick! 🛒\nTotal: ₹${totalAmount}\n${loyaltyMsg}\nVisit again!`;
@@ -344,6 +365,9 @@ async function orderRoutes(fastify, options) {
                 }
             }
 
+            // --- NEW: Real-Time POS Notification ---
+            if (fastify.broadcastToPOS) fastify.broadcastToPOS({ type: 'ORDER_STATUS_UPDATED', orderId: order._id, status: status });
+
             return { success: true, data: order };
         } catch (error) {
             fastify.log.error('Status Update Error:', error);
@@ -371,6 +395,9 @@ async function orderRoutes(fastify, options) {
                     });
                 }
             }
+
+            // --- NEW: Real-Time POS Notification ---
+            if (fastify.broadcastToPOS) fastify.broadcastToPOS({ type: 'ORDER_STATUS_UPDATED', orderId: order._id, status: 'Dispatched' });
 
             return { success: true, data: order };
         } catch (error) {
@@ -442,6 +469,9 @@ async function orderRoutes(fastify, options) {
                     });
                 }
             }
+
+            // --- NEW: Real-Time POS Notification ---
+            if (fastify.broadcastToPOS) fastify.broadcastToPOS({ type: 'ORDER_STATUS_UPDATED', orderId: order._id, status: 'Cancelled' });
 
             return { success: true, message: 'Order Cancelled and Stock Refunded', data: order };
         } catch (error) {
@@ -577,7 +607,8 @@ async function orderRoutes(fastify, options) {
         }
     });
 
-    fastify.get('/api/orders', { preHandler: [fastify.authenticate, fastify.verifyAdmin] }, async (request, reply) => {
+    // Applied getOrdersSchema here for Fastify routing optimization
+    fastify.get('/api/orders', { preHandler: [fastify.authenticate, fastify.verifyAdmin], ...getOrdersSchema }, async (request, reply) => {
         try {
             let filter = {};
 
