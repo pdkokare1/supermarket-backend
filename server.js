@@ -34,7 +34,7 @@ fastify.register(require('@fastify/rate-limit'), rateLimitConfig);
 
 // --- RESTORED & SECURED CORS POLICY ---
 fastify.register(require('@fastify/cors'), { 
-    origin: process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : [
+    origin: process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',').map(origin => origin.trim()) : [
         'https://dailypick-admin.vercel.app',
         'http://localhost:3000',
         'http://localhost:5500',
@@ -69,8 +69,10 @@ if (!process.env.JWT_SECRET) {
     process.exit(1);
 }
 
+// --- SECURITY: Enforce Algorithm ---
 fastify.register(require('@fastify/jwt'), {
-    secret: process.env.JWT_SECRET
+    secret: process.env.JWT_SECRET,
+    sign: { algorithm: 'HS256' }
 });
 
 fastify.decorate("authenticate", async function(request, reply) {
@@ -106,7 +108,6 @@ fastify.register(require('./routes/shiftRoutes'));
 
 // --- OBSERVABILITY: Real-Time APM Error Interceptor ---
 fastify.setErrorHandler(function (error, request, reply) {
-    // Generate an isolated, clean log of exactly what failed and who triggered it
     const apmLog = {
         event: 'CRITICAL_ERROR',
         timestamp: new Date().toISOString(),
@@ -115,12 +116,11 @@ fastify.setErrorHandler(function (error, request, reply) {
         userId: request.user ? request.user.id : 'Unauthenticated',
         errorName: error.name,
         errorMessage: error.message,
-        // Strip sensitive data to comply with security standards
         payload: request.body ? '[REDACTED]' : null 
     };
     
     fastify.log.error(`[APM MONITOR] ${JSON.stringify(apmLog)}`);
-    if (process.env.NODE_ENV !== 'production') fastify.log.error(error); // Keep stack trace in dev
+    if (process.env.NODE_ENV !== 'production') fastify.log.error(error); 
 
     reply.status(error.statusCode || 500).send({
         success: false,
@@ -179,20 +179,27 @@ fastify.get('/', async (request, reply) => {
     };
 });
 
+// --- ENHANCED GRACEFUL SHUTDOWN ---
 const listeners = ['SIGINT', 'SIGTERM'];
 listeners.forEach((signal) => {
     process.on(signal, async () => {
         fastify.log.info(`${signal} received. Shutting down gracefully...`);
         
         setTimeout(() => {
-            fastify.log.error('Forcing shutdown after timeout.');
+            fastify.log.error('Forcing shutdown after timeout. Some active processes may have been terminated.');
             process.exit(1);
-        }, 10000).unref();
+        }, 15000).unref(); // Increased timeout to 15s to allow cron streams to finish
 
-        await fastify.close();
-        await mongoose.connection.close();
-        if (redisClient) await redisClient.quit();
-        process.exit(0);
+        try {
+            await fastify.close();
+            await mongoose.connection.close();
+            if (redisClient) await redisClient.quit();
+            fastify.log.info('Clean shutdown complete.');
+            process.exit(0);
+        } catch (err) {
+            fastify.log.error('Error during shutdown:', err);
+            process.exit(1);
+        }
     });
 });
 
@@ -227,7 +234,6 @@ const startServer = async () => {
 
 // --- SCALING & JOB SCHEDULING ---
 if (process.env.ENABLE_CLUSTERING === 'true' && cluster.isPrimary) {
-    // Primary Node: Connects to DB, initializes the cron job exactly once, and forks workers
     connectDB().then(() => {
         require('./jobs/cronScheduler')(fastify, (newReport) => {
             latestInventoryReport = newReport;
@@ -246,7 +252,6 @@ if (process.env.ENABLE_CLUSTERING === 'true' && cluster.isPrimary) {
         });
     });
 } else if (process.env.ENABLE_CLUSTERING !== 'true') {
-    // Standalone Mode (Railway/Vercel default): Connects DB, initializes cron and runs server on one process
     connectDB().then(() => {
         require('./jobs/cronScheduler')(fastify, (newReport) => {
             latestInventoryReport = newReport;
@@ -257,6 +262,5 @@ if (process.env.ENABLE_CLUSTERING === 'true' && cluster.isPrimary) {
         });
     });
 } else {
-    // Clustered Worker Nodes: Exclusively handle traffic
     startServer();
 }
