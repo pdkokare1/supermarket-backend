@@ -49,6 +49,15 @@ fastify.register(require('@fastify/multipart'), {
     }
 });
 
+// --- NEW CAPABILITY: Cookie Parsing for Refresh Tokens ---
+fastify.register(require('@fastify/cookie'), {
+    secret: process.env.COOKIE_SECRET || process.env.JWT_SECRET || 'fallback-secret-123',
+    hook: 'onRequest'
+});
+
+// --- NEW CAPABILITY: Real-Time WebSockets ---
+fastify.register(require('@fastify/websocket'));
+
 // --- DEVOPS: Auto-Generated API Documentation ---
 fastify.register(require('@fastify/swagger'), {
     swagger: {
@@ -91,6 +100,27 @@ fastify.decorate("verifyAdmin", async function(request, reply) {
         reply.status(403).send({ success: false, message: 'Forbidden: Admin access required.' });
         throw new Error('Forbidden: Admin access required.'); 
     }
+});
+
+// --- NEW UTILITY: Global WebSocket Broadcaster ---
+// This allows any route to easily push live updates to the frontend POS
+fastify.decorate('broadcastToPOS', function (message) {
+    if (!fastify.websocketServer) return;
+    fastify.websocketServer.clients.forEach(function each(client) {
+        if (client.readyState === 1) { 
+            client.send(JSON.stringify(message));
+        }
+    });
+});
+
+// --- NEW ROUTE: WebSocket Connection Endpoint ---
+fastify.register(async function (fastify) {
+    fastify.get('/api/ws/pos', { websocket: true }, (connection, req) => {
+        connection.socket.on('message', message => {
+            fastify.log.info(`[WS] Received: ${message}`);
+        });
+        connection.socket.send(JSON.stringify({ type: 'CONNECTION_ESTABLISHED', message: 'Connected to DailyPick Real-Time Server' }));
+    });
 });
 
 // EXPLICIT ROUTE REGISTRATION 
