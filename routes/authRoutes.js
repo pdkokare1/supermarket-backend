@@ -1,6 +1,7 @@
 const User = require('../models/User');
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
+const AuditLog = require('../models/AuditLog'); // --- NEW: Integrated Security Auditing ---
 
 const loginSchema = {
     schema: {
@@ -41,7 +42,6 @@ async function authRoutes(fastify, options) {
                 return reply.status(403).send({ success: false, message: 'Forbidden: Setup route disabled in production.' });
             }
 
-            // --- SECURITY: Timing Attack Prevention ---
             if (process.env.SETUP_KEY) {
                 const providedKey = Buffer.from(request.query.key || '');
                 const actualKey = Buffer.from(process.env.SETUP_KEY);
@@ -77,7 +77,6 @@ async function authRoutes(fastify, options) {
             const { username, pin } = request.body;
             const safeUsername = username.trim(); 
 
-            // --- SECURITY: ReDoS Prevention (Collation instead of Regex) ---
             const user = await User.findOne({ 
                 $or: [
                     { username: safeUsername }, 
@@ -86,7 +85,15 @@ async function authRoutes(fastify, options) {
             }).collation({ locale: 'en', strength: 2 }); 
             
             if (!user) {
-                // (Optional) Implement AuditLog integration here: await AuditLog.create({ action: 'FAILED_LOGIN', username: safeUsername });
+                // --- SECURITY: Log failed login attempt without crashing the flow ---
+                await AuditLog.create({ 
+                    action: 'FAILED_LOGIN_ATTEMPT', 
+                    targetType: 'Auth', 
+                    targetId: 'Login', 
+                    username: safeUsername || 'Unknown', 
+                    details: { ip: request.ip } 
+                }).catch(e => fastify.log.error('AuditLog Error:', e));
+
                 return reply.status(401).send({ success: false, message: 'Invalid Username or PIN.' });
             }
             
@@ -112,7 +119,15 @@ async function authRoutes(fastify, options) {
                 tokenVersion: user.tokenVersion || 0 
             }, { expiresIn: '7d' }); 
             
-            // (Optional) Implement AuditLog integration here: await AuditLog.create({ action: 'SUCCESSFUL_LOGIN', userId: user._id });
+            // --- SECURITY: Log successful login ---
+            await AuditLog.create({ 
+                userId: user._id, 
+                username: user.username, 
+                action: 'SUCCESSFUL_LOGIN', 
+                targetType: 'Auth', 
+                targetId: user._id.toString(), 
+                details: { role: user.role, ip: request.ip } 
+            }).catch(e => fastify.log.error('AuditLog Error:', e));
 
             return { success: true, message: 'Login successful', data: user, token: token };
             
