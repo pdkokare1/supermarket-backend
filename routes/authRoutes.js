@@ -1,5 +1,6 @@
 const User = require('../models/User');
 const bcrypt = require('bcryptjs');
+const crypto = require('crypto');
 
 const loginSchema = {
     schema: {
@@ -40,8 +41,14 @@ async function authRoutes(fastify, options) {
                 return reply.status(403).send({ success: false, message: 'Forbidden: Setup route disabled in production.' });
             }
 
-            if (process.env.SETUP_KEY && request.query.key !== process.env.SETUP_KEY) {
-                return reply.status(403).send({ success: false, message: 'Forbidden: Invalid Setup Key' });
+            // --- SECURITY: Timing Attack Prevention ---
+            if (process.env.SETUP_KEY) {
+                const providedKey = Buffer.from(request.query.key || '');
+                const actualKey = Buffer.from(process.env.SETUP_KEY);
+                
+                if (providedKey.length !== actualKey.length || !crypto.timingSafeEqual(providedKey, actualKey)) {
+                    return reply.status(403).send({ success: false, message: 'Forbidden: Invalid Setup Key' });
+                }
             }
 
             const hashedPin = await bcrypt.hash('1234', 10);
@@ -55,7 +62,6 @@ async function authRoutes(fastify, options) {
                 admin.pin = hashedPin;
                 admin.username = 'admin'; 
                 admin.isActive = true;
-                // --- SECURITY HARDENING: Instantly revoke all active sessions on reset ---
                 admin.tokenVersion = (admin.tokenVersion || 0) + 1;
                 await admin.save();
                 return { success: true, message: "Existing Admin FORCE RESET. All old sessions revoked. Username: 'admin', PIN: '1234'" };
@@ -69,16 +75,18 @@ async function authRoutes(fastify, options) {
     fastify.post('/api/auth/login', loginSchema, async (request, reply) => {
         try {
             const { username, pin } = request.body;
+            const safeUsername = username.trim(); 
 
-            const safeUsername = username.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); 
+            // --- SECURITY: ReDoS Prevention (Collation instead of Regex) ---
             const user = await User.findOne({ 
                 $or: [
-                    { username: { $regex: new RegExp('^' + safeUsername + '$', 'i') } }, 
-                    { name: { $regex: new RegExp('^' + safeUsername + '$', 'i') } }
+                    { username: safeUsername }, 
+                    { name: safeUsername }
                 ]
-            });
+            }).collation({ locale: 'en', strength: 2 }); 
             
             if (!user) {
+                // (Optional) Implement AuditLog integration here: await AuditLog.create({ action: 'FAILED_LOGIN', username: safeUsername });
                 return reply.status(401).send({ success: false, message: 'Invalid Username or PIN.' });
             }
             
@@ -97,7 +105,6 @@ async function authRoutes(fastify, options) {
                 await user.save();
             }
             
-            // --- SECURITY HARDENING: Embed tokenVersion in payload ---
             const token = fastify.jwt.sign({ 
                 id: user._id, 
                 role: user.role, 
@@ -105,6 +112,8 @@ async function authRoutes(fastify, options) {
                 tokenVersion: user.tokenVersion || 0 
             }, { expiresIn: '7d' }); 
             
+            // (Optional) Implement AuditLog integration here: await AuditLog.create({ action: 'SUCCESSFUL_LOGIN', userId: user._id });
+
             return { success: true, message: 'Login successful', data: user, token: token };
             
         } catch (error) {
@@ -113,7 +122,6 @@ async function authRoutes(fastify, options) {
         }
     });
 
-    // Added schema and explicit preHandler authentication
     fastify.get('/api/auth/verify', { schema: verifySchema.schema, preHandler: [fastify.authenticate] }, async (request, reply) => {
         try {
             const { id } = request.query;
