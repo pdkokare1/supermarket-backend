@@ -55,6 +55,7 @@ setInterval(() => {
     }
 }, 15000);
 
+// --- SCHEMAS ---
 const posCheckoutSchema = {
     schema: {
         body: {
@@ -92,9 +93,14 @@ const onlineCheckoutSchema = {
     }
 };
 
+const statusSchema = { schema: { body: { type: 'object', required: ['status'], properties: { status: { type: 'string' } } } } };
+const cancelSchema = { schema: { body: { type: 'object', required: ['reason'], properties: { reason: { type: 'string' } } } } };
+const limitSchema = { schema: { body: { type: 'object', required: ['isCreditEnabled', 'creditLimit'], properties: { isCreditEnabled: { type: 'boolean' }, creditLimit: { type: 'number' }, name: { type: 'string' } } } } };
+const paySchema = { schema: { body: { type: 'object', required: ['amount'], properties: { amount: { type: 'number', minimum: 0 } } } } };
+
 async function orderRoutes(fastify, options) {
 
-    fastify.get('/api/orders/stream/admin', (request, reply) => {
+    fastify.get('/api/orders/stream/admin', { preHandler: [fastify.authenticate, fastify.verifyAdmin] }, (request, reply) => {
         reply.hijack(); 
         reply.raw.writeHead(200, {
             'Content-Type': 'text/event-stream',
@@ -111,7 +117,7 @@ async function orderRoutes(fastify, options) {
         });
     });
 
-    fastify.get('/api/orders/stream/customer/:id', (request, reply) => {
+    fastify.get('/api/orders/stream/customer/:id', { preHandler: [fastify.authenticate] }, (request, reply) => {
         reply.hijack(); 
         const orderId = request.params.id;
         
@@ -131,7 +137,7 @@ async function orderRoutes(fastify, options) {
         });
     });
 
-    fastify.post('/api/orders', onlineCheckoutSchema, async (request, reply) => {
+    fastify.post('/api/orders', { preHandler: [fastify.authenticate], ...onlineCheckoutSchema }, async (request, reply) => {
         const session = await mongoose.startSession();
         session.startTransaction();
 
@@ -215,7 +221,7 @@ async function orderRoutes(fastify, options) {
         }
     });
 
-    fastify.post('/api/orders/pos', posCheckoutSchema, async (request, reply) => {
+    fastify.post('/api/orders/pos', { preHandler: [fastify.authenticate, fastify.verifyAdmin], ...posCheckoutSchema }, async (request, reply) => {
         const session = await mongoose.startSession();
         session.startTransaction();
 
@@ -313,7 +319,7 @@ async function orderRoutes(fastify, options) {
         }
     });
 
-    fastify.put('/api/orders/:id/status', async (request, reply) => {
+    fastify.put('/api/orders/:id/status', { preHandler: [fastify.authenticate, fastify.verifyAdmin], ...statusSchema }, async (request, reply) => {
         try {
             const { status } = request.body;
             const order = await Order.findByIdAndUpdate(
@@ -342,7 +348,7 @@ async function orderRoutes(fastify, options) {
         }
     });
 
-    fastify.put('/api/orders/:id/dispatch', async (request, reply) => {
+    fastify.put('/api/orders/:id/dispatch', { preHandler: [fastify.authenticate, fastify.verifyAdmin] }, async (request, reply) => {
         try {
             const order = await Order.findByIdAndUpdate(
                 request.params.id, 
@@ -371,7 +377,7 @@ async function orderRoutes(fastify, options) {
     });
 
     // --- INTEGRITY HARDENING: Logging Cancellations ---
-    fastify.put('/api/orders/:id/cancel', async (request, reply) => {
+    fastify.put('/api/orders/:id/cancel', { preHandler: [fastify.authenticate, fastify.verifyAdmin], ...cancelSchema }, async (request, reply) => {
         const session = await mongoose.startSession();
         session.startTransaction();
 
@@ -443,7 +449,7 @@ async function orderRoutes(fastify, options) {
         }
     });
 
-    fastify.get('/api/orders/analytics', async (request, reply) => {
+    fastify.get('/api/orders/analytics', { preHandler: [fastify.authenticate, fastify.verifyAdmin] }, async (request, reply) => {
         try {
             if (redisCache) {
                 const cachedAnalytics = await redisCache.get('orders:analytics');
@@ -542,7 +548,7 @@ async function orderRoutes(fastify, options) {
     });
 
     // --- OPTIMIZATION: Zero-Memory Database Aggregation ---
-    fastify.get('/api/orders/customers', async (request, reply) => {
+    fastify.get('/api/orders/customers', { preHandler: [fastify.authenticate, fastify.verifyAdmin] }, async (request, reply) => {
         try {
             const customerList = await Order.aggregate([
                 { $match: { status: { $ne: 'Cancelled' } } },
@@ -568,7 +574,7 @@ async function orderRoutes(fastify, options) {
         }
     });
 
-    fastify.get('/api/orders', async (request, reply) => {
+    fastify.get('/api/orders', { preHandler: [fastify.authenticate, fastify.verifyAdmin] }, async (request, reply) => {
         try {
             let filter = {};
 
@@ -624,7 +630,7 @@ async function orderRoutes(fastify, options) {
         }
     });
 
-    fastify.get('/api/orders/export', async (request, reply) => {
+    fastify.get('/api/orders/export', { preHandler: [fastify.authenticate, fastify.verifyAdmin] }, async (request, reply) => {
         try {
             const orders = await Order.find().sort({ createdAt: -1 }).lean();
             const exportData = orders.map(o => ({
@@ -650,7 +656,7 @@ async function orderRoutes(fastify, options) {
         }
     });
 
-    fastify.get('/api/customers/export', async (request, reply) => {
+    fastify.get('/api/customers/export', { preHandler: [fastify.authenticate, fastify.verifyAdmin] }, async (request, reply) => {
         try {
             const customers = await Customer.find({}).lean();
             const exportData = customers.map(c => ({
@@ -675,7 +681,7 @@ async function orderRoutes(fastify, options) {
         }
     });
 
-    fastify.get('/api/orders/:id', async (request, reply) => {
+    fastify.get('/api/orders/:id', { preHandler: [fastify.authenticate] }, async (request, reply) => {
         try {
             const order = await Order.findById(request.params.id).lean();
             if (!order) return reply.status(404).send({ success: false, message: 'Order not found' });
@@ -686,7 +692,7 @@ async function orderRoutes(fastify, options) {
         }
     });
 
-    fastify.get('/api/customers/profile/:phone', async (request, reply) => {
+    fastify.get('/api/customers/profile/:phone', { preHandler: [fastify.authenticate] }, async (request, reply) => {
         try {
             const cust = await Customer.findOne({ phone: request.params.phone }).lean();
             if (!cust) return { success: true, data: null }; 
@@ -696,7 +702,7 @@ async function orderRoutes(fastify, options) {
         }
     });
 
-    fastify.put('/api/customers/profile/:phone/limit', async (request, reply) => {
+    fastify.put('/api/customers/profile/:phone/limit', { preHandler: [fastify.authenticate, fastify.verifyAdmin], ...limitSchema }, async (request, reply) => {
         try {
             const { isCreditEnabled, creditLimit, name } = request.body;
             let cust = await Customer.findOne({ phone: request.params.phone });
@@ -718,7 +724,7 @@ async function orderRoutes(fastify, options) {
         }
     });
 
-    fastify.post('/api/customers/profile/:phone/pay', async (request, reply) => {
+    fastify.post('/api/customers/profile/:phone/pay', { preHandler: [fastify.authenticate, fastify.verifyAdmin], ...paySchema }, async (request, reply) => {
         try {
             const { amount } = request.body;
             let cust = await Customer.findOne({ phone: request.params.phone });
@@ -735,7 +741,7 @@ async function orderRoutes(fastify, options) {
         }
     });
 
-    fastify.get('/api/customers', async (request, reply) => {
+    fastify.get('/api/customers', { preHandler: [fastify.authenticate, fastify.verifyAdmin] }, async (request, reply) => {
         try {
             const customers = await Customer.find({}).lean();
             return { success: true, count: customers.length, data: customers };
