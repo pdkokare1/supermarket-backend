@@ -10,6 +10,7 @@ const cloudinary = require('cloudinary').v2;
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const zlib = require('zlib'); // --- NEW: Added for Backup Compression ---
 
 cloudinary.config({
     cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
@@ -44,24 +45,30 @@ async function runWithLock(jobName, fastify, task) {
     }
 }
 
-// --- OPTIMIZATION: Streaming to prevent OOM errors, now accepts a query ---
+// --- OPTIMIZATION: Streaming + Gzip Compression ---
 const createBackupFile = async (model, filename, query = {}) => {
-    const filePath = path.join(os.tmpdir(), filename);
-    const writeStream = fs.createWriteStream(filePath);
-    writeStream.write('[\n');
+    const filePath = path.join(os.tmpdir(), `${filename}.gz`);
+    const fileStream = fs.createWriteStream(filePath);
+    const gzipStream = zlib.createGzip();
+
+    // Pipe the gzip stream directly to the file system stream
+    gzipStream.pipe(fileStream);
+
+    gzipStream.write('[\n');
     const cursor = model.find(query).lean().cursor();
     
     let isFirst = true;
     for await (const doc of cursor) {
-        if (!isFirst) writeStream.write(',\n');
-        writeStream.write(JSON.stringify(doc));
+        if (!isFirst) gzipStream.write(',\n');
+        gzipStream.write(JSON.stringify(doc));
         isFirst = false;
     }
     
-    writeStream.write('\n]');
-    writeStream.end();
+    gzipStream.write('\n]');
+    gzipStream.end();
     
-    await new Promise(resolve => writeStream.on('finish', resolve));
+    // Wait for the file system to finish writing the compressed block
+    await new Promise(resolve => fileStream.on('finish', resolve));
     return filePath;
 };
 
@@ -84,7 +91,6 @@ module.exports = function(fastify, updateInventoryReport) {
         runWithLock('RoutineDeliveries', fastify, async () => {
             fastify.log.info('Running 6:00 AM Routine Deliveries CRON Job...');
             try {
-                // Lean is safe here as the data size for a single day routine is usually small, but cursor could be used if it scales massively
                 const routineOrders = await Order.find({ deliveryType: 'Routine', status: { $ne: 'Cancelled' } }).lean();
                 
                 if (routineOrders.length > 0) {
@@ -142,7 +148,6 @@ module.exports = function(fastify, updateInventoryReport) {
                     if (v._id) variantSales[v._id.toString()] = v.totalSold;
                 });
 
-                // --- PERFORMANCE: Cursor Iteration to prevent Memory Leaks ---
                 const productCursor = Product.find({ isActive: true }).cursor();
                 let lowStockItems = [];
                 let deadStockItems = [];
@@ -302,16 +307,16 @@ module.exports = function(fastify, updateInventoryReport) {
                     productsPath = await createBackupFile(Product, `products_${datePrefix}.json`);
                     customersPath = await createBackupFile(Customer, `customers_${datePrefix}.json`);
                     
-                    // --- PERFORMANCE: Streaming the orders backup via query to stop event-loop freezes ---
                     ordersPath = await createBackupFile(Order, `orders_${datePrefix}.json`, {
                         createdAt: { $gte: today, $lt: tomorrow },
                         status: { $ne: 'Cancelled' }
                     });
 
+                    // --- Updated Cloudinary identifiers to .json.gz ---
                     const [prodUrl, custUrl, orderUrl] = await Promise.all([
-                        uploadFileToCloudinary(productsPath, `products_${datePrefix}`),
-                        uploadFileToCloudinary(customersPath, `customers_${datePrefix}`),
-                        uploadFileToCloudinary(ordersPath, `orders_${datePrefix}`)
+                        uploadFileToCloudinary(productsPath, `products_${datePrefix}.json.gz`),
+                        uploadFileToCloudinary(customersPath, `customers_${datePrefix}.json.gz`),
+                        uploadFileToCloudinary(ordersPath, `orders_${datePrefix}.json.gz`)
                     ]);
 
                     emailAppend = `\n\nSecure Database Backups (Valid via Cloudinary):\n📦 Products: ${prodUrl}\n👥 Customers: ${custUrl}\n🛒 Orders: ${orderUrl}`;
@@ -319,7 +324,6 @@ module.exports = function(fastify, updateInventoryReport) {
                     fastify.log.error('Cloudinary Backup Failed:', cloudinaryErr);
                     emailAppend = `\n\n(Warning: Secure Cloudinary Backups failed. Check API Keys.)`;
                     
-                    // Fallback alert for critical backup failure
                     if (process.env.WA_PHONE_NUMBER && process.env.CALLMEBOT_API_KEY) {
                         try {
                             const errorText = encodeURIComponent(`CRITICAL: Cloudinary Backup Failed for ${dateString}.`);
@@ -356,7 +360,6 @@ module.exports = function(fastify, updateInventoryReport) {
                         const encodedText = encodeURIComponent(reportText + `Great work today! 🚀`);
                         const waUrl = `https://api.callmebot.com/whatsapp.php?phone=${process.env.WA_PHONE_NUMBER}&text=${encodedText}&apikey=${process.env.CALLMEBOT_API_KEY}`;
                         
-                        // --- PERFORMANCE: Replaced Axios with native fetch ---
                         await fetch(waUrl);
                         fastify.log.info('EOD WhatsApp sent successfully.');
                     } catch (waErr) {
@@ -378,7 +381,11 @@ module.exports = function(fastify, updateInventoryReport) {
                 date90.setDate(date90.getDate() - 90);
                 const datePrefix = date90.toISOString().split('T')[0];
                 
+                // --- OPTIMIZATION: Retains legacy paths to successfully delete old uncompressed backups ---
                 const publicIds = [
+                    `backups/products_${datePrefix}.json.gz`,
+                    `backups/customers_${datePrefix}.json.gz`,
+                    `backups/orders_${datePrefix}.json.gz`,
                     `backups/products_${datePrefix}`,
                     `backups/customers_${datePrefix}`,
                     `backups/orders_${datePrefix}`
