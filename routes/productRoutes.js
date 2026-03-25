@@ -100,10 +100,30 @@ const bulkSchema = {
     }
 };
 
+// --- NEW PERFORMANCE SCHEMA: Fastify Query Parsing ---
+const getProductsSchema = {
+    schema: {
+        querystring: {
+            type: 'object',
+            properties: {
+                all: { type: 'string' },
+                search: { type: 'string' },
+                category: { type: 'string' },
+                brand: { type: 'string' },
+                distributor: { type: 'string' },
+                stockStatus: { type: 'string' },
+                page: { type: 'string' },
+                limit: { type: 'string' },
+                sort: { type: 'string' }
+            }
+        }
+    }
+};
+
 async function productRoutes(fastify, options) {
     
-    // Public route - no preHandler required
-    fastify.get('/api/products', async (request, reply) => {
+    // Public route - no preHandler required (Now optimized with Query Schema)
+    fastify.get('/api/products', getProductsSchema, async (request, reply) => {
         try {
             const sortedQuery = Object.keys(request.query).sort().reduce((acc, key) => {
                 acc[key] = request.query[key];
@@ -169,7 +189,7 @@ async function productRoutes(fastify, options) {
             }
             
             const [products, total] = await Promise.all([
-                query.lean(),
+                query.lean(), // Already highly optimized!
                 Product.countDocuments(filter)
             ]);
             
@@ -220,6 +240,10 @@ async function productRoutes(fastify, options) {
             
             await newProduct.save();
             await invalidateProductCache(); 
+            
+            // --- NEW: Real-Time POS Notification ---
+            if (fastify.broadcastToPOS) fastify.broadcastToPOS({ type: 'INVENTORY_UPDATED', productId: newProduct._id });
+            
             return { success: true, message: 'Product added', data: newProduct };
         } catch (error) { 
             fastify.log.error(error); 
@@ -243,6 +267,10 @@ async function productRoutes(fastify, options) {
             if (!updatedProduct) return reply.status(404).send({ success: false, message: 'Not found' });
             
             await invalidateProductCache(); 
+            
+            // --- NEW: Real-Time POS Notification ---
+            if (fastify.broadcastToPOS) fastify.broadcastToPOS({ type: 'INVENTORY_UPDATED', productId: updatedProduct._id });
+
             return { success: true, message: 'Product updated', data: updatedProduct };
         } catch (error) { 
             fastify.log.error(error); 
@@ -260,6 +288,10 @@ async function productRoutes(fastify, options) {
             await product.save();
             
             await invalidateProductCache(); 
+            
+            // --- NEW: Real-Time POS Notification ---
+            if (fastify.broadcastToPOS) fastify.broadcastToPOS({ type: 'INVENTORY_UPDATED', productId: product._id });
+
             return { success: true, message: `Product archived securely`, data: product };
         } catch (error) { 
             fastify.log.error(error); 
@@ -289,6 +321,10 @@ async function productRoutes(fastify, options) {
             
             await product.save();
             await invalidateProductCache(); 
+            
+            // --- NEW: Real-Time POS Notification ---
+            if (fastify.broadcastToPOS) fastify.broadcastToPOS({ type: 'INVENTORY_UPDATED', productId: product._id, message: 'Stock Refilled' });
+
             return { success: true, message: 'Restock processed successfully', data: product };
         } catch (error) { 
             fastify.log.error(error); 
@@ -313,6 +349,10 @@ async function productRoutes(fastify, options) {
             
             await product.save();
             await invalidateProductCache(); 
+            
+            // --- NEW: Real-Time POS Notification ---
+            if (fastify.broadcastToPOS) fastify.broadcastToPOS({ type: 'INVENTORY_UPDATED', productId: product._id, message: 'Stock Returned' });
+
             return { success: true, message: 'RTV processed successfully', data: product };
         } catch (error) { 
             fastify.log.error(error); 
@@ -340,6 +380,10 @@ async function productRoutes(fastify, options) {
             if (bulkOps.length > 0) {
                 const result = await Product.bulkWrite(bulkOps);
                 await invalidateProductCache(); 
+                
+                // --- NEW: Real-Time POS Notification ---
+                if (fastify.broadcastToPOS) fastify.broadcastToPOS({ type: 'INVENTORY_UPDATED', message: 'Bulk Import Completed' });
+
                 return { success: true, message: `Imported! Added ${result.upsertedCount}, Updated ${result.modifiedCount}.` };
             }
             return { success: true, message: `No products to process.` };
@@ -358,6 +402,10 @@ async function productRoutes(fastify, options) {
             await product.save();
             
             await invalidateProductCache(); 
+            
+            // --- NEW: Real-Time POS Notification ---
+            if (fastify.broadcastToPOS) fastify.broadcastToPOS({ type: 'INVENTORY_UPDATED', productId: product._id });
+
             return { success: true, message: `Toggled`, data: product };
         } catch (error) { 
             fastify.log.error(error); 
