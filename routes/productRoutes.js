@@ -88,8 +88,21 @@ const rtvSchema = {
     }
 };
 
+const bulkSchema = {
+    schema: {
+        body: {
+            type: 'object',
+            required: ['products'],
+            properties: {
+                products: { type: 'array', items: { type: 'object' } }
+            }
+        }
+    }
+};
+
 async function productRoutes(fastify, options) {
     
+    // Public route - no preHandler required
     fastify.get('/api/products', async (request, reply) => {
         try {
             const sortedQuery = Object.keys(request.query).sort().reduce((acc, key) => {
@@ -173,7 +186,7 @@ async function productRoutes(fastify, options) {
         }
     });
 
-    fastify.post('/api/products/upload', { preHandler: [fastify.verifyAdmin] }, async (request, reply) => {
+    fastify.post('/api/products/upload', { preHandler: [fastify.authenticate, fastify.verifyAdmin] }, async (request, reply) => {
         try {
             const data = await request.file();
             if (!data) return reply.status(400).send({ success: false, message: 'No file uploaded' });
@@ -197,7 +210,7 @@ async function productRoutes(fastify, options) {
         }
     });
 
-    fastify.post('/api/products', { preHandler: [fastify.verifyAdmin], ...productSchema }, async (request, reply) => {
+    fastify.post('/api/products', { preHandler: [fastify.authenticate, fastify.verifyAdmin], ...productSchema }, async (request, reply) => {
         try {
             const { name, category, brand, distributorName, imageUrl, searchTags, variants, hsnCode, taxRate, taxType } = request.body;
             
@@ -214,7 +227,7 @@ async function productRoutes(fastify, options) {
         }
     });
 
-    fastify.put('/api/products/:id', { preHandler: [fastify.verifyAdmin], ...productSchema }, async (request, reply) => {
+    fastify.put('/api/products/:id', { preHandler: [fastify.authenticate, fastify.verifyAdmin], ...productSchema }, async (request, reply) => {
         try {
             const { name, category, brand, distributorName, imageUrl, searchTags, variants, hsnCode, taxRate, taxType } = request.body;
             
@@ -237,7 +250,7 @@ async function productRoutes(fastify, options) {
         }
     });
 
-    fastify.put('/api/products/:id/archive', { preHandler: [fastify.verifyAdmin] }, async (request, reply) => {
+    fastify.put('/api/products/:id/archive', { preHandler: [fastify.authenticate, fastify.verifyAdmin] }, async (request, reply) => {
         try {
             const product = await Product.findById(request.params.id);
             if (!product) return reply.status(404).send({ success: false, message: 'Not found' });
@@ -254,7 +267,7 @@ async function productRoutes(fastify, options) {
         }
     });
 
-    fastify.put('/api/products/:id/restock', { preHandler: [fastify.verifyAdmin], ...restockSchema }, async (request, reply) => {
+    fastify.put('/api/products/:id/restock', { preHandler: [fastify.authenticate, fastify.verifyAdmin], ...restockSchema }, async (request, reply) => {
         try {
             const { variantId, invoiceNumber, addedQuantity, purchasingPrice, newSellingPrice } = request.body;
             
@@ -283,7 +296,7 @@ async function productRoutes(fastify, options) {
         }
     });
 
-    fastify.put('/api/products/:id/rtv', { preHandler: [fastify.verifyAdmin], ...rtvSchema }, async (request, reply) => {
+    fastify.put('/api/products/:id/rtv', { preHandler: [fastify.authenticate, fastify.verifyAdmin], ...rtvSchema }, async (request, reply) => {
         try {
             const { variantId, distributorName, returnedQuantity, refundAmount, reason } = request.body;
             
@@ -307,7 +320,7 @@ async function productRoutes(fastify, options) {
         }
     });
 
-    fastify.post('/api/products/bulk', { preHandler: [fastify.verifyAdmin] }, async (request, reply) => {
+    fastify.post('/api/products/bulk', { preHandler: [fastify.authenticate, fastify.verifyAdmin], ...bulkSchema }, async (request, reply) => {
         try {
             const { products } = request.body;
             if (!Array.isArray(products)) return reply.status(400).send({ success: false, message: 'Invalid format' });
@@ -336,7 +349,7 @@ async function productRoutes(fastify, options) {
         }
     });
 
-    fastify.put('/api/products/:id/toggle', { preHandler: [fastify.verifyAdmin] }, async (request, reply) => {
+    fastify.put('/api/products/:id/toggle', { preHandler: [fastify.authenticate, fastify.verifyAdmin] }, async (request, reply) => {
         try {
             const product = await Product.findById(request.params.id);
             if (!product) return reply.status(404).send({ success: false, message: 'Not found' });
@@ -352,7 +365,7 @@ async function productRoutes(fastify, options) {
         }
     });
 
-    fastify.get('/api/products/export', async (request, reply) => {
+    fastify.get('/api/products/export', { preHandler: [fastify.authenticate, fastify.verifyAdmin] }, async (request, reply) => {
         try {
             const products = await Product.find({ isArchived: { $ne: true } }).lean();
             const flatProducts = [];
@@ -378,7 +391,7 @@ async function productRoutes(fastify, options) {
         }
     });
 
-    fastify.get('/api/seed', async (request, reply) => {
+    fastify.get('/api/seed', { preHandler: [fastify.authenticate, fastify.verifyAdmin] }, async (request, reply) => {
         try {
             await Category.deleteMany({});
             const sampleCategories = [{ name: 'Dairy & Breakfast' }, { name: 'Snacks & Munchies' }, { name: 'Cold Drinks & Juices' }, { name: 'Personal Care' }, { name: 'Cleaning Essentials' }, { name: 'Grocery & Kitchen' }];
