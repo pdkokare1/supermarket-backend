@@ -15,7 +15,8 @@ const distributorSchema = {
 async function distributorRoutes(fastify, options) {
     fastify.get('/api/distributors', { preHandler: [fastify.authenticate] }, async (request, reply) => {
         try {
-            const distributors = await Distributor.find().sort({ name: 1 });
+            // --- OPTIMIZATION: Added .lean() for faster memory allocation ---
+            const distributors = await Distributor.find().sort({ name: 1 }).lean();
             return { success: true, count: distributors.length, data: distributors };
         } catch (error) {
             fastify.log.error(error);
@@ -28,6 +29,10 @@ async function distributorRoutes(fastify, options) {
             const { name } = request.body;
             const newDistributor = new Distributor({ name });
             await newDistributor.save();
+
+            // --- NEW: Real-Time POS Notification ---
+            if (fastify.broadcastToPOS) fastify.broadcastToPOS({ type: 'DISTRIBUTOR_ADDED', distributorId: newDistributor._id });
+
             return { success: true, message: 'Distributor added', data: newDistributor };
         } catch (error) {
             if (error.code === 11000) return reply.status(400).send({ success: false, message: 'Distributor already exists' });
