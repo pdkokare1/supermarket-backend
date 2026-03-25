@@ -39,7 +39,10 @@ fastify.register(require('@fastify/cors'), {
         'http://localhost:3000',
         'http://localhost:5500',
         'http://127.0.0.1:5500'
-    ]
+    ],
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    credentials: true,
+    allowedHeaders: ['Content-Type', 'Authorization']
 });
 
 // --- PERFORMANCE: High-Speed Response Compression ---
