@@ -1,7 +1,19 @@
 const Distributor = require('../models/Distributor');
 
+const distributorSchema = {
+    schema: {
+        body: {
+            type: 'object',
+            required: ['name'],
+            properties: {
+                name: { type: 'string' }
+            }
+        }
+    }
+};
+
 async function distributorRoutes(fastify, options) {
-    fastify.get('/api/distributors', async (request, reply) => {
+    fastify.get('/api/distributors', { preHandler: [fastify.authenticate] }, async (request, reply) => {
         try {
             const distributors = await Distributor.find().sort({ name: 1 });
             return { success: true, count: distributors.length, data: distributors };
@@ -11,7 +23,7 @@ async function distributorRoutes(fastify, options) {
         }
     });
 
-    fastify.post('/api/distributors', async (request, reply) => {
+    fastify.post('/api/distributors', { preHandler: [fastify.authenticate, fastify.verifyAdmin], ...distributorSchema }, async (request, reply) => {
         try {
             const { name } = request.body;
             const newDistributor = new Distributor({ name });
