@@ -16,7 +16,8 @@ async function categoryRoutes(fastify, options) {
     // GET /api/categories - Fetch all categories
     fastify.get('/api/categories', { preHandler: [fastify.authenticate] }, async (request, reply) => {
         try {
-            const categories = await Category.find().sort({ name: 1 });
+            // --- OPTIMIZATION: Added .lean() for faster memory allocation ---
+            const categories = await Category.find().sort({ name: 1 }).lean();
             return { success: true, count: categories.length, data: categories };
         } catch (error) {
             fastify.log.error(error);
@@ -30,6 +31,10 @@ async function categoryRoutes(fastify, options) {
             const { name } = request.body;
             const newCategory = new Category({ name });
             await newCategory.save();
+            
+            // --- NEW: Real-Time POS Notification for Navigation Sync ---
+            if (fastify.broadcastToPOS) fastify.broadcastToPOS({ type: 'CATEGORY_ADDED', categoryId: newCategory._id });
+
             return { success: true, message: 'Category added', data: newCategory };
         } catch (error) {
             if (error.code === 11000) {
