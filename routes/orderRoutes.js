@@ -4,7 +4,6 @@ const Product = require('../models/Product');
 const Customer = require('../models/Customer');
 const AuditLog = require('../models/AuditLog'); // NEW: For Security Audit Trails
 const { Parser } = require('json2csv'); 
-const axios = require('axios'); 
 
 // --- OPTIMIZED LOGIC: Multi-Server Redis Pub/Sub & Caching ---
 let Redis = null;
@@ -209,7 +208,9 @@ async function orderRoutes(fastify, options) {
             if (customerPhone && customerPhone.length >= 10 && process.env.CALLMEBOT_API_KEY && process.env.WA_PHONE_NUMBER) {
                 const msg = `DailyPick Order Received! 🛒\nOrder ID: ${newOrder._id.toString().substring(0,8)}\nTotal: ₹${totalAmount}\nDelivery: ${scheduleTime}\nThanks for shopping!`;
                 const waUrl = `https://api.callmebot.com/whatsapp.php?phone=${customerPhone}&text=${encodeURIComponent(msg)}&apikey=${process.env.CALLMEBOT_API_KEY}`;
-                axios.get(waUrl).catch(() => {}); 
+                
+                // --- OPTIMIZATION: Replaced Axios with native fetch ---
+                fetch(waUrl).catch(() => {}); 
             }
 
             return { success: true, message: 'Order Placed Successfully', orderId: newOrder._id };
@@ -307,7 +308,9 @@ async function orderRoutes(fastify, options) {
                 const loyaltyMsg = pointsRedeemed > 0 ? ` Points Redeemed: ${pointsRedeemed}.` : '';
                 const msg = `Thank you for shopping at DailyPick! 🛒\nTotal: ₹${totalAmount}\n${loyaltyMsg}\nVisit again!`;
                 const waUrl = `https://api.callmebot.com/whatsapp.php?phone=${customerPhone}&text=${encodeURIComponent(msg)}&apikey=${process.env.CALLMEBOT_API_KEY}`;
-                axios.get(waUrl).catch(() => {}); 
+                
+                // --- OPTIMIZATION: Replaced Axios with native fetch ---
+                fetch(waUrl).catch(() => {}); 
             }
 
             return { success: true, message: 'POS Transaction Complete', orderId: newOrder._id, orderData: newOrder };
