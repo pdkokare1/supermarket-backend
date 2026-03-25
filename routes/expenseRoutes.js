@@ -1,9 +1,35 @@
 const Expense = require('../models/Expense');
 
+const expenseBodySchema = {
+    schema: {
+        body: {
+            type: 'object',
+            required: ['desc', 'amount', 'dateStr', 'timeStr'],
+            properties: {
+                desc: { type: 'string' },
+                amount: { type: 'number' },
+                dateStr: { type: 'string' },
+                timeStr: { type: 'string' }
+            }
+        }
+    }
+};
+
+const expenseQuerySchema = {
+    schema: {
+        querystring: {
+            type: 'object',
+            properties: {
+                dateStr: { type: 'string' }
+            }
+        }
+    }
+};
+
 async function expenseRoutes(fastify, options) {
 
-    // --- SECURED: Added Admin RBAC hook ---
-    fastify.post('/api/expenses', { preHandler: [fastify.verifyAdmin] }, async (request, reply) => {
+    // --- SECURED: Added Auth and Admin RBAC hooks + Validation ---
+    fastify.post('/api/expenses', { preHandler: [fastify.authenticate, fastify.verifyAdmin], ...expenseBodySchema }, async (request, reply) => {
         try {
             const { desc, amount, dateStr, timeStr } = request.body;
             
@@ -17,8 +43,8 @@ async function expenseRoutes(fastify, options) {
         }
     });
 
-    // --- SECURED: Added Admin RBAC hook ---
-    fastify.get('/api/expenses', { preHandler: [fastify.verifyAdmin] }, async (request, reply) => {
+    // --- SECURED: Added Auth and Admin RBAC hooks + Validation ---
+    fastify.get('/api/expenses', { preHandler: [fastify.authenticate, fastify.verifyAdmin], ...expenseQuerySchema }, async (request, reply) => {
         try {
             const { dateStr } = request.query;
             let filter = {};
