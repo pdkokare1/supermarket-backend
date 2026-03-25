@@ -1,5 +1,6 @@
 const Shift = require('../models/Shift');
 const Order = require('../models/Order');
+const AuditLog = require('../models/AuditLog'); // --- NEW: Integrated Security Auditing ---
 
 const openShiftSchema = {
     schema: {
@@ -45,6 +46,20 @@ async function shiftRoutes(fastify, options) {
             });
             
             await newShift.save();
+
+            // --- SECURITY HARDENING: Generate Audit Log for Drawer Open ---
+            await AuditLog.create({
+                userId: request.user ? request.user.id : null,
+                username: request.user ? request.user.username : userName || 'System',
+                action: 'SHIFT_OPENED',
+                targetType: 'Shift',
+                targetId: newShift._id.toString(),
+                details: { startingFloat: newShift.startingFloat }
+            }).catch(e => fastify.log.error('AuditLog Error:', e));
+
+            // --- NEW: Real-Time POS Notification ---
+            if (fastify.broadcastToPOS) fastify.broadcastToPOS({ type: 'SHIFT_OPENED', shiftId: newShift._id });
+
             return { success: true, data: newShift, message: 'Register Opened Successfully!' };
         } catch (error) {
             fastify.log.error('Open Shift Error:', error);
@@ -54,7 +69,8 @@ async function shiftRoutes(fastify, options) {
 
     fastify.get('/api/shifts/current', { preHandler: [fastify.authenticate, fastify.verifyAdmin] }, async (request, reply) => {
         try {
-            const currentShift = await Shift.findOne({ status: 'Open' });
+            // --- OPTIMIZATION: Added .lean() for faster memory allocation ---
+            const currentShift = await Shift.findOne({ status: 'Open' }).lean();
             return { success: true, data: currentShift || null };
         } catch (error) {
             fastify.log.error('Fetch Shift Error:', error);
@@ -99,6 +115,19 @@ async function shiftRoutes(fastify, options) {
             await shift.save();
 
             const discrepancy = shift.actualCash - shift.expectedCash;
+
+            // --- SECURITY HARDENING: Generate Audit Log for Drawer Close ---
+            await AuditLog.create({
+                userId: request.user ? request.user.id : null,
+                username: request.user ? request.user.username : 'System',
+                action: 'SHIFT_CLOSED',
+                targetType: 'Shift',
+                targetId: shift._id.toString(),
+                details: { expectedCash, actualCash: shift.actualCash, discrepancy }
+            }).catch(e => fastify.log.error('AuditLog Error:', e));
+
+            // --- NEW: Real-Time POS Notification ---
+            if (fastify.broadcastToPOS) fastify.broadcastToPOS({ type: 'SHIFT_CLOSED', shiftId: shift._id });
 
             return { 
                 success: true, 
