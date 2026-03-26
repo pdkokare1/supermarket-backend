@@ -2,14 +2,14 @@ const mongoose = require('mongoose');
 const Order = require('../models/Order');
 const Product = require('../models/Product');
 const Customer = require('../models/Customer');
-const AuditLog = require('../models/AuditLog'); // NEW: For Security Audit Trails
+const AuditLog = require('../models/AuditLog'); 
 const { Parser } = require('json2csv'); 
 
 // --- OPTIMIZED LOGIC: Multi-Server Redis Pub/Sub & Caching ---
 let Redis = null;
 let redisPub = null;
 let redisSub = null;
-let redisCache = null; // NEW: Dedicated cache client
+let redisCache = null; 
 try {
     Redis = require('ioredis');
     if (process.env.REDIS_URL) {
@@ -33,9 +33,7 @@ try {
             }
         });
     }
-} catch (e) {
-    // Fails silently. Will use local array if ioredis is not installed.
-}
+} catch (e) {}
 
 let adminConnections = [];
 let customerConnections = {};
@@ -97,7 +95,6 @@ const cancelSchema = { schema: { body: { type: 'object', required: ['reason'], p
 const limitSchema = { schema: { body: { type: 'object', required: ['isCreditEnabled', 'creditLimit'], properties: { isCreditEnabled: { type: 'boolean' }, creditLimit: { type: 'number' }, name: { type: 'string' } } } } };
 const paySchema = { schema: { body: { type: 'object', required: ['amount'], properties: { amount: { type: 'number', minimum: 0 } } } } };
 
-// --- NEW PERFORMANCE SCHEMA: Fastify Query Parsing ---
 const getOrdersSchema = {
     schema: {
         querystring: {
@@ -185,7 +182,6 @@ async function orderRoutes(fastify, options) {
                 await custProfile.save({ session });
             }
 
-            // --- OPTIMIZATION: Atomic Database Stock Subtraction (Prevents WriteConflicts) ---
             for (const item of items) {
                 await Product.updateOne(
                     { _id: item.productId, "variants._id": item.variantId },
@@ -194,7 +190,16 @@ async function orderRoutes(fastify, options) {
                 );
             }
 
+            // --- NEW: Atomic Order Number Generation ---
+            const counter = await mongoose.model('OrderCounter').findByIdAndUpdate(
+                { _id: 'orderId' },
+                { $inc: { seq: 1 } },
+                { new: true, upsert: true, session }
+            );
+            const orderNumber = `ORD-${counter.seq}`;
+
             const newOrder = new Order({
+                orderNumber, // Storing human-readable sequential ID
                 customerName, customerPhone, deliveryAddress, items, totalAmount,
                 paymentMethod: paymentMethod || 'Cash on Delivery',
                 deliveryType: deliveryType || 'Instant', 
@@ -220,14 +225,12 @@ async function orderRoutes(fastify, options) {
                 });
             }
 
-            // --- NEW: Real-Time POS Notification ---
             if (fastify.broadcastToPOS) fastify.broadcastToPOS({ type: 'NEW_ORDER', orderId: newOrder._id });
 
             if (customerPhone && customerPhone.length >= 10 && process.env.CALLMEBOT_API_KEY && process.env.WA_PHONE_NUMBER) {
-                const msg = `DailyPick Order Received! 🛒\nOrder ID: ${newOrder._id.toString().substring(0,8)}\nTotal: ₹${totalAmount}\nDelivery: ${scheduleTime}\nThanks for shopping!`;
+                const msg = `DailyPick Order Received! 🛒\nOrder ID: ${newOrder.orderNumber}\nTotal: ₹${totalAmount}\nDelivery: ${scheduleTime}\nThanks for shopping!`;
                 const waUrl = `https://api.callmebot.com/whatsapp.php?phone=${customerPhone}&text=${encodeURIComponent(msg)}&apikey=${process.env.CALLMEBOT_API_KEY}`;
                 
-                // --- OPTIMIZATION: Replaced Axios with native fetch ---
                 fetch(waUrl).catch(() => {}); 
             }
 
@@ -287,20 +290,28 @@ async function orderRoutes(fastify, options) {
                 }
             }
 
-            // --- OPTIMIZATION: Atomic Database Stock Subtraction ---
             for (const item of items) {
                 await Product.updateOne(
                     { 
                         _id: item.productId, 
                         "variants._id": item.variantId,
-                        "variants.stock": { $gte: item.qty } // Replicates the condition perfectly
+                        "variants.stock": { $gte: item.qty } 
                     },
                     { $inc: { "variants.$.stock": -item.qty } },
                     { session }
                 );
             }
 
+            // --- NEW: Atomic Order Number Generation ---
+            const counter = await mongoose.model('OrderCounter').findByIdAndUpdate(
+                { _id: 'orderId' },
+                { $inc: { seq: 1 } },
+                { new: true, upsert: true, session }
+            );
+            const orderNumber = `ORD-${counter.seq}`;
+
             const newOrder = new Order({
+                orderNumber, // Storing human-readable sequential ID
                 customerName: finalCustomerName, 
                 customerPhone: customerPhone || '', 
                 deliveryAddress: 'In-Store Purchase', 
@@ -322,15 +333,13 @@ async function orderRoutes(fastify, options) {
                 try { await redisCache.del('orders:analytics'); } catch(e) {}
             }
 
-            // --- NEW: Real-Time POS Notification ---
             if (fastify.broadcastToPOS) fastify.broadcastToPOS({ type: 'NEW_ORDER', orderId: newOrder._id, source: 'POS' });
 
             if (customerPhone && customerPhone.length >= 10 && process.env.CALLMEBOT_API_KEY && process.env.WA_PHONE_NUMBER) {
                 const loyaltyMsg = pointsRedeemed > 0 ? ` Points Redeemed: ${pointsRedeemed}.` : '';
-                const msg = `Thank you for shopping at DailyPick! 🛒\nTotal: ₹${totalAmount}\n${loyaltyMsg}\nVisit again!`;
+                const msg = `Thank you for shopping at DailyPick! 🛒\nOrder: ${newOrder.orderNumber}\nTotal: ₹${totalAmount}\n${loyaltyMsg}\nVisit again!`;
                 const waUrl = `https://api.callmebot.com/whatsapp.php?phone=${customerPhone}&text=${encodeURIComponent(msg)}&apikey=${process.env.CALLMEBOT_API_KEY}`;
                 
-                // --- OPTIMIZATION: Replaced Axios with native fetch ---
                 fetch(waUrl).catch(() => {}); 
             }
 
@@ -365,7 +374,6 @@ async function orderRoutes(fastify, options) {
                 }
             }
 
-            // --- NEW: Real-Time POS Notification ---
             if (fastify.broadcastToPOS) fastify.broadcastToPOS({ type: 'ORDER_STATUS_UPDATED', orderId: order._id, status: status });
 
             return { success: true, data: order };
@@ -396,7 +404,6 @@ async function orderRoutes(fastify, options) {
                 }
             }
 
-            // --- NEW: Real-Time POS Notification ---
             if (fastify.broadcastToPOS) fastify.broadcastToPOS({ type: 'ORDER_STATUS_UPDATED', orderId: order._id, status: 'Dispatched' });
 
             return { success: true, data: order };
@@ -406,7 +413,6 @@ async function orderRoutes(fastify, options) {
         }
     });
 
-    // --- INTEGRITY HARDENING: Logging Cancellations ---
     fastify.put('/api/orders/:id/cancel', { preHandler: [fastify.authenticate, fastify.verifyAdmin], ...cancelSchema }, async (request, reply) => {
         const session = await mongoose.startSession();
         session.startTransaction();
@@ -441,7 +447,6 @@ async function orderRoutes(fastify, options) {
 
             await order.save({ session });
             
-            // --- SECURITY HARDENING: Generate Audit Log ---
             const logEntry = new AuditLog({
                 userId: request.user ? request.user.id : null,
                 username: request.user ? request.user.username : 'System',
@@ -470,7 +475,6 @@ async function orderRoutes(fastify, options) {
                 }
             }
 
-            // --- NEW: Real-Time POS Notification ---
             if (fastify.broadcastToPOS) fastify.broadcastToPOS({ type: 'ORDER_STATUS_UPDATED', orderId: order._id, status: 'Cancelled' });
 
             return { success: true, message: 'Order Cancelled and Stock Refunded', data: order };
@@ -580,7 +584,6 @@ async function orderRoutes(fastify, options) {
         }
     });
 
-    // --- OPTIMIZATION: Zero-Memory Database Aggregation ---
     fastify.get('/api/orders/customers', { preHandler: [fastify.authenticate, fastify.verifyAdmin] }, async (request, reply) => {
         try {
             const customerList = await Order.aggregate([
@@ -607,7 +610,6 @@ async function orderRoutes(fastify, options) {
         }
     });
 
-    // Applied getOrdersSchema here for Fastify routing optimization
     fastify.get('/api/orders', { preHandler: [fastify.authenticate, fastify.verifyAdmin], ...getOrdersSchema }, async (request, reply) => {
         try {
             let filter = {};
@@ -668,7 +670,8 @@ async function orderRoutes(fastify, options) {
         try {
             const orders = await Order.find().sort({ createdAt: -1 }).lean();
             const exportData = orders.map(o => ({
-                OrderID: o._id.toString(),
+                // --- NEW: Using orderNumber in CSV with backward-compatibility fallback ---
+                OrderID: o.orderNumber || o._id.toString(),
                 Date: new Date(o.createdAt).toLocaleString(),
                 CustomerName: o.customerName,
                 Phone: o.customerPhone,
