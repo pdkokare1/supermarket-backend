@@ -1,6 +1,6 @@
 const Product = require('../models/Product');
 const Category = require('../models/Category');
-const Distributor = require('../models/Distributor'); 
+const Distributor = require('../models/Distributor'); // --- NEW: Required for Accounts Payable ---
 const { Parser } = require('json2csv'); 
 const cloudinary = require('cloudinary').v2; 
 
@@ -18,6 +18,7 @@ try {
         redisCache = new Redis(process.env.REDIS_URL);
     }
 } catch (e) {
+    // Graceful fallback if ioredis is not installed
 }
 
 const invalidateProductCache = async () => {
@@ -66,8 +67,8 @@ const restockSchema = {
                 addedQuantity: { type: 'number', minimum: 1 },
                 purchasingPrice: { type: 'number', minimum: 0 },
                 newSellingPrice: { type: 'number', minimum: 0 },
-                paymentStatus: { type: 'string', enum: ['Paid', 'Credit'] }, 
-                storeId: { type: 'string' } 
+                paymentStatus: { type: 'string', enum: ['Paid', 'Credit'] }, // --- NEW: B2B Payment Tracking ---
+                storeId: { type: 'string' } // --- NEW: Multi-Store Routing ---
             }
         }
     }
@@ -84,7 +85,7 @@ const rtvSchema = {
                 returnedQuantity: { type: 'number', minimum: 1 },
                 refundAmount: { type: 'number', minimum: 0 },
                 reason: { type: 'string' },
-                storeId: { type: 'string' } 
+                storeId: { type: 'string' } // --- NEW: Multi-Store Routing ---
             }
         }
     }
@@ -213,15 +214,7 @@ async function productRoutes(fastify, options) {
 
             const uploadResult = await new Promise((resolve, reject) => {
                 const uploadStream = cloudinary.uploader.upload_stream(
-                    { 
-                        folder: 'dailypick_products',
-                        // --- OPTIMIZATION: On-The-Fly Cloudinary Compression ---
-                        // Limits dimensions and converts massive JPEGs to lightweight WebP format
-                        transformation: [
-                            { width: 800, height: 800, crop: 'limit' },
-                            { quality: 'auto', fetch_format: 'webp' }
-                        ]
-                    },
+                    { folder: 'dailypick_products' },
                     (error, result) => {
                         if (error) reject(error);
                         else resolve(result);
@@ -234,6 +227,50 @@ async function productRoutes(fastify, options) {
         } catch (error) {
             fastify.log.error('Cloudinary Upload Error:', error);
             reply.status(500).send({ success: false, message: 'Image upload failed' });
+        }
+    });
+
+    // --- NEW: Gemini AI Auto-Fill Endpoint ---
+    fastify.post('/api/products/autofill', { preHandler: [fastify.authenticate, fastify.verifyAdmin] }, async (request, reply) => {
+        try {
+            const { productName } = request.body;
+            if (!productName) return reply.status(400).send({ success: false, message: 'Product name required' });
+            if (!process.env.GEMINI_API_KEY) return reply.status(400).send({ success: false, message: 'Gemini API key not configured' });
+
+            const prompt = `You are an AI assistant for a supermarket inventory system. Analyze this product name: "${productName}". 
+            Return ONLY a valid JSON object with EXACTLY these 3 keys:
+            "category" (Choose the closest match from: Dairy & Breakfast, Snacks & Munchies, Cold Drinks & Juices, Personal Care, Cleaning Essentials, Grocery & Kitchen. If none fit, use 'Grocery & Kitchen'),
+            "brand" (Extract or guess the brand name, keep it brief. e.g., 'Amul', 'Britannia'),
+            "searchTags" (A comma-separated list of 5-8 highly relevant SEO keywords/tags to help cashiers search for it).
+            DO NOT include markdown formatting or backticks, return raw JSON only.`;
+
+            const aiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    contents: [{ parts: [{ text: prompt }] }],
+                    generationConfig: { temperature: 0.1 } 
+                })
+            });
+
+            const data = await aiRes.json();
+            
+            if (!data.candidates || data.candidates.length === 0) {
+                throw new Error("Invalid response from Gemini");
+            }
+
+            let textResult = data.candidates[0].content.parts[0].text.trim();
+            
+            if (textResult.startsWith('```json')) {
+                textResult = textResult.replace(/```json/g, '').replace(/```/g, '').trim();
+            }
+
+            const parsed = JSON.parse(textResult);
+            return { success: true, data: parsed };
+            
+        } catch (error) {
+            fastify.log.error('Gemini API Error:', error);
+            reply.status(500).send({ success: false, message: 'AI Auto-Fill failed to process request' });
         }
     });
 
@@ -318,12 +355,14 @@ async function productRoutes(fastify, options) {
                 addedQuantity: Number(addedQuantity), 
                 purchasingPrice: Number(purchasingPrice), 
                 sellingPrice: Number(newSellingPrice),
-                storeId: storeId 
+                storeId: storeId // Log where the restock happened
             });
             
+            // Existing global stock increment
             variant.stock += Number(addedQuantity); 
             variant.price = Number(newSellingPrice);
 
+            // Multi-Store Location Inventory Increment
             if (storeId) {
                 let locStock = variant.locationInventory.find(l => l.storeId && l.storeId.toString() === storeId);
                 if (locStock) {
@@ -335,6 +374,7 @@ async function productRoutes(fastify, options) {
             
             await product.save();
             
+            // B2B Accounts Payable Ledger
             if (paymentStatus === 'Credit' && product.distributorName) {
                 const totalCost = Number(addedQuantity) * Number(purchasingPrice);
                 await Distributor.findOneAndUpdate(
@@ -368,8 +408,10 @@ async function productRoutes(fastify, options) {
 
             variant.returnHistory.push({ distributorName, returnedQuantity: Number(returnedQuantity), refundAmount: Number(refundAmount), reason, storeId });
             
+            // Existing global stock decrement
             variant.stock -= Number(returnedQuantity); 
 
+            // Multi-Store Location Inventory Decrement
             if (storeId) {
                 let locStock = variant.locationInventory.find(l => l.storeId && l.storeId.toString() === storeId);
                 if (locStock && locStock.stock >= returnedQuantity) {
@@ -475,12 +517,12 @@ async function productRoutes(fastify, options) {
             await Product.deleteMany({});
             const sampleProducts = [
                 { 
-                    name: 'Amul Taaza Toned Milk', category: 'Dairy & Breakfast', brand: 'Amul', searchTags: 'milk, liquid, morning, dairy, promo-morning', imageUrl: 'https://m.media-amazon.com/images/I/61H4YpTfGLL._SL1500_.jpg', 
+                    name: 'Amul Taaza Toned Milk', category: 'Dairy & Breakfast', brand: 'Amul', searchTags: 'milk, liquid, morning, dairy, promo-morning', imageUrl: '[https://m.media-amazon.com/images/I/61H4YpTfGLL._SL1500_.jpg](https://m.media-amazon.com/images/I/61H4YpTfGLL._SL1500_.jpg)', 
                     hsnCode: '0401', taxRate: 0, taxType: 'Inclusive',
                     variants: [{ weightOrVolume: '1 Litre', price: 68, stock: 3, lowStockThreshold: 10, sku: '8901262150171' }] 
                 },
                 { 
-                    name: 'Britannia Fresh White Bread', category: 'Dairy & Breakfast', brand: 'Britannia', searchTags: 'bread, bakery, toast, breakfast, promo-morning', imageUrl: 'https://m.media-amazon.com/images/I/71I3uXhYyPL._SL1500_.jpg', 
+                    name: 'Britannia Fresh White Bread', category: 'Dairy & Breakfast', brand: 'Britannia', searchTags: 'bread, bakery, toast, breakfast, promo-morning', imageUrl: '[https://m.media-amazon.com/images/I/71I3uXhYyPL._SL1500_.jpg](https://m.media-amazon.com/images/I/71I3uXhYyPL._SL1500_.jpg)', 
                     hsnCode: '1905', taxRate: 0, taxType: 'Inclusive',
                     variants: [{ weightOrVolume: '400 g', price: 45, stock: 30, sku: '8901063132030' }] 
                 }
