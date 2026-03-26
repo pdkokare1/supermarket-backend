@@ -87,13 +87,17 @@ const orderSchema = new mongoose.Schema({
     }
 }, { timestamps: true });
 
+// --- OPTIMIZED INDEXES FOR HIGH-SPEED QUERIES ---
 orderSchema.index({ status: 1, createdAt: -1 }); 
 orderSchema.index({ deliveryType: 1, status: 1 }); 
-orderSchema.index({ customerPhone: 1 }); 
-orderSchema.index({ orderNumber: 1 }); // Index for fast lookup on the new field
-
-// --- NEW INDEXES: Fast Analytics Filtering per Store/Register ---
+orderSchema.index({ orderNumber: 1 });
 orderSchema.index({ storeId: 1, createdAt: -1 });
 orderSchema.index({ registerId: 1, createdAt: -1 });
+
+// NEW: Compound index for CRM/Customer lookup speed
+orderSchema.index({ customerPhone: 1, status: 1, createdAt: -1 }); 
+
+// NEW: Compound index for Financial EOD aggregations
+orderSchema.index({ paymentMethod: 1, createdAt: -1 });
 
 module.exports = mongoose.model('Order', orderSchema);
