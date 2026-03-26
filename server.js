@@ -192,6 +192,9 @@ fastify.register(require('./routes/expenseRoutes'));
 fastify.register(require('./routes/authRoutes')); 
 fastify.register(require('./routes/promotionRoutes')); 
 fastify.register(require('./routes/shiftRoutes'));
+// --- NEW: Phase 5 Multi-Store Admin Management Routes ---
+fastify.register(require('./routes/storeRoutes'));
+fastify.register(require('./routes/registerRoutes'));
 
 fastify.setErrorHandler(function (error, request, reply) {
     const apmLog = {
