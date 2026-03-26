@@ -51,7 +51,6 @@ const createBackupFile = async (model, filename, query = {}) => {
     const fileStream = fs.createWriteStream(filePath);
     const gzipStream = zlib.createGzip();
 
-    // Pipe the gzip stream directly to the file system stream
     gzipStream.pipe(fileStream);
 
     gzipStream.write('[\n');
@@ -67,7 +66,6 @@ const createBackupFile = async (model, filename, query = {}) => {
     gzipStream.write('\n]');
     gzipStream.end();
     
-    // Wait for the file system to finish writing the compressed block
     await new Promise(resolve => fileStream.on('finish', resolve));
     return filePath;
 };
@@ -87,6 +85,49 @@ const uploadFileToCloudinary = (filePath, filename) => {
 
 module.exports = function(fastify, updateInventoryReport) {
     
+    // --- NEW PHASE 3: Midnight Expiry & Wastage Monitor ---
+    cron.schedule('0 0 * * *', () => {
+        runWithLock('ExpiryWastageMonitor', fastify, async () => {
+            fastify.log.info('Running 12:00 AM Expiry & Wastage Monitor CRON Job...');
+            try {
+                const sevenDaysFromNow = new Date();
+                sevenDaysFromNow.setDate(sevenDaysFromNow.getDate() + 7);
+
+                const products = await Product.find({ isActive: true, "variants.expiryDate": { $ne: null } }).lean();
+                let expiringItems = [];
+
+                products.forEach(p => {
+                    p.variants.forEach(v => {
+                        if (v.expiryDate && new Date(v.expiryDate) <= sevenDaysFromNow && v.stock > 0) {
+                            expiringItems.push({
+                                productId: p._id,
+                                name: p.name,
+                                variant: v.weightOrVolume,
+                                stock: v.stock,
+                                expiryDate: v.expiryDate
+                            });
+                        }
+                    });
+                });
+
+                if (expiringItems.length > 0) {
+                    fastify.log.warn(`[WASTAGE WARNING] ${expiringItems.length} items expiring within 7 days.`);
+                    
+                    // Push Real-Time Warning to all active POS machines
+                    if (fastify.broadcastToPOS) {
+                        fastify.broadcastToPOS({ 
+                            type: 'EXPIRY_WARNING', 
+                            message: `⚠️ ${expiringItems.length} items are nearing expiry! Push these items today to prevent wastage.`,
+                            items: expiringItems 
+                        });
+                    }
+                }
+            } catch(err) {
+                fastify.log.error('Expiry Monitor Error:', err);
+            }
+        });
+    });
+
     cron.schedule('0 6 * * *', () => {
         runWithLock('RoutineDeliveries', fastify, async () => {
             fastify.log.info('Running 6:00 AM Routine Deliveries CRON Job...');
@@ -312,7 +353,6 @@ module.exports = function(fastify, updateInventoryReport) {
                         status: { $ne: 'Cancelled' }
                     });
 
-                    // --- Updated Cloudinary identifiers to .json.gz ---
                     const [prodUrl, custUrl, orderUrl] = await Promise.all([
                         uploadFileToCloudinary(productsPath, `products_${datePrefix}.json.gz`),
                         uploadFileToCloudinary(customersPath, `customers_${datePrefix}.json.gz`),
@@ -381,7 +421,6 @@ module.exports = function(fastify, updateInventoryReport) {
                 date90.setDate(date90.getDate() - 90);
                 const datePrefix = date90.toISOString().split('T')[0];
                 
-                // --- OPTIMIZATION: Retains legacy paths to successfully delete old uncompressed backups ---
                 const publicIds = [
                     `backups/products_${datePrefix}.json.gz`,
                     `backups/customers_${datePrefix}.json.gz`,
