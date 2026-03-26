@@ -7,41 +7,34 @@ const userSchema = new mongoose.Schema({
     },
     username: { 
         type: String, 
-        unique: true,
-        sparse: true // Allows existing users without a username to coexist safely
+        required: true, 
+        unique: true 
     },
     pin: { 
         type: String, 
-        required: true
-        // MODIFIED: Removed unique: true to prevent duplicate key errors on default PINs
+        required: true 
     },
+    // --- ENHANCED: Strict Role-Based Access Control (RBAC) ---
     role: { 
         type: String, 
         enum: ['Admin', 'Cashier'], 
         default: 'Cashier' 
     },
-    isActive: {
-        type: Boolean,
-        default: true
+    isActive: { 
+        type: Boolean, 
+        default: true 
     },
-    // --- SECURITY HARDENING: Token Versioning ---
-    tokenVersion: { 
+    failedLoginAttempts: { 
         type: Number, 
         default: 0 
     },
-    // --- NEW: Brute-Force Protection ---
-    failedLoginAttempts: {
-        type: Number,
-        default: 0
+    lockUntil: { 
+        type: Date 
     },
-    lockUntil: {
-        type: Date
+    tokenVersion: { 
+        type: Number, 
+        default: 0 
     }
 }, { timestamps: true });
-
-// --- NEW: Virtual field to check if the account is currently locked ---
-userSchema.virtual('isLocked').get(function() {
-    return !!(this.lockUntil && this.lockUntil > Date.now());
-});
 
 module.exports = mongoose.model('User', userSchema);
