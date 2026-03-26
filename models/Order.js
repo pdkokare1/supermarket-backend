@@ -15,6 +15,17 @@ const orderSchema = new mongoose.Schema({
         unique: true,
         sparse: true // Allows backward compatibility for older documents
     },
+    // --- NEW: Multi-Store Integration ---
+    storeId: { 
+        type: mongoose.Schema.Types.ObjectId, 
+        ref: 'Store', 
+        sparse: true // Allows legacy single-store orders to remain untouched
+    },
+    registerId: { 
+        type: mongoose.Schema.Types.ObjectId, 
+        ref: 'Register', 
+        sparse: true 
+    },
     customerName: { 
         type: String, 
         required: true 
@@ -80,5 +91,9 @@ orderSchema.index({ status: 1, createdAt: -1 });
 orderSchema.index({ deliveryType: 1, status: 1 }); 
 orderSchema.index({ customerPhone: 1 }); 
 orderSchema.index({ orderNumber: 1 }); // Index for fast lookup on the new field
+
+// --- NEW INDEXES: Fast Analytics Filtering per Store/Register ---
+orderSchema.index({ storeId: 1, createdAt: -1 });
+orderSchema.index({ registerId: 1, createdAt: -1 });
 
 module.exports = mongoose.model('Order', orderSchema);
