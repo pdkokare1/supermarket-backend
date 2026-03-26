@@ -16,11 +16,8 @@ try {
     if (process.env.REDIS_URL) {
         redisCache = new Redis(process.env.REDIS_URL);
     }
-} catch (e) {
-    // Graceful fallback if ioredis is not installed
-}
+} catch (e) {}
 
-// --- OPTIMIZATION: Non-Blocking Cache Invalidation ---
 const invalidateProductCache = async () => {
     if (redisCache) {
         try {
@@ -100,7 +97,6 @@ const bulkSchema = {
     }
 };
 
-// --- NEW PERFORMANCE SCHEMA: Fastify Query Parsing ---
 const getProductsSchema = {
     schema: {
         querystring: {
@@ -120,9 +116,22 @@ const getProductsSchema = {
     }
 };
 
+// --- NEW PERFORMANCE SCHEMA: Ultra-lightweight Autocomplete ---
+const autocompleteSchema = {
+    schema: {
+        querystring: {
+            type: 'object',
+            required: ['q'],
+            properties: {
+                q: { type: 'string', minLength: 2 }
+            }
+        }
+    }
+};
+
 async function productRoutes(fastify, options) {
     
-    // Public route - no preHandler required (Now optimized with Query Schema)
+    // Public route - Detailed Fetch
     fastify.get('/api/products', getProductsSchema, async (request, reply) => {
         try {
             const sortedQuery = Object.keys(request.query).sort().reduce((acc, key) => {
@@ -189,7 +198,7 @@ async function productRoutes(fastify, options) {
             }
             
             const [products, total] = await Promise.all([
-                query.lean(), // Already highly optimized!
+                query.lean(), 
                 Product.countDocuments(filter)
             ]);
             
@@ -206,6 +215,43 @@ async function productRoutes(fastify, options) {
         }
     });
 
+    // --- NEW: High-Speed Typeahead Route for Scalability ---
+    fastify.get('/api/products/autocomplete', autocompleteSchema, async (request, reply) => {
+        try {
+            const query = request.query.q;
+            
+            const cacheKey = `autocomplete:${query}`;
+            if (redisCache) {
+                const cachedResponse = await redisCache.get(cacheKey);
+                if (cachedResponse) return JSON.parse(cachedResponse);
+            }
+
+            // Strips out heavy fields like purchaseHistory, returnHistory, dates to save bandwidth
+            const results = await Product.find({
+                isActive: true,
+                isArchived: { $ne: true },
+                $or: [ 
+                    { name: { $regex: query, $options: 'i' } }, 
+                    { searchTags: { $regex: query, $options: 'i' } } 
+                ]
+            })
+            .select('name imageUrl category searchTags variants._id variants.weightOrVolume variants.price variants.stock variants.sku')
+            .limit(20)
+            .lean();
+
+            const responseData = { success: true, data: results };
+            
+            if (redisCache) {
+                await redisCache.set(cacheKey, JSON.stringify(responseData), 'EX', 1800); 
+            }
+
+            return responseData;
+        } catch (error) {
+            fastify.log.error('Autocomplete Error:', error);
+            reply.status(500).send({ success: false, message: 'Server Error' });
+        }
+    });
+
     fastify.post('/api/products/upload', { preHandler: [fastify.authenticate, fastify.verifyAdmin] }, async (request, reply) => {
         try {
             const data = await request.file();
@@ -219,7 +265,6 @@ async function productRoutes(fastify, options) {
                         else resolve(result);
                     }
                 );
-                // --- OPTIMIZATION: Zero-RAM Streaming ---
                 data.file.pipe(uploadStream);
             });
 
@@ -241,7 +286,6 @@ async function productRoutes(fastify, options) {
             await newProduct.save();
             await invalidateProductCache(); 
             
-            // --- NEW: Real-Time POS Notification ---
             if (fastify.broadcastToPOS) fastify.broadcastToPOS({ type: 'INVENTORY_UPDATED', productId: newProduct._id });
             
             return { success: true, message: 'Product added', data: newProduct };
@@ -268,7 +312,6 @@ async function productRoutes(fastify, options) {
             
             await invalidateProductCache(); 
             
-            // --- NEW: Real-Time POS Notification ---
             if (fastify.broadcastToPOS) fastify.broadcastToPOS({ type: 'INVENTORY_UPDATED', productId: updatedProduct._id });
 
             return { success: true, message: 'Product updated', data: updatedProduct };
@@ -289,7 +332,6 @@ async function productRoutes(fastify, options) {
             
             await invalidateProductCache(); 
             
-            // --- NEW: Real-Time POS Notification ---
             if (fastify.broadcastToPOS) fastify.broadcastToPOS({ type: 'INVENTORY_UPDATED', productId: product._id });
 
             return { success: true, message: `Product archived securely`, data: product };
@@ -322,7 +364,6 @@ async function productRoutes(fastify, options) {
             await product.save();
             await invalidateProductCache(); 
             
-            // --- NEW: Real-Time POS Notification ---
             if (fastify.broadcastToPOS) fastify.broadcastToPOS({ type: 'INVENTORY_UPDATED', productId: product._id, message: 'Stock Refilled' });
 
             return { success: true, message: 'Restock processed successfully', data: product };
@@ -350,7 +391,6 @@ async function productRoutes(fastify, options) {
             await product.save();
             await invalidateProductCache(); 
             
-            // --- NEW: Real-Time POS Notification ---
             if (fastify.broadcastToPOS) fastify.broadcastToPOS({ type: 'INVENTORY_UPDATED', productId: product._id, message: 'Stock Returned' });
 
             return { success: true, message: 'RTV processed successfully', data: product };
@@ -381,7 +421,6 @@ async function productRoutes(fastify, options) {
                 const result = await Product.bulkWrite(bulkOps);
                 await invalidateProductCache(); 
                 
-                // --- NEW: Real-Time POS Notification ---
                 if (fastify.broadcastToPOS) fastify.broadcastToPOS({ type: 'INVENTORY_UPDATED', message: 'Bulk Import Completed' });
 
                 return { success: true, message: `Imported! Added ${result.upsertedCount}, Updated ${result.modifiedCount}.` };
@@ -403,7 +442,6 @@ async function productRoutes(fastify, options) {
             
             await invalidateProductCache(); 
             
-            // --- NEW: Real-Time POS Notification ---
             if (fastify.broadcastToPOS) fastify.broadcastToPOS({ type: 'INVENTORY_UPDATED', productId: product._id });
 
             return { success: true, message: `Toggled`, data: product };
