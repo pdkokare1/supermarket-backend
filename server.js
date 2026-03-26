@@ -179,7 +179,7 @@ fastify.register(async function (fastify) {
             connection.socket.isAdmin = user.role === 'Admin';
             connection.socket.isAlive = true; 
 
-            // FIX: Cloud-Proxy Safe JSON Heartbeat interception
+            // Cloud-Proxy Safe JSON Heartbeat interception
             connection.socket.on('message', message => {
                 try {
                     const parsed = JSON.parse(message);
@@ -197,6 +197,13 @@ fastify.register(async function (fastify) {
                 storeContext: connection.socket.storeId || 'Global'
             }));
 
+            // FIX: Explicitly keep the async handler alive until the socket closes.
+            // If we don't do this, Fastify closes the socket the moment this function reaches the end.
+            await new Promise((resolve) => {
+                connection.socket.on('close', resolve);
+                connection.socket.on('error', resolve);
+            });
+
         } catch (err) {
             fastify.log.warn(`WebSocket connection rejected: ${err.message}`);
             connection.socket.send(JSON.stringify({ type: 'ERROR', message: 'Authentication failed' }));
@@ -204,7 +211,7 @@ fastify.register(async function (fastify) {
         }
     });
 
-    // FIX: Send Application-Level JSON Pings (Bypasses Nginx/Railway proxy stripping)
+    // Send Application-Level JSON Pings (Bypasses Nginx/Railway proxy stripping)
     setInterval(() => {
         if (!fastify.websocketServer) return;
         fastify.websocketServer.clients.forEach((client) => {
