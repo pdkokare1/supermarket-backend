@@ -143,7 +143,8 @@ async function orderRoutes(fastify, options) {
         reply.raw.writeHead(200, {
             'Content-Type': 'text/event-stream',
             'Cache-Control': 'no-cache',
-            'Access-Control-Allow-Origin': '*',  
+            'Access-Control-Allow-Origin': request.headers.origin || '*',  
+            'Access-Control-Allow-Credentials': 'true',
             'X-Accel-Buffering': 'no'            
         });
         reply.raw.write('data: {"message": "Admin Stream Connected"}\n\n');
@@ -162,7 +163,8 @@ async function orderRoutes(fastify, options) {
         reply.raw.writeHead(200, {
             'Content-Type': 'text/event-stream',
             'Cache-Control': 'no-cache',
-            'Access-Control-Allow-Origin': '*',  
+            'Access-Control-Allow-Origin': request.headers.origin || '*',  
+            'Access-Control-Allow-Credentials': 'true',
             'X-Accel-Buffering': 'no'            
         });
         reply.raw.write('data: {"message": "Tracking Stream Connected"}\n\n');
