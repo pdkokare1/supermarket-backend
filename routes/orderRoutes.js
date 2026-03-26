@@ -38,15 +38,27 @@ try {
 let adminConnections = [];
 let customerConnections = {};
 
-// --- OPTIMIZATION: Non-blocking SSE Heartbeat ---
+// --- RELIABILITY: Hardened non-blocking SSE Heartbeat mapping ---
 setInterval(() => {
-    adminConnections.forEach(conn => {
-        if (!conn.destroyed && conn.writable) conn.write(':\n\n'); 
+    adminConnections = adminConnections.filter(conn => {
+        if (conn.destroyed || !conn.writable) return false;
+        try {
+            conn.write(':\n\n');
+            return true;
+        } catch (e) {
+            return false; // Safely removes dropped EPIPE connections
+        }
     });
 
     for (const orderId in customerConnections) {
-        customerConnections[orderId].forEach(conn => {
-            if (!conn.destroyed && conn.writable) conn.write(':\n\n');
+        customerConnections[orderId] = customerConnections[orderId].filter(conn => {
+            if (conn.destroyed || !conn.writable) return false;
+            try {
+                conn.write(':\n\n');
+                return true;
+            } catch (e) {
+                return false;
+            }
         });
         if (customerConnections[orderId].length === 0) delete customerConnections[orderId];
     }
@@ -65,7 +77,8 @@ const posCheckoutSchema = {
                 taxAmount: { type: 'number' },
                 discountAmount: { type: 'number' },
                 paymentMethod: { type: 'string' },
-                pointsRedeemed: { type: 'number' }
+                pointsRedeemed: { type: 'number' },
+                notes: { type: 'string' }
             }
         }
     }
@@ -84,7 +97,8 @@ const onlineCheckoutSchema = {
                 totalAmount: { type: 'number' },
                 paymentMethod: { type: 'string' },
                 deliveryType: { type: 'string' },
-                scheduleTime: { type: 'string' }
+                scheduleTime: { type: 'string' },
+                notes: { type: 'string' }
             }
         }
     }
@@ -94,6 +108,8 @@ const statusSchema = { schema: { body: { type: 'object', required: ['status'], p
 const cancelSchema = { schema: { body: { type: 'object', required: ['reason'], properties: { reason: { type: 'string' } } } } };
 const limitSchema = { schema: { body: { type: 'object', required: ['isCreditEnabled', 'creditLimit'], properties: { isCreditEnabled: { type: 'boolean' }, creditLimit: { type: 'number' }, name: { type: 'string' } } } } };
 const paySchema = { schema: { body: { type: 'object', required: ['amount'], properties: { amount: { type: 'number', minimum: 0 } } } } };
+// --- NEW SCHEMAS FOR SCALING ---
+const assignDriverSchema = { schema: { body: { type: 'object', required: ['driverName'], properties: { driverName: { type: 'string' }, driverPhone: { type: 'string' } } } } };
 
 const getOrdersSchema = {
     schema: {
@@ -110,6 +126,14 @@ const getOrdersSchema = {
 };
 
 async function orderRoutes(fastify, options) {
+
+    // --- GRACEFUL SHUTDOWN EXPORT ---
+    fastify.decorate('closeAllSSE', () => {
+        adminConnections.forEach(conn => { if (!conn.destroyed) conn.end(); });
+        for (const orderId in customerConnections) {
+            customerConnections[orderId].forEach(conn => { if (!conn.destroyed) conn.end(); });
+        }
+    });
 
     fastify.get('/api/orders/stream/admin', { preHandler: [fastify.authenticate, fastify.verifyAdmin] }, (request, reply) => {
         reply.hijack(); 
@@ -155,7 +179,7 @@ async function orderRoutes(fastify, options) {
         try {
             const { 
                 customerName, customerPhone, deliveryAddress, items, 
-                totalAmount, deliveryType, scheduleTime, paymentMethod 
+                totalAmount, deliveryType, scheduleTime, paymentMethod, notes 
             } = request.body;
             
             if (paymentMethod === 'Pay Later') {
@@ -190,16 +214,18 @@ async function orderRoutes(fastify, options) {
                 );
             }
 
-            // --- NEW: Atomic Order Number Generation ---
             const counter = await mongoose.model('OrderCounter').findByIdAndUpdate(
                 { _id: 'orderId' },
                 { $inc: { seq: 1 } },
                 { new: true, upsert: true, session }
             );
             const orderNumber = `ORD-${counter.seq}`;
+            const dateString = new Date().toISOString().split('T')[0];
 
             const newOrder = new Order({
-                orderNumber, // Storing human-readable sequential ID
+                orderNumber, 
+                dateString,
+                notes: notes || '',
                 customerName, customerPhone, deliveryAddress, items, totalAmount,
                 paymentMethod: paymentMethod || 'Cash on Delivery',
                 deliveryType: deliveryType || 'Instant', 
@@ -231,7 +257,12 @@ async function orderRoutes(fastify, options) {
                 const msg = `DailyPick Order Received! 🛒\nOrder ID: ${newOrder.orderNumber}\nTotal: ₹${totalAmount}\nDelivery: ${scheduleTime}\nThanks for shopping!`;
                 const waUrl = `https://api.callmebot.com/whatsapp.php?phone=${customerPhone}&text=${encodeURIComponent(msg)}&apikey=${process.env.CALLMEBOT_API_KEY}`;
                 
-                fetch(waUrl).catch(() => {}); 
+                // PERFORMANCE: AbortController to prevent API hang
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 3000);
+                fetch(waUrl, { signal: controller.signal })
+                    .catch(() => {})
+                    .finally(() => clearTimeout(timeoutId)); 
             }
 
             return { success: true, message: 'Order Placed Successfully', orderId: newOrder._id };
@@ -248,7 +279,7 @@ async function orderRoutes(fastify, options) {
         session.startTransaction();
 
         try {
-            const { customerPhone, items, totalAmount, taxAmount, discountAmount, paymentMethod, splitDetails, pointsRedeemed } = request.body;
+            const { customerPhone, items, totalAmount, taxAmount, discountAmount, paymentMethod, splitDetails, pointsRedeemed, notes } = request.body;
             let finalCustomerName = 'Walk-in Guest';
 
             if (customerPhone) {
@@ -302,16 +333,18 @@ async function orderRoutes(fastify, options) {
                 );
             }
 
-            // --- NEW: Atomic Order Number Generation ---
             const counter = await mongoose.model('OrderCounter').findByIdAndUpdate(
                 { _id: 'orderId' },
                 { $inc: { seq: 1 } },
                 { new: true, upsert: true, session }
             );
             const orderNumber = `ORD-${counter.seq}`;
+            const dateString = new Date().toISOString().split('T')[0];
 
             const newOrder = new Order({
-                orderNumber, // Storing human-readable sequential ID
+                orderNumber, 
+                dateString,
+                notes: notes || '',
                 customerName: finalCustomerName, 
                 customerPhone: customerPhone || '', 
                 deliveryAddress: 'In-Store Purchase', 
@@ -340,7 +373,11 @@ async function orderRoutes(fastify, options) {
                 const msg = `Thank you for shopping at DailyPick! 🛒\nOrder: ${newOrder.orderNumber}\nTotal: ₹${totalAmount}\n${loyaltyMsg}\nVisit again!`;
                 const waUrl = `https://api.callmebot.com/whatsapp.php?phone=${customerPhone}&text=${encodeURIComponent(msg)}&apikey=${process.env.CALLMEBOT_API_KEY}`;
                 
-                fetch(waUrl).catch(() => {}); 
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 3000);
+                fetch(waUrl, { signal: controller.signal })
+                    .catch(() => {})
+                    .finally(() => clearTimeout(timeoutId)); 
             }
 
             return { success: true, message: 'POS Transaction Complete', orderId: newOrder._id, orderData: newOrder };
@@ -349,6 +386,24 @@ async function orderRoutes(fastify, options) {
             session.endSession();
             fastify.log.error('POS Checkout Error:', error);
             reply.status(500).send({ success: false, message: 'Server Error processing POS transaction' });
+        }
+    });
+
+    // --- NEW FUNCTIONALITY: Assign Delivery Driver ---
+    fastify.put('/api/orders/:id/driver', { preHandler: [fastify.authenticate, fastify.verifyAdmin], ...assignDriverSchema }, async (request, reply) => {
+        try {
+            const { driverName, driverPhone } = request.body;
+            const order = await Order.findByIdAndUpdate(
+                request.params.id, 
+                { deliveryDriverName: driverName, driverPhone: driverPhone || '' }, 
+                { new: true }
+            );
+            
+            if (!order) return reply.status(404).send({ success: false, message: 'Order not found' });
+            return { success: true, data: order, message: 'Driver assigned successfully' };
+        } catch (error) {
+            fastify.log.error('Driver Assignment Error:', error);
+            reply.status(500).send({ success: false, message: 'Server Error assigning driver' });
         }
     });
 
@@ -410,6 +465,75 @@ async function orderRoutes(fastify, options) {
         } catch (error) {
             fastify.log.error('Dispatch Error:', error);
             reply.status(500).send({ success: false, message: 'Server Error dispatching order' });
+        }
+    });
+
+    // --- NEW FUNCTIONALITY: Partial Fulfillment (Modify Item) ---
+    fastify.put('/api/orders/:id/partial-refund', { preHandler: [fastify.authenticate, fastify.verifyAdmin] }, async (request, reply) => {
+        const session = await mongoose.startSession();
+        session.startTransaction();
+        try {
+            const { productId, variantId, qtyToRefund, newTotalAmount } = request.body;
+            const order = await Order.findById(request.params.id).session(session);
+            if (!order) {
+                await session.abortTransaction(); session.endSession();
+                return reply.status(404).send({ success: false, message: 'Order not found' });
+            }
+
+            // Refund physical stock
+            await Product.updateOne(
+                { _id: productId, "variants._id": variantId },
+                { $inc: { "variants.$.stock": qtyToRefund } },
+                { session }
+            );
+
+            // Update order items array locally
+            let updatedItems = [];
+            for(let item of order.items) {
+                if(item.productId === productId && item.variantId === variantId) {
+                    item.qty = item.qty - qtyToRefund;
+                    if(item.qty > 0) updatedItems.push(item);
+                } else {
+                    updatedItems.push(item);
+                }
+            }
+            order.items = updatedItems;
+
+            // Handle Pay Later Customer Credit Balance Reversal
+            if (order.paymentMethod === 'Pay Later') {
+                const diff = order.totalAmount - newTotalAmount;
+                if (diff > 0) {
+                    const custProfile = await Customer.findOne({ phone: order.customerPhone }).session(session);
+                    if (custProfile) {
+                        custProfile.creditUsed -= diff;
+                        if (custProfile.creditUsed < 0) custProfile.creditUsed = 0;
+                        await custProfile.save({ session });
+                    }
+                }
+            }
+            
+            order.totalAmount = newTotalAmount;
+            await order.save({ session });
+
+            await AuditLog.create([{
+                userId: request.user.id,
+                username: request.user.username,
+                action: 'PARTIAL_REFUND',
+                targetType: 'Order',
+                targetId: order._id.toString(),
+                details: { refundedItem: productId, qty: qtyToRefund }
+            }], { session });
+
+            await session.commitTransaction();
+            session.endSession();
+            
+            if (redisCache) { try { await redisCache.del('orders:analytics'); } catch(e) {} }
+            return { success: true, message: 'Item Partially Refunded', data: order };
+        } catch (error) {
+            await session.abortTransaction();
+            session.endSession();
+            fastify.log.error('Partial Refund Error:', error);
+            reply.status(500).send({ success: false, message: 'Server Error processing refund' });
         }
     });
 
@@ -501,6 +625,16 @@ async function orderRoutes(fastify, options) {
             sevenDaysAgo.setDate(today.getDate() - 6);
             sevenDaysAgo.setHours(0, 0, 0, 0);
 
+            // --- OPTIMIZATION: Replacing heavy math with index-based grouping ---
+            // // PENDING DELETION APPROVAL (Old Aggregation Logic)
+            /*
+            const revenueAgg = await Order.aggregate([
+                { $match: { status: { $in: ['Dispatched', 'Completed'] }, createdAt: { $gte: sevenDaysAgo, $lte: today } } },
+                { $project: { dayDiff: { $floor: { $divide: [ { $subtract: ["$createdAt", sevenDaysAgo] }, 1000 * 60 * 60 * 24 ] } }, totalAmount: 1 } },
+                { $group: { _id: "$dayDiff", dailyRevenue: { $sum: "$totalAmount" } } }
+            ]);
+            */
+
             const revenueAgg = await Order.aggregate([
                 {
                     $match: {
@@ -509,31 +643,26 @@ async function orderRoutes(fastify, options) {
                     }
                 },
                 {
-                    $project: {
-                        dayDiff: {
-                            $floor: {
-                                $divide: [
-                                    { $subtract: ["$createdAt", sevenDaysAgo] },
-                                    1000 * 60 * 60 * 24
-                                ]
-                            }
-                        },
-                        totalAmount: 1
-                    }
-                },
-                {
                     $group: {
-                        _id: "$dayDiff",
+                        _id: "$dateString",
                         dailyRevenue: { $sum: "$totalAmount" }
                     }
-                }
+                },
+                { $sort: { _id: 1 } }
             ]);
 
+            // Reconstruct the 7 day array for the UI exactly as before to prevent breaking the frontend
             let revenueLast7Days = [0, 0, 0, 0, 0, 0, 0];
+            const datesToMap = [];
+            for(let i=0; i<7; i++){
+                const d = new Date(sevenDaysAgo);
+                d.setDate(sevenDaysAgo.getDate() + i);
+                datesToMap.push(d.toISOString().split('T')[0]);
+            }
+            
             revenueAgg.forEach(item => {
-                if (item._id >= 0 && item._id <= 6) {
-                    revenueLast7Days[item._id] = item.dailyRevenue;
-                }
+                const index = datesToMap.indexOf(item._id);
+                if (index !== -1) revenueLast7Days[index] = item.dailyRevenue;
             });
 
             const topItemsAgg = await Order.aggregate([
@@ -670,7 +799,6 @@ async function orderRoutes(fastify, options) {
         try {
             const orders = await Order.find().sort({ createdAt: -1 }).lean();
             const exportData = orders.map(o => ({
-                // --- NEW: Using orderNumber in CSV with backward-compatibility fallback ---
                 OrderID: o.orderNumber || o._id.toString(),
                 Date: new Date(o.createdAt).toLocaleString(),
                 CustomerName: o.customerName,
