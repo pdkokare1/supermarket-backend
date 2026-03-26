@@ -12,8 +12,8 @@ const userSchema = new mongoose.Schema({
     },
     pin: { 
         type: String, 
-        required: true,
-        unique: true
+        required: true
+        // MODIFIED: Removed unique: true to prevent duplicate key errors on default PINs
     },
     role: { 
         type: String, 
@@ -28,7 +28,20 @@ const userSchema = new mongoose.Schema({
     tokenVersion: { 
         type: Number, 
         default: 0 
+    },
+    // --- NEW: Brute-Force Protection ---
+    failedLoginAttempts: {
+        type: Number,
+        default: 0
+    },
+    lockUntil: {
+        type: Date
     }
 }, { timestamps: true });
+
+// --- NEW: Virtual field to check if the account is currently locked ---
+userSchema.virtual('isLocked').get(function() {
+    return !!(this.lockUntil && this.lockUntil > Date.now());
+});
 
 module.exports = mongoose.model('User', userSchema);
