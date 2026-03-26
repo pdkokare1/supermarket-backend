@@ -1,5 +1,5 @@
 const User = require('../models/User');
-const bcrypt = require('bcryptjs');
+const bcrypt = require('bcrypt'); // --- OPTIMIZATION: Switched to Native C++ bcrypt ---
 const crypto = require('crypto');
 const AuditLog = require('../models/AuditLog'); 
 
@@ -96,7 +96,6 @@ async function authRoutes(fastify, options) {
                 return reply.status(401).send({ success: false, message: 'Invalid Username or PIN.' });
             }
 
-            // --- NEW: Account Lockout Check ---
             if (user.isLocked) {
                 await AuditLog.create({ 
                     action: 'FAILED_LOGIN_ATTEMPT', 
@@ -124,11 +123,10 @@ async function authRoutes(fastify, options) {
                 }
             }
 
-            // --- NEW: Handle Failed Attempt & Lockout Logic ---
             if (!isValid) {
                 user.failedLoginAttempts = (user.failedLoginAttempts || 0) + 1;
                 if (user.failedLoginAttempts >= 5) {
-                    user.lockUntil = Date.now() + 15 * 60 * 1000; // Lock for 15 minutes
+                    user.lockUntil = Date.now() + 15 * 60 * 1000; 
                 }
                 await user.save();
 
@@ -143,12 +141,10 @@ async function authRoutes(fastify, options) {
                 return reply.status(401).send({ success: false, message: 'Invalid Username or PIN.' });
             }
             
-            // --- NEW: Reset Failed Attempts on Success ---
             user.failedLoginAttempts = 0;
             user.lockUntil = undefined;
             await user.save();
 
-            // --- NEW: Refresh Token Infrastructure (Cookie) ---
             const refreshToken = fastify.jwt.sign({ 
                 id: user._id, 
                 tokenVersion: user.tokenVersion || 0 
@@ -159,10 +155,9 @@ async function authRoutes(fastify, options) {
                 httpOnly: true,
                 secure: process.env.NODE_ENV === 'production',
                 sameSite: 'strict',
-                maxAge: 7 * 24 * 60 * 60 // 7 days in seconds
+                maxAge: 7 * 24 * 60 * 60 
             });
 
-            // Retaining the original token structure to prevent frontend breakage
             const token = fastify.jwt.sign({ 
                 id: user._id, 
                 role: user.role, 
