@@ -14,6 +14,15 @@ const userSchema = new mongoose.Schema({
         type: String, 
         required: true 
     },
+    // --- NEW: Multi-Store Employee Assignment ---
+    assignedStores: [{ 
+        type: mongoose.Schema.Types.ObjectId, 
+        ref: 'Store' 
+    }],
+    defaultRegisterId: { 
+        type: mongoose.Schema.Types.ObjectId, 
+        ref: 'Register' 
+    },
     // --- ENHANCED: Strict Role-Based Access Control (RBAC) ---
     role: { 
         type: String, 
