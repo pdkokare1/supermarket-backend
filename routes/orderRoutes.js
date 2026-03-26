@@ -78,7 +78,9 @@ const posCheckoutSchema = {
                 discountAmount: { type: 'number' },
                 paymentMethod: { type: 'string' },
                 pointsRedeemed: { type: 'number' },
-                notes: { type: 'string' }
+                notes: { type: 'string' },
+                storeId: { type: 'string' }, // --- NEW: Multi-Store Routing ---
+                registerId: { type: 'string' } // --- NEW: Multi-Store Routing ---
             }
         }
     }
@@ -98,7 +100,8 @@ const onlineCheckoutSchema = {
                 paymentMethod: { type: 'string' },
                 deliveryType: { type: 'string' },
                 scheduleTime: { type: 'string' },
-                notes: { type: 'string' }
+                notes: { type: 'string' },
+                storeId: { type: 'string' } // --- NEW: Multi-Store Routing ---
             }
         }
     }
@@ -179,7 +182,7 @@ async function orderRoutes(fastify, options) {
         try {
             const { 
                 customerName, customerPhone, deliveryAddress, items, 
-                totalAmount, deliveryType, scheduleTime, paymentMethod, notes 
+                totalAmount, deliveryType, scheduleTime, paymentMethod, notes, storeId 
             } = request.body;
             
             if (paymentMethod === 'Pay Later') {
@@ -207,11 +210,21 @@ async function orderRoutes(fastify, options) {
             }
 
             for (const item of items) {
+                // Existing global stock deduction
                 await Product.updateOne(
                     { _id: item.productId, "variants._id": item.variantId },
                     { $inc: { "variants.$.stock": -item.qty } },
                     { session }
                 );
+
+                // --- NEW: Multi-Store Localized Inventory Deduction ---
+                if (storeId) {
+                    await Product.updateOne(
+                        { _id: item.productId },
+                        { $inc: { "variants.$[var].locationInventory.$[loc].stock": -item.qty } },
+                        { arrayFilters: [{ "var._id": item.variantId }, { "loc.storeId": storeId }], session }
+                    ).catch(() => {}); // Safely bypass if location object not initialized yet
+                }
             }
 
             const counter = await mongoose.model('OrderCounter').findByIdAndUpdate(
@@ -225,6 +238,7 @@ async function orderRoutes(fastify, options) {
             const newOrder = new Order({
                 orderNumber, 
                 dateString,
+                storeId: storeId || null, // --- NEW: Multi-Store Tracking ---
                 notes: notes || '',
                 customerName, customerPhone, deliveryAddress, items, totalAmount,
                 paymentMethod: paymentMethod || 'Cash on Delivery',
@@ -242,7 +256,7 @@ async function orderRoutes(fastify, options) {
             
             const payload = JSON.stringify({ type: 'NEW_ORDER', order: newOrder });
             if (redisPub) {
-                redisPub.publish('ORDER_STREAM_EVENT', JSON.stringify({ target: 'admin', payload }));
+                redisPub.publish('ORDER_STREAM_EVENT', JSON.stringify({ target: 'admin', payload, storeId: storeId }));
             } else {
                 adminConnections.forEach(conn => {
                     if (!conn.destroyed) {
@@ -251,7 +265,7 @@ async function orderRoutes(fastify, options) {
                 });
             }
 
-            if (fastify.broadcastToPOS) fastify.broadcastToPOS({ type: 'NEW_ORDER', orderId: newOrder._id });
+            if (fastify.broadcastToPOS) fastify.broadcastToPOS({ type: 'NEW_ORDER', orderId: newOrder._id, storeId: storeId });
 
             if (customerPhone && customerPhone.length >= 10 && process.env.CALLMEBOT_API_KEY && process.env.WA_PHONE_NUMBER) {
                 const msg = `DailyPick Order Received! 🛒\nOrder ID: ${newOrder.orderNumber}\nTotal: ₹${totalAmount}\nDelivery: ${scheduleTime}\nThanks for shopping!`;
@@ -279,7 +293,7 @@ async function orderRoutes(fastify, options) {
         session.startTransaction();
 
         try {
-            const { customerPhone, items, totalAmount, taxAmount, discountAmount, paymentMethod, splitDetails, pointsRedeemed, notes } = request.body;
+            const { customerPhone, items, totalAmount, taxAmount, discountAmount, paymentMethod, splitDetails, pointsRedeemed, notes, storeId, registerId } = request.body;
             let finalCustomerName = 'Walk-in Guest';
 
             if (customerPhone) {
@@ -322,6 +336,7 @@ async function orderRoutes(fastify, options) {
             }
 
             for (const item of items) {
+                // Existing global stock deduction
                 await Product.updateOne(
                     { 
                         _id: item.productId, 
@@ -331,6 +346,15 @@ async function orderRoutes(fastify, options) {
                     { $inc: { "variants.$.stock": -item.qty } },
                     { session }
                 );
+
+                // --- NEW: Multi-Store Localized Inventory Deduction ---
+                if (storeId) {
+                    await Product.updateOne(
+                        { _id: item.productId },
+                        { $inc: { "variants.$[var].locationInventory.$[loc].stock": -item.qty } },
+                        { arrayFilters: [{ "var._id": item.variantId }, { "loc.storeId": storeId }], session }
+                    ).catch(() => {}); // Safely bypass if location object not initialized yet
+                }
             }
 
             const counter = await mongoose.model('OrderCounter').findByIdAndUpdate(
@@ -344,6 +368,8 @@ async function orderRoutes(fastify, options) {
             const newOrder = new Order({
                 orderNumber, 
                 dateString,
+                storeId: storeId || null,       // --- NEW: Location Tracking ---
+                registerId: registerId || null, // --- NEW: Terminal Tracking ---
                 notes: notes || '',
                 customerName: finalCustomerName, 
                 customerPhone: customerPhone || '', 
@@ -366,7 +392,7 @@ async function orderRoutes(fastify, options) {
                 try { await redisCache.del('orders:analytics'); } catch(e) {}
             }
 
-            if (fastify.broadcastToPOS) fastify.broadcastToPOS({ type: 'NEW_ORDER', orderId: newOrder._id, source: 'POS' });
+            if (fastify.broadcastToPOS) fastify.broadcastToPOS({ type: 'NEW_ORDER', orderId: newOrder._id, source: 'POS', storeId: storeId });
 
             if (customerPhone && customerPhone.length >= 10 && process.env.CALLMEBOT_API_KEY && process.env.WA_PHONE_NUMBER) {
                 const loyaltyMsg = pointsRedeemed > 0 ? ` Points Redeemed: ${pointsRedeemed}.` : '';
@@ -429,7 +455,7 @@ async function orderRoutes(fastify, options) {
                 }
             }
 
-            if (fastify.broadcastToPOS) fastify.broadcastToPOS({ type: 'ORDER_STATUS_UPDATED', orderId: order._id, status: status });
+            if (fastify.broadcastToPOS) fastify.broadcastToPOS({ type: 'ORDER_STATUS_UPDATED', orderId: order._id, status: status, storeId: order.storeId });
 
             return { success: true, data: order };
         } catch (error) {
@@ -459,7 +485,7 @@ async function orderRoutes(fastify, options) {
                 }
             }
 
-            if (fastify.broadcastToPOS) fastify.broadcastToPOS({ type: 'ORDER_STATUS_UPDATED', orderId: order._id, status: 'Dispatched' });
+            if (fastify.broadcastToPOS) fastify.broadcastToPOS({ type: 'ORDER_STATUS_UPDATED', orderId: order._id, status: 'Dispatched', storeId: order.storeId });
 
             return { success: true, data: order };
         } catch (error) {
@@ -480,12 +506,21 @@ async function orderRoutes(fastify, options) {
                 return reply.status(404).send({ success: false, message: 'Order not found' });
             }
 
-            // Refund physical stock
+            // Refund physical global stock
             await Product.updateOne(
                 { _id: productId, "variants._id": variantId },
                 { $inc: { "variants.$.stock": qtyToRefund } },
                 { session }
             );
+
+            // --- NEW: Refund Multi-Store localized stock ---
+            if (order.storeId) {
+                await Product.updateOne(
+                    { _id: productId },
+                    { $inc: { "variants.$[var].locationInventory.$[loc].stock": qtyToRefund } },
+                    { arrayFilters: [{ "var._id": variantId }, { "loc.storeId": order.storeId }], session }
+                ).catch(() => {});
+            }
 
             // Update order items array locally
             let updatedItems = [];
@@ -562,11 +597,21 @@ async function orderRoutes(fastify, options) {
             }
 
             for (const item of order.items) {
+                // Refund global stock
                 await Product.updateOne(
                     { _id: item.productId, "variants._id": item.variantId },
                     { $inc: { "variants.$.stock": item.qty } },
                     { session }
                 );
+
+                // --- NEW: Refund Multi-Store localized stock ---
+                if (order.storeId) {
+                    await Product.updateOne(
+                        { _id: item.productId },
+                        { $inc: { "variants.$[var].locationInventory.$[loc].stock": item.qty } },
+                        { arrayFilters: [{ "var._id": item.variantId }, { "loc.storeId": order.storeId }], session }
+                    ).catch(() => {});
+                }
             }
 
             await order.save({ session });
@@ -599,7 +644,7 @@ async function orderRoutes(fastify, options) {
                 }
             }
 
-            if (fastify.broadcastToPOS) fastify.broadcastToPOS({ type: 'ORDER_STATUS_UPDATED', orderId: order._id, status: 'Cancelled' });
+            if (fastify.broadcastToPOS) fastify.broadcastToPOS({ type: 'ORDER_STATUS_UPDATED', orderId: order._id, status: 'Cancelled', storeId: order.storeId });
 
             return { success: true, message: 'Order Cancelled and Stock Refunded', data: order };
         } catch (error) {
@@ -626,15 +671,6 @@ async function orderRoutes(fastify, options) {
             sevenDaysAgo.setHours(0, 0, 0, 0);
 
             // --- OPTIMIZATION: Replacing heavy math with index-based grouping ---
-            // // PENDING DELETION APPROVAL (Old Aggregation Logic)
-            /*
-            const revenueAgg = await Order.aggregate([
-                { $match: { status: { $in: ['Dispatched', 'Completed'] }, createdAt: { $gte: sevenDaysAgo, $lte: today } } },
-                { $project: { dayDiff: { $floor: { $divide: [ { $subtract: ["$createdAt", sevenDaysAgo] }, 1000 * 60 * 60 * 24 ] } }, totalAmount: 1 } },
-                { $group: { _id: "$dayDiff", dailyRevenue: { $sum: "$totalAmount" } } }
-            ]);
-            */
-
             const revenueAgg = await Order.aggregate([
                 {
                     $match: {
