@@ -34,9 +34,19 @@ const verifySchema = {
     }
 };
 
+// --- SECURITY: Protect setup route from brute-force ---
+const setupRateLimit = {
+    config: {
+        rateLimit: {
+            max: 3,
+            timeWindow: '60 minutes'
+        }
+    }
+};
+
 async function authRoutes(fastify, options) {
     
-    fastify.get('/api/auth/setup', async (request, reply) => {
+    fastify.get('/api/auth/setup', setupRateLimit, async (request, reply) => {
         try {
             if (process.env.NODE_ENV === 'production') {
                 return reply.status(403).send({ success: false, message: 'Forbidden: Setup route disabled in production.' });
@@ -179,6 +189,36 @@ async function authRoutes(fastify, options) {
         } catch (error) {
             fastify.log.error(error);
             reply.status(500).send({ success: false, message: 'Server Error during login' });
+        }
+    });
+
+    // --- SECURITY & PERFORMANCE: Silent Session Renewal Route ---
+    fastify.post('/api/auth/refresh', async (request, reply) => {
+        try {
+            const refreshToken = request.cookies.refreshToken;
+            if (!refreshToken) {
+                return reply.status(401).send({ success: false, message: 'No refresh token provided' });
+            }
+
+            const decoded = fastify.jwt.verify(refreshToken);
+            const user = await User.findById(decoded.id);
+
+            if (!user || !user.isActive || user.tokenVersion !== decoded.tokenVersion) {
+                reply.clearCookie('refreshToken');
+                return reply.status(401).send({ success: false, message: 'Invalid or revoked session' });
+            }
+
+            const newToken = fastify.jwt.sign({ 
+                id: user._id, 
+                role: user.role, 
+                username: user.username,
+                tokenVersion: user.tokenVersion || 0 
+            }, { expiresIn: '7d' });
+
+            return { success: true, token: newToken, data: user };
+        } catch (error) {
+            reply.clearCookie('refreshToken');
+            reply.status(401).send({ success: false, message: 'Session expired. Please log in again.' });
         }
     });
 
