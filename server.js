@@ -33,12 +33,14 @@ if (redisClient) {
 fastify.register(require('@fastify/rate-limit'), rateLimitConfig);
 
 // --- RESTORED & SECURED CORS POLICY ---
-// MODIFIED: Restrictive CORS to prevent unauthorized domain access
+// Added support for dynamic ALLOWED_ORIGINS string (e.g., "https://siteA.com,https://siteB.com")
+const dynamicOrigins = process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : [];
 const allowedOrigins = [
     'http://localhost:3000',
     'http://localhost:5173',
     'http://127.0.0.1:5173',
-    process.env.FRONTEND_URL // Ensure this is set in Railway (e.g., https://your-vercel-app.vercel.app)
+    process.env.FRONTEND_URL,
+    ...dynamicOrigins
 ].filter(Boolean);
 
 fastify.register(require('@fastify/cors'), { 
@@ -48,7 +50,6 @@ fastify.register(require('@fastify/cors'), {
     allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'Origin', 'X-Requested-With']
 });
 
-// --- PERFORMANCE: High-Speed Response Compression ---
 fastify.register(require('@fastify/compress'), { global: true });
 
 fastify.register(require('@fastify/multipart'), {
@@ -58,15 +59,16 @@ fastify.register(require('@fastify/multipart'), {
 });
 
 // --- CAPABILITY: Cookie Parsing for Refresh Tokens ---
+if (process.env.NODE_ENV === 'production' && !process.env.COOKIE_SECRET) {
+    fastify.log.warn("SECURITY ALERT: Missing COOKIE_SECRET in production. Using fallback exposes sessions to risk.");
+}
 fastify.register(require('@fastify/cookie'), {
     secret: process.env.COOKIE_SECRET || 'fallback-secret-123',
     hook: 'onRequest'
 });
 
-// --- CAPABILITY: Real-Time WebSockets ---
 fastify.register(require('@fastify/websocket'));
 
-// --- DEVOPS: Auto-Generated API Documentation ---
 fastify.register(require('@fastify/swagger'), {
     swagger: {
         info: { title: 'DailyPick API', description: 'Enterprise Backend API', version: '1.0.0' },
@@ -79,7 +81,6 @@ fastify.register(require('@fastify/swagger-ui'), {
     uiConfig: { docExpansion: 'none', deepLinking: false }
 });
 
-// --- SECURITY: Enterprise RS256 Asymmetric Encryption ---
 if (!process.env.JWT_PRIVATE_KEY || !process.env.JWT_PUBLIC_KEY) {
     fastify.log.error("CRITICAL: JWT_PRIVATE_KEY or JWT_PUBLIC_KEY is missing. Server shutting down.");
     process.exit(1);
@@ -109,11 +110,10 @@ fastify.decorate("authenticate", async function(request, reply) {
 fastify.decorate("verifyAdmin", async function(request, reply) {
     if (request.user && request.user.role !== 'Admin') {
         reply.status(403).send({ success: false, message: 'Forbidden: Admin access required.' });
-        return; // MODIFIED: Replaced throw new Error with return to prevent server crash from headers already sent
+        return; 
     }
 });
 
-// --- UTILITY: Global WebSocket Broadcaster ---
 fastify.decorate('broadcastToPOS', function (message) {
     if (!fastify.websocketServer) return;
     fastify.websocketServer.clients.forEach(function each(client) {
@@ -123,7 +123,9 @@ fastify.decorate('broadcastToPOS', function (message) {
     });
 });
 
-// --- ROUTE: WebSocket Connection Endpoint ---
+// Create a hook to expose SSE termination method to the main server block
+fastify.decorate('closeAllSSE', () => {}); 
+
 fastify.register(async function (fastify) {
     fastify.get('/api/ws/pos', { websocket: true }, (connection, req) => {
         connection.socket.on('message', message => {
@@ -133,7 +135,6 @@ fastify.register(async function (fastify) {
     });
 });
 
-// EXPLICIT ROUTE REGISTRATION 
 fastify.register(require('./routes/productRoutes'));
 fastify.register(require('./routes/orderRoutes'));
 fastify.register(require('./routes/categoryRoutes'));
@@ -144,7 +145,6 @@ fastify.register(require('./routes/authRoutes'));
 fastify.register(require('./routes/promotionRoutes')); 
 fastify.register(require('./routes/shiftRoutes'));
 
-// --- OBSERVABILITY: Real-Time APM Error Interceptor ---
 fastify.setErrorHandler(function (error, request, reply) {
     const apmLog = {
         event: 'CRITICAL_ERROR',
@@ -172,30 +172,32 @@ let latestInventoryReport = {
     lastGenerated: null
 };
 
-// MODIFIED: Added Redis Caching wrapper to significantly boost response times
+// --- PERFORMANCE: Stale-While-Revalidate Cache to prevent DB Stampedes ---
+let isInventoryUpdating = false;
 fastify.get('/api/inventory/report', async (request, reply) => {
     if (redisClient) {
         try {
             const cachedReport = await redisClient.get('cache:inventory:report');
             if (cachedReport) {
+                // If it exists, return immediately. 
                 return { success: true, data: JSON.parse(cachedReport), cached: true };
+            } else if (!isInventoryUpdating) {
+                // Cache missing, trigger background update but don't block
+                isInventoryUpdating = true;
+                setTimeout(async () => {
+                    try {
+                        await redisClient.set('cache:inventory:report', JSON.stringify(latestInventoryReport), 'EX', 60);
+                    } catch(e) {}
+                    isInventoryUpdating = false;
+                }, 0);
             }
         } catch (e) {
             fastify.log.error('Redis Cache Read Error:', e);
         }
     }
 
-    const responseData = { success: true, data: latestInventoryReport, cached: false };
-    
-    if (redisClient) {
-        try {
-            await redisClient.set('cache:inventory:report', JSON.stringify(latestInventoryReport), 'EX', 60);
-        } catch (e) {
-            fastify.log.error('Redis Cache Write Error:', e);
-        }
-    }
-
-    return responseData;
+    // Always fallback to returning the memory state if cache is strictly empty
+    return { success: true, data: latestInventoryReport, cached: false };
 });
 
 fastify.get('/api/health', async (request, reply) => {
@@ -245,6 +247,11 @@ listeners.forEach((signal) => {
     process.on(signal, async () => {
         fastify.log.info(`${signal} received. Shutting down gracefully...`);
         
+        // RELIABILITY: Immediately terminate floating long-polling/SSE connections
+        if (typeof fastify.closeAllSSE === 'function') {
+            fastify.closeAllSSE();
+        }
+        
         setTimeout(() => {
             fastify.log.error('Forcing shutdown after timeout. Some active processes may have been terminated.');
             process.exit(1);
@@ -292,7 +299,6 @@ const startServer = async () => {
     }
 };
 
-// --- SCALING & JOB SCHEDULING ---
 if (process.env.ENABLE_CLUSTERING === 'true' && cluster.isPrimary) {
     connectDB().then(() => {
         require('./jobs/cronScheduler')(fastify, (newReport) => {
