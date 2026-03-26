@@ -27,6 +27,19 @@ const orderSchema = new mongoose.Schema({
         type: String, 
         required: true 
     },
+    // --- NEW FUNCTIONALITY: Delivery Instructions & Assignment ---
+    notes: {
+        type: String,
+        default: ''
+    },
+    deliveryDriverName: {
+        type: String,
+        default: 'Unassigned'
+    },
+    driverPhone: {
+        type: String,
+        default: ''
+    },
     items: { 
         type: Array, 
         required: true 
@@ -55,6 +68,11 @@ const orderSchema = new mongoose.Schema({
     scheduleTime: { 
         type: String, 
         default: 'ASAP' 
+    },
+    // --- OPTIMIZATION: String-based date for instant analytics grouping ---
+    dateString: {
+        type: String,
+        index: true
     }
 }, { timestamps: true });
 
