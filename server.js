@@ -177,13 +177,17 @@ fastify.register(async function (fastify) {
 
             connection.socket.storeId = user.storeId ? user.storeId.toString() : (req.query.storeId || null);
             connection.socket.isAdmin = user.role === 'Admin';
-            connection.socket.isAlive = true; // For heartbeat
+            connection.socket.isAlive = true; 
 
-            connection.socket.on('pong', () => {
-                connection.socket.isAlive = true;
-            });
-
+            // FIX: Cloud-Proxy Safe JSON Heartbeat interception
             connection.socket.on('message', message => {
+                try {
+                    const parsed = JSON.parse(message);
+                    if (parsed.type === 'PONG') {
+                        connection.socket.isAlive = true;
+                        return; // Bypass standard message logging for heartbeats
+                    }
+                } catch (e) {}
                 fastify.log.info(`[WS Store: ${connection.socket.storeId || 'Global'}] Received: ${message}`);
             });
             
@@ -200,13 +204,13 @@ fastify.register(async function (fastify) {
         }
     });
 
-    // HEARTBEAT PING/PONG TO PREVENT MEMORY LEAKS
+    // FIX: Send Application-Level JSON Pings (Bypasses Nginx/Railway proxy stripping)
     setInterval(() => {
         if (!fastify.websocketServer) return;
         fastify.websocketServer.clients.forEach((client) => {
             if (client.isAlive === false) return client.terminate();
             client.isAlive = false;
-            client.ping();
+            client.send(JSON.stringify({ type: 'PING' })); 
         });
     }, 30000);
 });
