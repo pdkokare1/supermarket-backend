@@ -12,13 +12,17 @@ const promotionSchema = {
                 minCartValue: { type: 'number' },
                 applicableCategory: { type: 'string' },
                 startDate: { type: 'string' },
-                endDate: { type: 'string' }
+                endDate: { type: 'string' },
+                // --- NEW ADVANCED PROMO FIELDS ---
+                buyQty: { type: 'number' },
+                getQty: { type: 'number' },
+                startTime: { type: 'string' },
+                endTime: { type: 'string' }
             }
         }
     }
 };
 
-// --- NEW PERFORMANCE SCHEMA: Fastify Query Parsing ---
 const getPromotionsSchema = {
     schema: {
         querystring: {
@@ -32,7 +36,6 @@ const getPromotionsSchema = {
 
 async function promotionRoutes(fastify, options) {
     
-    // Get all active promotions (Now optimized with Query Schema and .lean())
     fastify.get('/api/promotions', { preHandler: [fastify.authenticate], ...getPromotionsSchema }, async (request, reply) => {
         try {
             let filter = request.query.all === 'true' ? {} : { isActive: true };
@@ -44,18 +47,22 @@ async function promotionRoutes(fastify, options) {
         }
     });
 
-    // Create a new promotion
     fastify.post('/api/promotions', { preHandler: [fastify.authenticate, fastify.verifyAdmin], ...promotionSchema }, async (request, reply) => {
         try {
-            const { name, type, value, minCartValue, applicableCategory, startDate, endDate } = request.body;
+            const { name, type, value, minCartValue, applicableCategory, startDate, endDate, buyQty, getQty, startTime, endTime } = request.body;
             
             const newPromotion = new Promotion({
                 name, type, value, minCartValue, applicableCategory, startDate, endDate
             });
             
+            // --- OPTIMIZATION: Bypass strict mode to save advanced fields without model rebuilds ---
+            if (buyQty) newPromotion.set('buyQty', buyQty, { strict: false });
+            if (getQty) newPromotion.set('getQty', getQty, { strict: false });
+            if (startTime) newPromotion.set('startTime', startTime, { strict: false });
+            if (endTime) newPromotion.set('endTime', endTime, { strict: false });
+            
             await newPromotion.save();
 
-            // --- NEW: Real-Time POS Notification ---
             if (fastify.broadcastToPOS) fastify.broadcastToPOS({ type: 'PROMOTION_ADDED', promotionId: newPromotion._id });
 
             return { success: true, message: 'Promotion created', data: newPromotion };
@@ -65,7 +72,6 @@ async function promotionRoutes(fastify, options) {
         }
     });
 
-    // Toggle active status
     fastify.put('/api/promotions/:id/toggle', { preHandler: [fastify.authenticate, fastify.verifyAdmin] }, async (request, reply) => {
         try {
             const promo = await Promotion.findById(request.params.id);
@@ -74,7 +80,6 @@ async function promotionRoutes(fastify, options) {
             promo.isActive = !promo.isActive;
             await promo.save();
 
-            // --- NEW: Real-Time POS Notification ---
             if (fastify.broadcastToPOS) fastify.broadcastToPOS({ type: 'PROMOTION_TOGGLED', promotionId: promo._id, isActive: promo.isActive });
 
             return { success: true, message: 'Promotion toggled', data: promo };
