@@ -33,7 +33,6 @@ if (redisClient) {
 fastify.register(require('@fastify/rate-limit'), rateLimitConfig);
 
 // --- RESTORED & SECURED CORS POLICY ---
-// Added support for dynamic ALLOWED_ORIGINS string (e.g., "https://siteA.com,https://siteB.com")
 const dynamicOrigins = process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : [];
 const allowedOrigins = [
     'http://localhost:3000',
@@ -114,24 +113,73 @@ fastify.decorate("verifyAdmin", async function(request, reply) {
     }
 });
 
+// --- NEW: Multi-Worker Redis Pub/Sub for WebSockets ---
+let redisPubWS = null;
+let redisSubWS = null;
+
+if (process.env.REDIS_URL) {
+    try {
+        const Redis = require('ioredis');
+        redisPubWS = new Redis(process.env.REDIS_URL);
+        redisSubWS = new Redis(process.env.REDIS_URL);
+        
+        redisSubWS.subscribe('POS_WS_STREAM');
+        redisSubWS.on('message', (channel, messageStr) => {
+            if (channel === 'POS_WS_STREAM' && fastify.websocketServer) {
+                const parsed = JSON.parse(messageStr);
+                fastify.websocketServer.clients.forEach(function each(client) {
+                    if (client.readyState === 1) { 
+                        // Target specifically by Store ID, or broadcast globally to Admins/Events lacking a Store ID
+                        if (!parsed.storeId || client.storeId === parsed.storeId || client.isAdmin) {
+                            client.send(JSON.stringify(parsed));
+                        }
+                    }
+                });
+            }
+        });
+    } catch(e) {
+        fastify.log.error("Failed to initialize Redis Pub/Sub for WebSockets", e);
+    }
+}
+
+// --- OVERHAULED: Store-Aware & Multi-Worker WebSocket Broadcasting ---
 fastify.decorate('broadcastToPOS', function (message) {
-    if (!fastify.websocketServer) return;
-    fastify.websocketServer.clients.forEach(function each(client) {
-        if (client.readyState === 1) { 
-            client.send(JSON.stringify(message));
-        }
-    });
+    if (redisPubWS) {
+        // Fire to Redis so ALL Railway Workers receive the event
+        redisPubWS.publish('POS_WS_STREAM', JSON.stringify(message));
+    } else {
+        // Fallback for local development environments lacking Redis
+        if (!fastify.websocketServer) return;
+        fastify.websocketServer.clients.forEach(function each(client) {
+            if (client.readyState === 1) { 
+                if (!message.storeId || client.storeId === message.storeId || client.isAdmin) {
+                    client.send(JSON.stringify(message));
+                }
+            }
+        });
+    }
 });
 
-// Create a hook to expose SSE termination method to the main server block
 fastify.decorate('closeAllSSE', () => {}); 
 
 fastify.register(async function (fastify) {
     fastify.get('/api/ws/pos', { websocket: true }, (connection, req) => {
+        // --- NEW: Extract and bind Store Identity & Role to the socket instance ---
+        const queryStoreId = req.query.storeId;
+        const queryRole = req.query.role; 
+        
+        connection.socket.storeId = queryStoreId || null;
+        connection.socket.isAdmin = queryRole === 'Admin';
+
         connection.socket.on('message', message => {
-            fastify.log.info(`[WS] Received: ${message}`);
+            fastify.log.info(`[WS Store: ${connection.socket.storeId || 'Global'}] Received: ${message}`);
         });
-        connection.socket.send(JSON.stringify({ type: 'CONNECTION_ESTABLISHED', message: 'Connected to DailyPick Real-Time Server' }));
+        
+        connection.socket.send(JSON.stringify({ 
+            type: 'CONNECTION_ESTABLISHED', 
+            message: 'Connected to DailyPick Real-Time Server',
+            storeContext: connection.socket.storeId || 'Global'
+        }));
     });
 });
 
@@ -172,17 +220,14 @@ let latestInventoryReport = {
     lastGenerated: null
 };
 
-// --- PERFORMANCE: Stale-While-Revalidate Cache to prevent DB Stampedes ---
 let isInventoryUpdating = false;
 fastify.get('/api/inventory/report', async (request, reply) => {
     if (redisClient) {
         try {
             const cachedReport = await redisClient.get('cache:inventory:report');
             if (cachedReport) {
-                // If it exists, return immediately. 
                 return { success: true, data: JSON.parse(cachedReport), cached: true };
             } else if (!isInventoryUpdating) {
-                // Cache missing, trigger background update but don't block
                 isInventoryUpdating = true;
                 setTimeout(async () => {
                     try {
@@ -196,7 +241,6 @@ fastify.get('/api/inventory/report', async (request, reply) => {
         }
     }
 
-    // Always fallback to returning the memory state if cache is strictly empty
     return { success: true, data: latestInventoryReport, cached: false };
 });
 
@@ -241,13 +285,11 @@ fastify.get('/', async (request, reply) => {
     };
 });
 
-// --- ENHANCED GRACEFUL SHUTDOWN ---
 const listeners = ['SIGINT', 'SIGTERM'];
 listeners.forEach((signal) => {
     process.on(signal, async () => {
         fastify.log.info(`${signal} received. Shutting down gracefully...`);
         
-        // RELIABILITY: Immediately terminate floating long-polling/SSE connections
         if (typeof fastify.closeAllSSE === 'function') {
             fastify.closeAllSSE();
         }
@@ -261,6 +303,8 @@ listeners.forEach((signal) => {
             await fastify.close();
             await mongoose.connection.close();
             if (redisClient) await redisClient.quit();
+            if (redisPubWS) await redisPubWS.quit();
+            if (redisSubWS) await redisSubWS.quit();
             fastify.log.info('Clean shutdown complete.');
             process.exit(0);
         } catch (err) {
