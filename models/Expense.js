@@ -12,11 +12,16 @@ const expenseSchema = new mongoose.Schema({
     dateStr: { 
         type: String, 
         required: true 
-    }, // e.g., "Sat Mar 21 2026" - Matches your frontend exactly
+    }, 
     timeStr: { 
         type: String, 
         required: true 
-    }, // e.g., "10:30 AM"
+    }, 
+    // --- NEW: Digital Receipt Attachment ---
+    receiptUrl: { 
+        type: String, 
+        default: '' 
+    },
     createdAt: { 
         type: Date, 
         default: Date.now 
