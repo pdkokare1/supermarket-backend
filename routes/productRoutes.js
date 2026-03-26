@@ -1,6 +1,6 @@
 const Product = require('../models/Product');
 const Category = require('../models/Category');
-const Distributor = require('../models/Distributor'); // --- NEW: Required for Accounts Payable ---
+const Distributor = require('../models/Distributor'); 
 const { Parser } = require('json2csv'); 
 const cloudinary = require('cloudinary').v2; 
 
@@ -18,7 +18,6 @@ try {
         redisCache = new Redis(process.env.REDIS_URL);
     }
 } catch (e) {
-    // Graceful fallback if ioredis is not installed
 }
 
 const invalidateProductCache = async () => {
@@ -67,8 +66,8 @@ const restockSchema = {
                 addedQuantity: { type: 'number', minimum: 1 },
                 purchasingPrice: { type: 'number', minimum: 0 },
                 newSellingPrice: { type: 'number', minimum: 0 },
-                paymentStatus: { type: 'string', enum: ['Paid', 'Credit'] }, // --- NEW: B2B Payment Tracking ---
-                storeId: { type: 'string' } // --- NEW: Multi-Store Routing ---
+                paymentStatus: { type: 'string', enum: ['Paid', 'Credit'] }, 
+                storeId: { type: 'string' } 
             }
         }
     }
@@ -85,7 +84,7 @@ const rtvSchema = {
                 returnedQuantity: { type: 'number', minimum: 1 },
                 refundAmount: { type: 'number', minimum: 0 },
                 reason: { type: 'string' },
-                storeId: { type: 'string' } // --- NEW: Multi-Store Routing ---
+                storeId: { type: 'string' } 
             }
         }
     }
@@ -214,7 +213,15 @@ async function productRoutes(fastify, options) {
 
             const uploadResult = await new Promise((resolve, reject) => {
                 const uploadStream = cloudinary.uploader.upload_stream(
-                    { folder: 'dailypick_products' },
+                    { 
+                        folder: 'dailypick_products',
+                        // --- OPTIMIZATION: On-The-Fly Cloudinary Compression ---
+                        // Limits dimensions and converts massive JPEGs to lightweight WebP format
+                        transformation: [
+                            { width: 800, height: 800, crop: 'limit' },
+                            { quality: 'auto', fetch_format: 'webp' }
+                        ]
+                    },
                     (error, result) => {
                         if (error) reject(error);
                         else resolve(result);
@@ -311,14 +318,12 @@ async function productRoutes(fastify, options) {
                 addedQuantity: Number(addedQuantity), 
                 purchasingPrice: Number(purchasingPrice), 
                 sellingPrice: Number(newSellingPrice),
-                storeId: storeId // Log where the restock happened
+                storeId: storeId 
             });
             
-            // Existing global stock increment
             variant.stock += Number(addedQuantity); 
             variant.price = Number(newSellingPrice);
 
-            // --- NEW: Multi-Store Location Inventory Increment ---
             if (storeId) {
                 let locStock = variant.locationInventory.find(l => l.storeId && l.storeId.toString() === storeId);
                 if (locStock) {
@@ -330,7 +335,6 @@ async function productRoutes(fastify, options) {
             
             await product.save();
             
-            // --- NEW: B2B Accounts Payable Ledger ---
             if (paymentStatus === 'Credit' && product.distributorName) {
                 const totalCost = Number(addedQuantity) * Number(purchasingPrice);
                 await Distributor.findOneAndUpdate(
@@ -364,10 +368,8 @@ async function productRoutes(fastify, options) {
 
             variant.returnHistory.push({ distributorName, returnedQuantity: Number(returnedQuantity), refundAmount: Number(refundAmount), reason, storeId });
             
-            // Existing global stock decrement
             variant.stock -= Number(returnedQuantity); 
 
-            // --- NEW: Multi-Store Location Inventory Decrement ---
             if (storeId) {
                 let locStock = variant.locationInventory.find(l => l.storeId && l.storeId.toString() === storeId);
                 if (locStock && locStock.stock >= returnedQuantity) {
