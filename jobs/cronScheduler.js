@@ -4,13 +4,14 @@ const Product = require('../models/Product');
 const Order = require('../models/Order');     
 const Expense = require('../models/Expense'); 
 const Customer = require('../models/Customer'); 
+const AuditLog = require('../models/AuditLog'); // Added for Cleanup
 const nodemailer = require('nodemailer');    
 const cloudinary = require('cloudinary').v2; 
 
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const zlib = require('zlib'); // --- NEW: Added for Backup Compression ---
+const zlib = require('zlib'); 
 
 cloudinary.config({
     cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
@@ -45,7 +46,6 @@ async function runWithLock(jobName, fastify, task) {
     }
 }
 
-// --- OPTIMIZATION: Streaming + Gzip Compression ---
 const createBackupFile = async (model, filename, query = {}) => {
     const filePath = path.join(os.tmpdir(), `${filename}.gz`);
     const fileStream = fs.createWriteStream(filePath);
@@ -85,7 +85,6 @@ const uploadFileToCloudinary = (filePath, filename) => {
 
 module.exports = function(fastify, updateInventoryReport) {
     
-    // --- NEW PHASE 3: Midnight Expiry & Wastage Monitor ---
     cron.schedule('0 0 * * *', () => {
         runWithLock('ExpiryWastageMonitor', fastify, async () => {
             fastify.log.info('Running 12:00 AM Expiry & Wastage Monitor CRON Job...');
@@ -112,8 +111,6 @@ module.exports = function(fastify, updateInventoryReport) {
 
                 if (expiringItems.length > 0) {
                     fastify.log.warn(`[WASTAGE WARNING] ${expiringItems.length} items expiring within 7 days.`);
-                    
-                    // Push Real-Time Warning to all active POS machines
                     if (fastify.broadcastToPOS) {
                         fastify.broadcastToPOS({ 
                             type: 'EXPIRY_WARNING', 
@@ -124,6 +121,35 @@ module.exports = function(fastify, updateInventoryReport) {
                 }
             } catch(err) {
                 fastify.log.error('Expiry Monitor Error:', err);
+            }
+        });
+    });
+
+    // --- NEW SCALABILITY UPGRADE: Database Storage Cleanup ---
+    cron.schedule('0 3 * * *', () => {
+        runWithLock('DataRetentionCleanup', fastify, async () => {
+            fastify.log.info('Running 3:00 AM Data Retention Cleanup (90 Days)...');
+            try {
+                const ninetyDaysAgo = new Date();
+                ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
+
+                // 1. Delete Cancelled Orders older than 90 days to save DB space
+                const deletedOrders = await Order.deleteMany({ 
+                    status: 'Cancelled', 
+                    createdAt: { $lt: ninetyDaysAgo } 
+                });
+                
+                // 2. Delete routine Audit Logs older than 90 days
+                let deletedLogs = { deletedCount: 0 };
+                if (AuditLog) {
+                    deletedLogs = await AuditLog.deleteMany({ 
+                        createdAt: { $lt: ninetyDaysAgo } 
+                    });
+                }
+
+                fastify.log.info(`[CLEANUP] Deleted ${deletedOrders.deletedCount} old cancelled orders and ${deletedLogs.deletedCount} old audit logs.`);
+            } catch(err) {
+                fastify.log.error('Data Retention Cleanup Error:', err);
             }
         });
     });
@@ -283,9 +309,10 @@ module.exports = function(fastify, updateInventoryReport) {
         });
     });
 
-    cron.schedule('15 23 * * *', () => {
+    // --- OPTIMIZATION: Shifted from 11:15 PM to 11:59 PM for exact End of Day metrics ---
+    cron.schedule('59 23 * * *', () => {
         runWithLock('EODBackup', fastify, async () => {
-            fastify.log.info('Running 11:15 PM EOD Report & Backup CRON Job...');
+            fastify.log.info('Running 11:59 PM EOD Report & Backup CRON Job...');
             try {
                 const today = new Date();
                 today.setHours(0, 0, 0, 0);
@@ -389,7 +416,7 @@ module.exports = function(fastify, updateInventoryReport) {
                             subject: `EOD Report & Backup: ₹${netProfit.toFixed(2)} Net Profit`, 
                             text: reportText + emailAppend
                         });
-                        fastify.log.info('11:15 PM EOD Email sent successfully.');
+                        fastify.log.info('11:59 PM EOD Email sent successfully.');
                     } catch (emailErr) {
                         fastify.log.error('Failed to send EOD Email:', emailErr);
                     }
@@ -408,7 +435,7 @@ module.exports = function(fastify, updateInventoryReport) {
                 }
 
             } catch (err) {
-                fastify.log.error('11:15 PM EOD CRON Job Error:', err);
+                fastify.log.error('11:59 PM EOD CRON Job Error:', err);
             }
         });
     });
