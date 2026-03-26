@@ -4,7 +4,7 @@ const Product = require('../models/Product');
 const Order = require('../models/Order');     
 const Expense = require('../models/Expense'); 
 const Customer = require('../models/Customer'); 
-const AuditLog = require('../models/AuditLog'); // Added for Cleanup
+const AuditLog = require('../models/AuditLog'); 
 const nodemailer = require('nodemailer');    
 const cloudinary = require('cloudinary').v2; 
 
@@ -52,15 +52,23 @@ const createBackupFile = async (model, filename, query = {}) => {
     const gzipStream = zlib.createGzip();
 
     gzipStream.pipe(fileStream);
-
     gzipStream.write('[\n');
+    
     const cursor = model.find(query).lean().cursor();
     
     let isFirst = true;
+    let counter = 0;
+    
     for await (const doc of cursor) {
         if (!isFirst) gzipStream.write(',\n');
         gzipStream.write(JSON.stringify(doc));
         isFirst = false;
+        
+        counter++;
+        // OPTIMIZATION: Yield to the event loop every 100 documents to prevent server freezing
+        if (counter % 100 === 0) {
+            await new Promise(resolve => setImmediate(resolve));
+        }
     }
     
     gzipStream.write('\n]');
@@ -70,17 +78,25 @@ const createBackupFile = async (model, filename, query = {}) => {
     return filePath;
 };
 
-const uploadFileToCloudinary = (filePath, filename) => {
-    return new Promise((resolve, reject) => {
-        cloudinary.uploader.upload(filePath, { 
-            resource_type: 'raw', 
-            public_id: `backups/${filename}`, 
-            format: 'json' 
-        }, (error, result) => {
-            if (error) reject(error);
-            else resolve(result.secure_url);
-        });
-    });
+// OPTIMIZATION: Added automatic retry logic for Cloudinary to handle intermittent network drops
+const uploadFileToCloudinary = async (filePath, filename, retries = 3) => {
+    for (let i = 0; i < retries; i++) {
+        try {
+            return await new Promise((resolve, reject) => {
+                cloudinary.uploader.upload(filePath, { 
+                    resource_type: 'raw', 
+                    public_id: `backups/${filename}`, 
+                    format: 'json' 
+                }, (error, result) => {
+                    if (error) reject(error);
+                    else resolve(result.secure_url);
+                });
+            });
+        } catch (error) {
+            if (i === retries - 1) throw error;
+            await new Promise(res => setTimeout(res, 2000)); // Wait 2s before retry
+        }
+    }
 };
 
 module.exports = function(fastify, updateInventoryReport) {
@@ -125,7 +141,6 @@ module.exports = function(fastify, updateInventoryReport) {
         });
     });
 
-    // --- NEW SCALABILITY UPGRADE: Database Storage Cleanup ---
     cron.schedule('0 3 * * *', () => {
         runWithLock('DataRetentionCleanup', fastify, async () => {
             fastify.log.info('Running 3:00 AM Data Retention Cleanup (90 Days)...');
@@ -133,13 +148,11 @@ module.exports = function(fastify, updateInventoryReport) {
                 const ninetyDaysAgo = new Date();
                 ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
 
-                // 1. Delete Cancelled Orders older than 90 days to save DB space
                 const deletedOrders = await Order.deleteMany({ 
                     status: 'Cancelled', 
                     createdAt: { $lt: ninetyDaysAgo } 
                 });
                 
-                // 2. Delete routine Audit Logs older than 90 days
                 let deletedLogs = { deletedCount: 0 };
                 if (AuditLog) {
                     deletedLogs = await AuditLog.deleteMany({ 
@@ -309,7 +322,6 @@ module.exports = function(fastify, updateInventoryReport) {
         });
     });
 
-    // --- OPTIMIZATION: Shifted from 11:15 PM to 11:59 PM for exact End of Day metrics ---
     cron.schedule('59 23 * * *', () => {
         runWithLock('EODBackup', fastify, async () => {
             fastify.log.info('Running 11:59 PM EOD Report & Backup CRON Job...');
