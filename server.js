@@ -3,7 +3,6 @@ const mongoose = require('mongoose');
 require('dotenv').config();
 const User = require('./models/User'); 
 
-// --- NEW IMPORTS FOR PHASE 5: SCALING ---
 const cluster = require('cluster');
 const os = require('os');
 
@@ -32,7 +31,6 @@ if (redisClient) {
 }
 fastify.register(require('@fastify/rate-limit'), rateLimitConfig);
 
-// --- RESTORED & SECURED CORS POLICY ---
 const dynamicOrigins = process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : [];
 const allowedOrigins = [
     'http://localhost:3000',
@@ -57,12 +55,12 @@ fastify.register(require('@fastify/multipart'), {
     }
 });
 
-// --- CAPABILITY: Cookie Parsing for Refresh Tokens ---
 if (process.env.NODE_ENV === 'production' && !process.env.COOKIE_SECRET) {
-    fastify.log.warn("SECURITY ALERT: Missing COOKIE_SECRET in production. Using fallback exposes sessions to risk.");
+    fastify.log.error("CRITICAL SECURITY ALERT: Missing COOKIE_SECRET in production. Shutting down.");
+    process.exit(1);
 }
 fastify.register(require('@fastify/cookie'), {
-    secret: process.env.COOKIE_SECRET || 'fallback-secret-123',
+    secret: process.env.COOKIE_SECRET || 'dev-fallback-secret-123',
     hook: 'onRequest'
 });
 
@@ -113,7 +111,6 @@ fastify.decorate("verifyAdmin", async function(request, reply) {
     }
 });
 
-// --- NEW: Multi-Worker Redis Pub/Sub for WebSockets ---
 let redisPubWS = null;
 let redisSubWS = null;
 
@@ -129,7 +126,6 @@ if (process.env.REDIS_URL) {
                 const parsed = JSON.parse(messageStr);
                 fastify.websocketServer.clients.forEach(function each(client) {
                     if (client.readyState === 1) { 
-                        // Target specifically by Store ID, or broadcast globally to Admins/Events lacking a Store ID
                         if (!parsed.storeId || client.storeId === parsed.storeId || client.isAdmin) {
                             client.send(JSON.stringify(parsed));
                         }
@@ -142,13 +138,10 @@ if (process.env.REDIS_URL) {
     }
 }
 
-// --- OVERHAULED: Store-Aware & Multi-Worker WebSocket Broadcasting ---
 fastify.decorate('broadcastToPOS', function (message) {
     if (redisPubWS) {
-        // Fire to Redis so ALL Railway Workers receive the event
         redisPubWS.publish('POS_WS_STREAM', JSON.stringify(message));
     } else {
-        // Fallback for local development environments lacking Redis
         if (!fastify.websocketServer) return;
         fastify.websocketServer.clients.forEach(function each(client) {
             if (client.readyState === 1) { 
@@ -160,27 +153,62 @@ fastify.decorate('broadcastToPOS', function (message) {
     }
 });
 
-fastify.decorate('closeAllSSE', () => {}); 
+fastify.decorate('closeAllSSE', () => {
+    if (fastify.websocketServer) {
+        fastify.websocketServer.clients.forEach((client) => {
+            client.terminate();
+        });
+    }
+}); 
 
 fastify.register(async function (fastify) {
-    fastify.get('/api/ws/pos', { websocket: true }, (connection, req) => {
-        // --- NEW: Extract and bind Store Identity & Role to the socket instance ---
-        const queryStoreId = req.query.storeId;
-        const queryRole = req.query.role; 
-        
-        connection.socket.storeId = queryStoreId || null;
-        connection.socket.isAdmin = queryRole === 'Admin';
+    fastify.get('/api/ws/pos', { websocket: true }, async (connection, req) => {
+        try {
+            // SECURE WEBSOCKET AUTHENTICATION
+            const token = req.query.token;
+            if (!token) throw new Error('No token provided');
+            
+            const decoded = fastify.jwt.verify(token);
+            const user = await User.findById(decoded.id).select('role isActive tokenVersion storeId');
+            
+            if (!user || !user.isActive || user.tokenVersion !== decoded.tokenVersion) {
+                throw new Error('Invalid session');
+            }
 
-        connection.socket.on('message', message => {
-            fastify.log.info(`[WS Store: ${connection.socket.storeId || 'Global'}] Received: ${message}`);
-        });
-        
-        connection.socket.send(JSON.stringify({ 
-            type: 'CONNECTION_ESTABLISHED', 
-            message: 'Connected to DailyPick Real-Time Server',
-            storeContext: connection.socket.storeId || 'Global'
-        }));
+            connection.socket.storeId = user.storeId ? user.storeId.toString() : (req.query.storeId || null);
+            connection.socket.isAdmin = user.role === 'Admin';
+            connection.socket.isAlive = true; // For heartbeat
+
+            connection.socket.on('pong', () => {
+                connection.socket.isAlive = true;
+            });
+
+            connection.socket.on('message', message => {
+                fastify.log.info(`[WS Store: ${connection.socket.storeId || 'Global'}] Received: ${message}`);
+            });
+            
+            connection.socket.send(JSON.stringify({ 
+                type: 'CONNECTION_ESTABLISHED', 
+                message: 'Connected to DailyPick Real-Time Server securely',
+                storeContext: connection.socket.storeId || 'Global'
+            }));
+
+        } catch (err) {
+            fastify.log.warn(`WebSocket connection rejected: ${err.message}`);
+            connection.socket.send(JSON.stringify({ type: 'ERROR', message: 'Authentication failed' }));
+            connection.socket.terminate();
+        }
     });
+
+    // HEARTBEAT PING/PONG TO PREVENT MEMORY LEAKS
+    setInterval(() => {
+        if (!fastify.websocketServer) return;
+        fastify.websocketServer.clients.forEach((client) => {
+            if (client.isAlive === false) return client.terminate();
+            client.isAlive = false;
+            client.ping();
+        });
+    }, 30000);
 });
 
 fastify.register(require('./routes/productRoutes'));
@@ -192,10 +220,9 @@ fastify.register(require('./routes/expenseRoutes'));
 fastify.register(require('./routes/authRoutes')); 
 fastify.register(require('./routes/promotionRoutes')); 
 fastify.register(require('./routes/shiftRoutes'));
-// --- NEW: Phase 5 Multi-Store Admin Management Routes ---
 fastify.register(require('./routes/storeRoutes'));
 fastify.register(require('./routes/registerRoutes'));
-fastify.register(require('./routes/migrateRoute')); // <-- ADDED FOR MIGRATION
+fastify.register(require('./routes/migrateRoute'));
 
 fastify.setErrorHandler(function (error, request, reply) {
     const apmLog = {
