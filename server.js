@@ -33,8 +33,16 @@ if (redisClient) {
 fastify.register(require('@fastify/rate-limit'), rateLimitConfig);
 
 // --- RESTORED & SECURED CORS POLICY ---
+// MODIFIED: Restrictive CORS to prevent unauthorized domain access
+const allowedOrigins = [
+    'http://localhost:3000',
+    'http://localhost:5173',
+    'http://127.0.0.1:5173',
+    process.env.FRONTEND_URL // Ensure this is set in Railway (e.g., https://your-vercel-app.vercel.app)
+].filter(Boolean);
+
 fastify.register(require('@fastify/cors'), { 
-    origin: true, 
+    origin: allowedOrigins, 
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     credentials: true,
     allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'Origin', 'X-Requested-With']
@@ -79,7 +87,6 @@ if (!process.env.JWT_PRIVATE_KEY || !process.env.JWT_PUBLIC_KEY) {
 
 fastify.register(require('@fastify/jwt'), {
     secret: {
-        // The .replace() ensures Railway's environment variable formatting doesn't break the PEM structure
         private: process.env.JWT_PRIVATE_KEY.replace(/\\n/g, '\n'),
         public: process.env.JWT_PUBLIC_KEY.replace(/\\n/g, '\n')
     },
@@ -102,7 +109,7 @@ fastify.decorate("authenticate", async function(request, reply) {
 fastify.decorate("verifyAdmin", async function(request, reply) {
     if (request.user && request.user.role !== 'Admin') {
         reply.status(403).send({ success: false, message: 'Forbidden: Admin access required.' });
-        throw new Error('Forbidden: Admin access required.'); 
+        return; // MODIFIED: Replaced throw new Error with return to prevent server crash from headers already sent
     }
 });
 
@@ -165,8 +172,30 @@ let latestInventoryReport = {
     lastGenerated: null
 };
 
+// MODIFIED: Added Redis Caching wrapper to significantly boost response times
 fastify.get('/api/inventory/report', async (request, reply) => {
-    return { success: true, data: latestInventoryReport };
+    if (redisClient) {
+        try {
+            const cachedReport = await redisClient.get('cache:inventory:report');
+            if (cachedReport) {
+                return { success: true, data: JSON.parse(cachedReport), cached: true };
+            }
+        } catch (e) {
+            fastify.log.error('Redis Cache Read Error:', e);
+        }
+    }
+
+    const responseData = { success: true, data: latestInventoryReport, cached: false };
+    
+    if (redisClient) {
+        try {
+            await redisClient.set('cache:inventory:report', JSON.stringify(latestInventoryReport), 'EX', 60);
+        } catch (e) {
+            fastify.log.error('Redis Cache Write Error:', e);
+        }
+    }
+
+    return responseData;
 });
 
 fastify.get('/api/health', async (request, reply) => {
