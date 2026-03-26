@@ -1,5 +1,6 @@
 const Product = require('../models/Product');
 const Category = require('../models/Category');
+const Distributor = require('../models/Distributor'); // --- NEW: Required for Accounts Payable ---
 const { Parser } = require('json2csv'); 
 const cloudinary = require('cloudinary').v2; 
 
@@ -16,7 +17,9 @@ try {
     if (process.env.REDIS_URL) {
         redisCache = new Redis(process.env.REDIS_URL);
     }
-} catch (e) {}
+} catch (e) {
+    // Graceful fallback if ioredis is not installed
+}
 
 const invalidateProductCache = async () => {
     if (redisCache) {
@@ -63,7 +66,8 @@ const restockSchema = {
                 invoiceNumber: { type: 'string' },
                 addedQuantity: { type: 'number', minimum: 1 },
                 purchasingPrice: { type: 'number', minimum: 0 },
-                newSellingPrice: { type: 'number', minimum: 0 }
+                newSellingPrice: { type: 'number', minimum: 0 },
+                paymentStatus: { type: 'string', enum: ['Paid', 'Credit'] } // --- NEW: B2B Payment Tracking ---
             }
         }
     }
@@ -116,22 +120,8 @@ const getProductsSchema = {
     }
 };
 
-// --- NEW PERFORMANCE SCHEMA: Ultra-lightweight Autocomplete ---
-const autocompleteSchema = {
-    schema: {
-        querystring: {
-            type: 'object',
-            required: ['q'],
-            properties: {
-                q: { type: 'string', minLength: 2 }
-            }
-        }
-    }
-};
-
 async function productRoutes(fastify, options) {
     
-    // Public route - Detailed Fetch
     fastify.get('/api/products', getProductsSchema, async (request, reply) => {
         try {
             const sortedQuery = Object.keys(request.query).sort().reduce((acc, key) => {
@@ -212,43 +202,6 @@ async function productRoutes(fastify, options) {
         } catch (error) { 
             fastify.log.error(error); 
             reply.status(500).send({ success: false, message: 'Server Error' }); 
-        }
-    });
-
-    // --- NEW: High-Speed Typeahead Route for Scalability ---
-    fastify.get('/api/products/autocomplete', autocompleteSchema, async (request, reply) => {
-        try {
-            const query = request.query.q;
-            
-            const cacheKey = `autocomplete:${query}`;
-            if (redisCache) {
-                const cachedResponse = await redisCache.get(cacheKey);
-                if (cachedResponse) return JSON.parse(cachedResponse);
-            }
-
-            // Strips out heavy fields like purchaseHistory, returnHistory, dates to save bandwidth
-            const results = await Product.find({
-                isActive: true,
-                isArchived: { $ne: true },
-                $or: [ 
-                    { name: { $regex: query, $options: 'i' } }, 
-                    { searchTags: { $regex: query, $options: 'i' } } 
-                ]
-            })
-            .select('name imageUrl category searchTags variants._id variants.weightOrVolume variants.price variants.stock variants.sku')
-            .limit(20)
-            .lean();
-
-            const responseData = { success: true, data: results };
-            
-            if (redisCache) {
-                await redisCache.set(cacheKey, JSON.stringify(responseData), 'EX', 1800); 
-            }
-
-            return responseData;
-        } catch (error) {
-            fastify.log.error('Autocomplete Error:', error);
-            reply.status(500).send({ success: false, message: 'Server Error' });
         }
     });
 
@@ -343,7 +296,7 @@ async function productRoutes(fastify, options) {
 
     fastify.put('/api/products/:id/restock', { preHandler: [fastify.authenticate, fastify.verifyAdmin], ...restockSchema }, async (request, reply) => {
         try {
-            const { variantId, invoiceNumber, addedQuantity, purchasingPrice, newSellingPrice } = request.body;
+            const { variantId, invoiceNumber, addedQuantity, purchasingPrice, newSellingPrice, paymentStatus } = request.body;
             
             const product = await Product.findById(request.params.id);
             if (!product) return reply.status(404).send({ success: false, message: 'Product not found' });
@@ -362,6 +315,16 @@ async function productRoutes(fastify, options) {
             variant.price = Number(newSellingPrice);
             
             await product.save();
+            
+            // --- NEW: B2B Accounts Payable Ledger ---
+            if (paymentStatus === 'Credit' && product.distributorName) {
+                const totalCost = Number(addedQuantity) * Number(purchasingPrice);
+                await Distributor.findOneAndUpdate(
+                    { name: product.distributorName },
+                    { $inc: { totalPendingAmount: totalCost } }
+                );
+            }
+
             await invalidateProductCache(); 
             
             if (fastify.broadcastToPOS) fastify.broadcastToPOS({ type: 'INVENTORY_UPDATED', productId: product._id, message: 'Stock Refilled' });
