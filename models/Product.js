@@ -67,12 +67,11 @@ productSchema.index({ isActive: 1, category: 1 });
 productSchema.index({ "variants.sku": 1 });
 productSchema.index({ isArchived: 1 });
 productSchema.index({ "variants.stock": 1, "variants.lowStockThreshold": 1 });
-
-// --- NEW PERFORMANCE INDEXES: Text Search Optimization ---
 productSchema.index({ name: 1, brand: 1 });
 productSchema.index({ searchTags: 1 });
-
-// --- NEW: Index for Multi-Store query performance ---
 productSchema.index({ "variants.locationInventory.storeId": 1 });
+
+// NEW: Compound Index strictly for the Daily Inventory Cron Job (Velocity)
+productSchema.index({ isActive: 1, "variants.stock": 1 });
 
 module.exports = mongoose.model('Product', productSchema);
