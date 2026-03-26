@@ -47,9 +47,14 @@ const productSchema = new mongoose.Schema({
     variants: [variantSchema] 
 }, { timestamps: true });
 
+// Existing Indexes
 productSchema.index({ isActive: 1, category: 1 });
 productSchema.index({ "variants.sku": 1 });
 productSchema.index({ isArchived: 1 });
 productSchema.index({ "variants.stock": 1, "variants.lowStockThreshold": 1 });
+
+// --- NEW PERFORMANCE INDEXES: Text Search Optimization ---
+productSchema.index({ name: 1, brand: 1 });
+productSchema.index({ searchTags: 1 });
 
 module.exports = mongoose.model('Product', productSchema);
