@@ -1,7 +1,7 @@
 const User = require('../models/User');
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
-const AuditLog = require('../models/AuditLog'); // --- NEW: Integrated Security Auditing ---
+const AuditLog = require('../models/AuditLog'); 
 
 const loginSchema = {
     schema: {
@@ -85,33 +85,84 @@ async function authRoutes(fastify, options) {
             }).collation({ locale: 'en', strength: 2 }); 
             
             if (!user) {
-                // --- SECURITY: Log failed login attempt without crashing the flow ---
                 await AuditLog.create({ 
                     action: 'FAILED_LOGIN_ATTEMPT', 
                     targetType: 'Auth', 
                     targetId: 'Login', 
                     username: safeUsername || 'Unknown', 
-                    details: { ip: request.ip } 
+                    details: { ip: request.ip, reason: 'User not found' } 
+                }).catch(e => fastify.log.error('AuditLog Error:', e));
+
+                return reply.status(401).send({ success: false, message: 'Invalid Username or PIN.' });
+            }
+
+            // --- NEW: Account Lockout Check ---
+            if (user.isLocked) {
+                await AuditLog.create({ 
+                    action: 'FAILED_LOGIN_ATTEMPT', 
+                    targetType: 'Auth', 
+                    targetId: user._id.toString(), 
+                    username: user.username, 
+                    details: { ip: request.ip, reason: 'Account locked' } 
+                }).catch(e => fastify.log.error('AuditLog Error:', e));
+
+                return reply.status(403).send({ 
+                    success: false, 
+                    message: 'Account locked due to too many failed attempts. Try again in 15 minutes.' 
+                });
+            }
+            
+            const isHashed = user.pin.startsWith('$2a$') || user.pin.startsWith('$2b$');
+            let isValid = false;
+
+            if (isHashed) {
+                isValid = await bcrypt.compare(pin, user.pin);
+            } else {
+                if (user.pin === pin) {
+                    isValid = true;
+                    user.pin = await bcrypt.hash(pin, 10);
+                }
+            }
+
+            // --- NEW: Handle Failed Attempt & Lockout Logic ---
+            if (!isValid) {
+                user.failedLoginAttempts = (user.failedLoginAttempts || 0) + 1;
+                if (user.failedLoginAttempts >= 5) {
+                    user.lockUntil = Date.now() + 15 * 60 * 1000; // Lock for 15 minutes
+                }
+                await user.save();
+
+                await AuditLog.create({ 
+                    action: 'FAILED_LOGIN_ATTEMPT', 
+                    targetType: 'Auth', 
+                    targetId: user._id.toString(), 
+                    username: user.username, 
+                    details: { ip: request.ip, reason: 'Invalid PIN' } 
                 }).catch(e => fastify.log.error('AuditLog Error:', e));
 
                 return reply.status(401).send({ success: false, message: 'Invalid Username or PIN.' });
             }
             
-            const isHashed = user.pin.startsWith('$2a$') || user.pin.startsWith('$2b$');
-            
-            if (isHashed) {
-                const isValid = await bcrypt.compare(pin, user.pin);
-                if (!isValid) {
-                    return reply.status(401).send({ success: false, message: 'Invalid Username or PIN.' });
-                }
-            } else {
-                if (user.pin !== pin) {
-                    return reply.status(401).send({ success: false, message: 'Invalid Username or PIN.' });
-                }
-                user.pin = await bcrypt.hash(pin, 10);
-                await user.save();
-            }
-            
+            // --- NEW: Reset Failed Attempts on Success ---
+            user.failedLoginAttempts = 0;
+            user.lockUntil = undefined;
+            await user.save();
+
+            // --- NEW: Refresh Token Infrastructure (Cookie) ---
+            const refreshToken = fastify.jwt.sign({ 
+                id: user._id, 
+                tokenVersion: user.tokenVersion || 0 
+            }, { expiresIn: '7d' });
+
+            reply.setCookie('refreshToken', refreshToken, {
+                path: '/',
+                httpOnly: true,
+                secure: process.env.NODE_ENV === 'production',
+                sameSite: 'strict',
+                maxAge: 7 * 24 * 60 * 60 // 7 days in seconds
+            });
+
+            // Retaining the original token structure to prevent frontend breakage
             const token = fastify.jwt.sign({ 
                 id: user._id, 
                 role: user.role, 
@@ -119,7 +170,6 @@ async function authRoutes(fastify, options) {
                 tokenVersion: user.tokenVersion || 0 
             }, { expiresIn: '7d' }); 
             
-            // --- SECURITY: Log successful login ---
             await AuditLog.create({ 
                 userId: user._id, 
                 username: user.username, 
