@@ -30,6 +30,8 @@ const auditLogSchema = new mongoose.Schema({
 
 // Optimize for fetching recent logs quickly in the admin panel
 auditLogSchema.index({ createdAt: -1 });
-auditLogSchema.index({ targetId: 1 });
+
+// NEW: Compound index. Drastically speeds up tracking the history of a specific item or order.
+auditLogSchema.index({ targetType: 1, targetId: 1, createdAt: -1 });
 
 module.exports = mongoose.model('AuditLog', auditLogSchema);
