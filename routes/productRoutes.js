@@ -67,7 +67,8 @@ const restockSchema = {
                 addedQuantity: { type: 'number', minimum: 1 },
                 purchasingPrice: { type: 'number', minimum: 0 },
                 newSellingPrice: { type: 'number', minimum: 0 },
-                paymentStatus: { type: 'string', enum: ['Paid', 'Credit'] } // --- NEW: B2B Payment Tracking ---
+                paymentStatus: { type: 'string', enum: ['Paid', 'Credit'] }, // --- NEW: B2B Payment Tracking ---
+                storeId: { type: 'string' } // --- NEW: Multi-Store Routing ---
             }
         }
     }
@@ -83,7 +84,8 @@ const rtvSchema = {
                 distributorName: { type: 'string' },
                 returnedQuantity: { type: 'number', minimum: 1 },
                 refundAmount: { type: 'number', minimum: 0 },
-                reason: { type: 'string' }
+                reason: { type: 'string' },
+                storeId: { type: 'string' } // --- NEW: Multi-Store Routing ---
             }
         }
     }
@@ -296,7 +298,7 @@ async function productRoutes(fastify, options) {
 
     fastify.put('/api/products/:id/restock', { preHandler: [fastify.authenticate, fastify.verifyAdmin], ...restockSchema }, async (request, reply) => {
         try {
-            const { variantId, invoiceNumber, addedQuantity, purchasingPrice, newSellingPrice, paymentStatus } = request.body;
+            const { variantId, invoiceNumber, addedQuantity, purchasingPrice, newSellingPrice, paymentStatus, storeId } = request.body;
             
             const product = await Product.findById(request.params.id);
             if (!product) return reply.status(404).send({ success: false, message: 'Product not found' });
@@ -308,11 +310,23 @@ async function productRoutes(fastify, options) {
                 invoiceNumber, 
                 addedQuantity: Number(addedQuantity), 
                 purchasingPrice: Number(purchasingPrice), 
-                sellingPrice: Number(newSellingPrice) 
+                sellingPrice: Number(newSellingPrice),
+                storeId: storeId // Log where the restock happened
             });
             
+            // Existing global stock increment
             variant.stock += Number(addedQuantity); 
             variant.price = Number(newSellingPrice);
+
+            // --- NEW: Multi-Store Location Inventory Increment ---
+            if (storeId) {
+                let locStock = variant.locationInventory.find(l => l.storeId && l.storeId.toString() === storeId);
+                if (locStock) {
+                    locStock.stock += Number(addedQuantity);
+                } else {
+                    variant.locationInventory.push({ storeId: storeId, stock: Number(addedQuantity) });
+                }
+            }
             
             await product.save();
             
@@ -327,7 +341,7 @@ async function productRoutes(fastify, options) {
 
             await invalidateProductCache(); 
             
-            if (fastify.broadcastToPOS) fastify.broadcastToPOS({ type: 'INVENTORY_UPDATED', productId: product._id, message: 'Stock Refilled' });
+            if (fastify.broadcastToPOS) fastify.broadcastToPOS({ type: 'INVENTORY_UPDATED', productId: product._id, message: 'Stock Refilled', storeId: storeId });
 
             return { success: true, message: 'Restock processed successfully', data: product };
         } catch (error) { 
@@ -338,7 +352,7 @@ async function productRoutes(fastify, options) {
 
     fastify.put('/api/products/:id/rtv', { preHandler: [fastify.authenticate, fastify.verifyAdmin], ...rtvSchema }, async (request, reply) => {
         try {
-            const { variantId, distributorName, returnedQuantity, refundAmount, reason } = request.body;
+            const { variantId, distributorName, returnedQuantity, refundAmount, reason, storeId } = request.body;
             
             const product = await Product.findById(request.params.id);
             if (!product) return reply.status(404).send({ success: false, message: 'Product not found' });
@@ -348,13 +362,23 @@ async function productRoutes(fastify, options) {
             
             if (variant.stock < returnedQuantity) return reply.status(400).send({ success: false, message: 'Not enough stock to return' });
 
-            variant.returnHistory.push({ distributorName, returnedQuantity: Number(returnedQuantity), refundAmount: Number(refundAmount), reason });
+            variant.returnHistory.push({ distributorName, returnedQuantity: Number(returnedQuantity), refundAmount: Number(refundAmount), reason, storeId });
+            
+            // Existing global stock decrement
             variant.stock -= Number(returnedQuantity); 
+
+            // --- NEW: Multi-Store Location Inventory Decrement ---
+            if (storeId) {
+                let locStock = variant.locationInventory.find(l => l.storeId && l.storeId.toString() === storeId);
+                if (locStock && locStock.stock >= returnedQuantity) {
+                    locStock.stock -= Number(returnedQuantity);
+                }
+            }
             
             await product.save();
             await invalidateProductCache(); 
             
-            if (fastify.broadcastToPOS) fastify.broadcastToPOS({ type: 'INVENTORY_UPDATED', productId: product._id, message: 'Stock Returned' });
+            if (fastify.broadcastToPOS) fastify.broadcastToPOS({ type: 'INVENTORY_UPDATED', productId: product._id, message: 'Stock Returned', storeId: storeId });
 
             return { success: true, message: 'RTV processed successfully', data: product };
         } catch (error) { 
