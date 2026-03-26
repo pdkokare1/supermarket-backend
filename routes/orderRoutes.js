@@ -5,7 +5,6 @@ const Customer = require('../models/Customer');
 const AuditLog = require('../models/AuditLog'); 
 const { Parser } = require('json2csv'); 
 
-// --- OPTIMIZED LOGIC: Multi-Server Redis Pub/Sub & Caching ---
 let Redis = null;
 let redisPub = null;
 let redisSub = null;
@@ -38,7 +37,6 @@ try {
 let adminConnections = [];
 let customerConnections = {};
 
-// --- RELIABILITY: Hardened non-blocking SSE Heartbeat mapping ---
 setInterval(() => {
     adminConnections = adminConnections.filter(conn => {
         if (conn.destroyed || !conn.writable) return false;
@@ -46,7 +44,7 @@ setInterval(() => {
             conn.write(':\n\n');
             return true;
         } catch (e) {
-            return false; // Safely removes dropped EPIPE connections
+            return false; 
         }
     });
 
@@ -64,7 +62,6 @@ setInterval(() => {
     }
 }, 15000);
 
-// --- SCHEMAS ---
 const posCheckoutSchema = {
     schema: {
         body: {
@@ -79,8 +76,8 @@ const posCheckoutSchema = {
                 paymentMethod: { type: 'string' },
                 pointsRedeemed: { type: 'number' },
                 notes: { type: 'string' },
-                storeId: { type: 'string' }, // --- NEW: Multi-Store Routing ---
-                registerId: { type: 'string' } // --- NEW: Multi-Store Routing ---
+                storeId: { type: 'string' }, 
+                registerId: { type: 'string' } 
             }
         }
     }
@@ -101,7 +98,7 @@ const onlineCheckoutSchema = {
                 deliveryType: { type: 'string' },
                 scheduleTime: { type: 'string' },
                 notes: { type: 'string' },
-                storeId: { type: 'string' } // --- NEW: Multi-Store Routing ---
+                storeId: { type: 'string' } 
             }
         }
     }
@@ -111,7 +108,6 @@ const statusSchema = { schema: { body: { type: 'object', required: ['status'], p
 const cancelSchema = { schema: { body: { type: 'object', required: ['reason'], properties: { reason: { type: 'string' } } } } };
 const limitSchema = { schema: { body: { type: 'object', required: ['isCreditEnabled', 'creditLimit'], properties: { isCreditEnabled: { type: 'boolean' }, creditLimit: { type: 'number' }, name: { type: 'string' } } } } };
 const paySchema = { schema: { body: { type: 'object', required: ['amount'], properties: { amount: { type: 'number', minimum: 0 } } } } };
-// --- NEW SCHEMAS FOR SCALING ---
 const assignDriverSchema = { schema: { body: { type: 'object', required: ['driverName'], properties: { driverName: { type: 'string' }, driverPhone: { type: 'string' } } } } };
 
 const getOrdersSchema = {
@@ -130,7 +126,6 @@ const getOrdersSchema = {
 
 async function orderRoutes(fastify, options) {
 
-    // --- GRACEFUL SHUTDOWN EXPORT ---
     fastify.decorate('closeAllSSE', () => {
         adminConnections.forEach(conn => { if (!conn.destroyed) conn.end(); });
         for (const orderId in customerConnections) {
@@ -211,21 +206,42 @@ async function orderRoutes(fastify, options) {
                 await custProfile.save({ session });
             }
 
+            // --- RACE CONDITION FIX: Atomic Quantity Verification ---
             for (const item of items) {
-                // Existing global stock deduction
-                await Product.updateOne(
-                    { _id: item.productId, "variants._id": item.variantId },
+                const globalUpdate = await Product.updateOne(
+                    { 
+                        _id: item.productId, 
+                        "variants._id": item.variantId,
+                        "variants.stock": { $gte: item.qty } // Must have enough stock exactly when query runs
+                    },
                     { $inc: { "variants.$.stock": -item.qty } },
                     { session }
                 );
 
-                // --- NEW: Multi-Store Localized Inventory Deduction ---
+                if (globalUpdate.modifiedCount === 0) {
+                    await session.abortTransaction(); session.endSession();
+                    return reply.status(400).send({ success: false, message: `Insufficient global stock for item: ${item.name}` });
+                }
+
                 if (storeId) {
-                    await Product.updateOne(
-                        { _id: item.productId },
+                    const localUpdate = await Product.updateOne(
+                        { 
+                            _id: item.productId,
+                            "variants": { 
+                                $elemMatch: { 
+                                    "_id": item.variantId, 
+                                    "locationInventory": { $elemMatch: { "storeId": storeId, "stock": { $gte: item.qty } } } 
+                                } 
+                            }
+                        },
                         { $inc: { "variants.$[var].locationInventory.$[loc].stock": -item.qty } },
                         { arrayFilters: [{ "var._id": item.variantId }, { "loc.storeId": storeId }], session }
-                    ).catch(() => {}); // Safely bypass if location object not initialized yet
+                    );
+                    
+                    if (localUpdate.modifiedCount === 0) {
+                        await session.abortTransaction(); session.endSession();
+                        return reply.status(400).send({ success: false, message: `Insufficient local store stock for item: ${item.name}` });
+                    }
                 }
             }
 
@@ -240,7 +256,7 @@ async function orderRoutes(fastify, options) {
             const newOrder = new Order({
                 orderNumber, 
                 dateString,
-                storeId: storeId || null, // --- NEW: Multi-Store Tracking ---
+                storeId: storeId || null, 
                 notes: notes || '',
                 customerName, customerPhone, deliveryAddress, items, totalAmount,
                 paymentMethod: paymentMethod || 'Cash on Delivery',
@@ -273,7 +289,6 @@ async function orderRoutes(fastify, options) {
                 const msg = `DailyPick Order Received! 🛒\nOrder ID: ${newOrder.orderNumber}\nTotal: ₹${totalAmount}\nDelivery: ${scheduleTime}\nThanks for shopping!`;
                 const waUrl = `https://api.callmebot.com/whatsapp.php?phone=${customerPhone}&text=${encodeURIComponent(msg)}&apikey=${process.env.CALLMEBOT_API_KEY}`;
                 
-                // PERFORMANCE: AbortController to prevent API hang
                 const controller = new AbortController();
                 const timeoutId = setTimeout(() => controller.abort(), 3000);
                 fetch(waUrl, { signal: controller.signal })
@@ -337,9 +352,9 @@ async function orderRoutes(fastify, options) {
                 }
             }
 
+            // --- RACE CONDITION FIX: Atomic Quantity Verification ---
             for (const item of items) {
-                // Existing global stock deduction
-                await Product.updateOne(
+                const globalUpdate = await Product.updateOne(
                     { 
                         _id: item.productId, 
                         "variants._id": item.variantId,
@@ -349,13 +364,30 @@ async function orderRoutes(fastify, options) {
                     { session }
                 );
 
-                // --- NEW: Multi-Store Localized Inventory Deduction ---
+                if (globalUpdate.modifiedCount === 0) {
+                    await session.abortTransaction(); session.endSession();
+                    return reply.status(400).send({ success: false, message: `Insufficient global stock for item: ${item.name}` });
+                }
+
                 if (storeId) {
-                    await Product.updateOne(
-                        { _id: item.productId },
+                    const localUpdate = await Product.updateOne(
+                        { 
+                            _id: item.productId,
+                            "variants": { 
+                                $elemMatch: { 
+                                    "_id": item.variantId, 
+                                    "locationInventory": { $elemMatch: { "storeId": storeId, "stock": { $gte: item.qty } } } 
+                                } 
+                            }
+                        },
                         { $inc: { "variants.$[var].locationInventory.$[loc].stock": -item.qty } },
                         { arrayFilters: [{ "var._id": item.variantId }, { "loc.storeId": storeId }], session }
-                    ).catch(() => {}); // Safely bypass if location object not initialized yet
+                    );
+                    
+                    if (localUpdate.modifiedCount === 0) {
+                        await session.abortTransaction(); session.endSession();
+                        return reply.status(400).send({ success: false, message: `Insufficient local store stock for item: ${item.name}` });
+                    }
                 }
             }
 
@@ -370,8 +402,8 @@ async function orderRoutes(fastify, options) {
             const newOrder = new Order({
                 orderNumber, 
                 dateString,
-                storeId: storeId || null,       // --- NEW: Location Tracking ---
-                registerId: registerId || null, // --- NEW: Terminal Tracking ---
+                storeId: storeId || null,       
+                registerId: registerId || null, 
                 notes: notes || '',
                 customerName: finalCustomerName, 
                 customerPhone: customerPhone || '', 
@@ -417,7 +449,6 @@ async function orderRoutes(fastify, options) {
         }
     });
 
-    // --- NEW FUNCTIONALITY: Assign Delivery Driver ---
     fastify.put('/api/orders/:id/driver', { preHandler: [fastify.authenticate, fastify.verifyAdmin], ...assignDriverSchema }, async (request, reply) => {
         try {
             const { driverName, driverPhone } = request.body;
@@ -496,7 +527,6 @@ async function orderRoutes(fastify, options) {
         }
     });
 
-    // --- NEW FUNCTIONALITY: Partial Fulfillment (Modify Item) ---
     fastify.put('/api/orders/:id/partial-refund', { preHandler: [fastify.authenticate, fastify.verifyAdmin] }, async (request, reply) => {
         const session = await mongoose.startSession();
         session.startTransaction();
@@ -508,14 +538,12 @@ async function orderRoutes(fastify, options) {
                 return reply.status(404).send({ success: false, message: 'Order not found' });
             }
 
-            // Refund physical global stock
             await Product.updateOne(
                 { _id: productId, "variants._id": variantId },
                 { $inc: { "variants.$.stock": qtyToRefund } },
                 { session }
             );
 
-            // --- NEW: Refund Multi-Store localized stock ---
             if (order.storeId) {
                 await Product.updateOne(
                     { _id: productId },
@@ -524,7 +552,6 @@ async function orderRoutes(fastify, options) {
                 ).catch(() => {});
             }
 
-            // Update order items array locally
             let updatedItems = [];
             for(let item of order.items) {
                 if(item.productId === productId && item.variantId === variantId) {
@@ -536,7 +563,6 @@ async function orderRoutes(fastify, options) {
             }
             order.items = updatedItems;
 
-            // Handle Pay Later Customer Credit Balance Reversal
             if (order.paymentMethod === 'Pay Later') {
                 const diff = order.totalAmount - newTotalAmount;
                 if (diff > 0) {
@@ -599,14 +625,12 @@ async function orderRoutes(fastify, options) {
             }
 
             for (const item of order.items) {
-                // Refund global stock
                 await Product.updateOne(
                     { _id: item.productId, "variants._id": item.variantId },
                     { $inc: { "variants.$.stock": item.qty } },
                     { session }
                 );
 
-                // --- NEW: Refund Multi-Store localized stock ---
                 if (order.storeId) {
                     await Product.updateOne(
                         { _id: item.productId },
@@ -672,7 +696,6 @@ async function orderRoutes(fastify, options) {
             sevenDaysAgo.setDate(today.getDate() - 6);
             sevenDaysAgo.setHours(0, 0, 0, 0);
 
-            // --- OPTIMIZATION: Replacing heavy math with index-based grouping ---
             const revenueAgg = await Order.aggregate([
                 {
                     $match: {
@@ -689,7 +712,6 @@ async function orderRoutes(fastify, options) {
                 { $sort: { _id: 1 } }
             ]);
 
-            // Reconstruct the 7 day array for the UI exactly as before to prevent breaking the frontend
             let revenueLast7Days = [0, 0, 0, 0, 0, 0, 0];
             const datesToMap = [];
             for(let i=0; i<7; i++){
