@@ -1,5 +1,5 @@
 const User = require('../models/User');
-const bcrypt = require('bcrypt'); // --- OPTIMIZATION: Switched to Native C++ bcrypt ---
+const bcrypt = require('bcrypt'); 
 const crypto = require('crypto');
 const AuditLog = require('../models/AuditLog'); 
 
@@ -34,7 +34,6 @@ const verifySchema = {
     }
 };
 
-// --- SECURITY: Protect setup route from brute-force ---
 const setupRateLimit = {
     config: {
         rateLimit: {
@@ -61,20 +60,21 @@ async function authRoutes(fastify, options) {
                 }
             }
 
-            const hashedPin = await bcrypt.hash('1234', 10);
+            const defaultPin = process.env.DEFAULT_ADMIN_PIN || '1234';
+            const hashedPin = await bcrypt.hash(defaultPin, 10);
             let admin = await User.findOne({ role: 'Admin' });
             
             if (!admin) {
                 admin = new User({ name: 'Super Admin', username: 'admin', pin: hashedPin, role: 'Admin', isActive: true });
                 await admin.save();
-                return { success: true, message: "Default Admin created. Username: 'admin', PIN: '1234'" };
+                return { success: true, message: `Default Admin created. Username: 'admin', PIN: '${defaultPin}'` };
             } else {
                 admin.pin = hashedPin;
                 admin.username = 'admin'; 
                 admin.isActive = true;
                 admin.tokenVersion = (admin.tokenVersion || 0) + 1;
                 await admin.save();
-                return { success: true, message: "Existing Admin FORCE RESET. All old sessions revoked. Username: 'admin', PIN: '1234'" };
+                return { success: true, message: `Existing Admin FORCE RESET. All old sessions revoked. Username: 'admin', PIN: '${defaultPin}'` };
             }
         } catch (error) {
             fastify.log.error(error);
@@ -192,7 +192,6 @@ async function authRoutes(fastify, options) {
         }
     });
 
-    // --- SECURITY & PERFORMANCE: Silent Session Renewal Route ---
     fastify.post('/api/auth/refresh', async (request, reply) => {
         try {
             const refreshToken = request.cookies.refreshToken;
@@ -204,7 +203,7 @@ async function authRoutes(fastify, options) {
             const user = await User.findById(decoded.id);
 
             if (!user || !user.isActive || user.tokenVersion !== decoded.tokenVersion) {
-                reply.clearCookie('refreshToken');
+                reply.clearCookie('refreshToken', { path: '/' });
                 return reply.status(401).send({ success: false, message: 'Invalid or revoked session' });
             }
 
@@ -217,8 +216,34 @@ async function authRoutes(fastify, options) {
 
             return { success: true, token: newToken, data: user };
         } catch (error) {
-            reply.clearCookie('refreshToken');
+            reply.clearCookie('refreshToken', { path: '/' });
             reply.status(401).send({ success: false, message: 'Session expired. Please log in again.' });
+        }
+    });
+
+    // NEW LOGOUT FUNCTIONALITY
+    fastify.post('/api/auth/logout', { preHandler: [fastify.authenticate] }, async (request, reply) => {
+        try {
+            const user = await User.findById(request.user.id);
+            if (user) {
+                // Invalidate all existing tokens globally
+                user.tokenVersion = (user.tokenVersion || 0) + 1;
+                await user.save();
+                
+                await AuditLog.create({ 
+                    userId: user._id, 
+                    username: user.username, 
+                    action: 'LOGOUT', 
+                    targetType: 'Auth', 
+                    targetId: user._id.toString()
+                }).catch(e => fastify.log.error('AuditLog Error:', e));
+            }
+
+            reply.clearCookie('refreshToken', { path: '/' });
+            return { success: true, message: 'Logged out successfully globally.' };
+        } catch (error) {
+            fastify.log.error(error);
+            reply.status(500).send({ success: false, message: 'Server Error during logout' });
         }
     });
 
