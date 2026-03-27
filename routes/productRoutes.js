@@ -1,6 +1,8 @@
+/* routes/productRoutes.js */
+
 const Product = require('../models/Product');
 const Category = require('../models/Category');
-const Distributor = require('../models/Distributor'); // --- NEW: Required for Accounts Payable ---
+const Distributor = require('../models/Distributor'); 
 const { Parser } = require('json2csv'); 
 const cloudinary = require('cloudinary').v2; 
 
@@ -17,9 +19,7 @@ try {
     if (process.env.REDIS_URL) {
         redisCache = new Redis(process.env.REDIS_URL);
     }
-} catch (e) {
-    // Graceful fallback if ioredis is not installed
-}
+} catch (e) {}
 
 const invalidateProductCache = async () => {
     if (redisCache) {
@@ -67,8 +67,8 @@ const restockSchema = {
                 addedQuantity: { type: 'number', minimum: 1 },
                 purchasingPrice: { type: 'number', minimum: 0 },
                 newSellingPrice: { type: 'number', minimum: 0 },
-                paymentStatus: { type: 'string', enum: ['Paid', 'Credit'] }, // --- NEW: B2B Payment Tracking ---
-                storeId: { type: 'string' } // --- NEW: Multi-Store Routing ---
+                paymentStatus: { type: 'string', enum: ['Paid', 'Credit'] }, 
+                storeId: { type: 'string' } 
             }
         }
     }
@@ -85,19 +85,7 @@ const rtvSchema = {
                 returnedQuantity: { type: 'number', minimum: 1 },
                 refundAmount: { type: 'number', minimum: 0 },
                 reason: { type: 'string' },
-                storeId: { type: 'string' } // --- NEW: Multi-Store Routing ---
-            }
-        }
-    }
-};
-
-const bulkSchema = {
-    schema: {
-        body: {
-            type: 'object',
-            required: ['products'],
-            properties: {
-                products: { type: 'array', items: { type: 'object' } }
+                storeId: { type: 'string' } 
             }
         }
     }
@@ -230,7 +218,6 @@ async function productRoutes(fastify, options) {
         }
     });
 
-    // --- NEW: Gemini AI Auto-Fill Endpoint ---
     fastify.post('/api/products/autofill', { preHandler: [fastify.authenticate, fastify.verifyAdmin] }, async (request, reply) => {
         try {
             const { productName } = request.body;
@@ -355,14 +342,12 @@ async function productRoutes(fastify, options) {
                 addedQuantity: Number(addedQuantity), 
                 purchasingPrice: Number(purchasingPrice), 
                 sellingPrice: Number(newSellingPrice),
-                storeId: storeId // Log where the restock happened
+                storeId: storeId 
             });
             
-            // Existing global stock increment
             variant.stock += Number(addedQuantity); 
             variant.price = Number(newSellingPrice);
 
-            // Multi-Store Location Inventory Increment
             if (storeId) {
                 let locStock = variant.locationInventory.find(l => l.storeId && l.storeId.toString() === storeId);
                 if (locStock) {
@@ -374,12 +359,12 @@ async function productRoutes(fastify, options) {
             
             await product.save();
             
-            // B2B Accounts Payable Ledger
             if (paymentStatus === 'Credit' && product.distributorName) {
                 const totalCost = Number(addedQuantity) * Number(purchasingPrice);
                 await Distributor.findOneAndUpdate(
                     { name: product.distributorName },
-                    { $inc: { totalPendingAmount: totalCost } }
+                    { $inc: { totalPendingAmount: totalCost } },
+                    { upsert: true }
                 );
             }
 
@@ -408,10 +393,8 @@ async function productRoutes(fastify, options) {
 
             variant.returnHistory.push({ distributorName, returnedQuantity: Number(returnedQuantity), refundAmount: Number(refundAmount), reason, storeId });
             
-            // Existing global stock decrement
             variant.stock -= Number(returnedQuantity); 
 
-            // Multi-Store Location Inventory Decrement
             if (storeId) {
                 let locStock = variant.locationInventory.find(l => l.storeId && l.storeId.toString() === storeId);
                 if (locStock && locStock.stock >= returnedQuantity) {
@@ -431,8 +414,69 @@ async function productRoutes(fastify, options) {
         }
     });
 
-    fastify.post('/api/products/bulk', { preHandler: [fastify.authenticate, fastify.verifyAdmin], ...bulkSchema }, async (request, reply) => {
+    // --- PHASE 3: BULK IMPORT (CSV & JSON Support) ---
+    fastify.post('/api/products/bulk', { preHandler: [fastify.authenticate, fastify.verifyAdmin] }, async (request, reply) => {
         try {
+            if (request.isMultipart && request.isMultipart()) {
+                const data = await request.file();
+                if (!data) return reply.status(400).send({ success: false, message: 'No file uploaded' });
+                
+                const buffer = await data.toBuffer();
+                const csvStr = buffer.toString('utf8');
+                const lines = csvStr.split('\n').filter(l => l.trim() !== '');
+                
+                if (lines.length < 2) return { success: false, message: 'CSV is empty or missing headers' };
+                
+                const bulkOps = [];
+                for (let i = 1; i < lines.length; i++) {
+                    const row = lines[i].match(/(".*?"|[^",\s]+)(?=\s*,|\s*$)/g) || lines[i].split(',');
+                    const clean = (val) => (val || '').replace(/^"|"$/g, '').trim();
+                    
+                    const name = clean(row[0]);
+                    const category = clean(row[1]);
+                    const brand = clean(row[2]);
+                    const dist = clean(row[3]);
+                    const sku = clean(row[4]);
+                    const cost = parseFloat(clean(row[5])) || 0;
+                    const sell = parseFloat(clean(row[6])) || 0;
+                    const stock = parseInt(clean(row[7])) || 0;
+                    const weight = clean(row[8]);
+                    
+                    if (name && category) {
+                        bulkOps.push({
+                            updateOne: {
+                                filter: { name: name },
+                                update: {
+                                    $set: {
+                                        category, brand, distributorName: dist,
+                                        isActive: true
+                                    },
+                                    $addToSet: {
+                                        variants: {
+                                            weightOrVolume: weight || 'Standard',
+                                            price: sell,
+                                            stock: stock,
+                                            sku: sku,
+                                            purchaseHistory: cost > 0 ? [{ addedQuantity: stock, purchasingPrice: cost, sellingPrice: sell, date: new Date() }] : []
+                                        }
+                                    }
+                                },
+                                upsert: true
+                            }
+                        });
+                    }
+                }
+                
+                if (bulkOps.length > 0) {
+                    const result = await Product.bulkWrite(bulkOps);
+                    await invalidateProductCache();
+                    if (fastify.broadcastToPOS) fastify.broadcastToPOS({ type: 'INVENTORY_UPDATED', message: 'CSV Import Completed' });
+                    return { success: true, count: bulkOps.length, message: `Imported ${bulkOps.length} rows.` };
+                }
+                return { success: false, message: 'No valid products found in CSV' };
+            }
+
+            // Fallback for legacy JSON arrays
             const { products } = request.body;
             if (!Array.isArray(products)) return reply.status(400).send({ success: false, message: 'Invalid format' });
             
@@ -459,7 +503,7 @@ async function productRoutes(fastify, options) {
             return { success: true, message: `No products to process.` };
         } catch (error) { 
             fastify.log.error(error); 
-            reply.status(500).send({ success: false, message: 'Server Error' }); 
+            reply.status(500).send({ success: false, message: 'Server Error during import' }); 
         }
     });
 
