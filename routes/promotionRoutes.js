@@ -1,23 +1,29 @@
+/* routes/promotionRoutes.js */
+
 const Promotion = require('../models/Promotion');
 
 const promotionSchema = {
     schema: {
         body: {
             type: 'object',
-            required: ['name', 'type', 'value', 'startDate', 'endDate'],
             properties: {
+                // Legacy
                 name: { type: 'string' },
-                type: { type: 'string', enum: ['Percentage', 'Flat', 'BOGO'] },
+                type: { type: 'string' },
                 value: { type: 'number' },
                 minCartValue: { type: 'number' },
                 applicableCategory: { type: 'string' },
                 startDate: { type: 'string' },
                 endDate: { type: 'string' },
-                // --- NEW ADVANCED PROMO FIELDS ---
                 buyQty: { type: 'number' },
                 getQty: { type: 'number' },
                 startTime: { type: 'string' },
-                endTime: { type: 'string' }
+                endTime: { type: 'string' },
+                // Phase 3 UI Fields
+                code: { type: 'string' },
+                discountType: { type: 'string' },
+                discountValue: { type: 'number' },
+                minOrderValue: { type: 'number' }
             }
         }
     }
@@ -40,7 +46,17 @@ async function promotionRoutes(fastify, options) {
         try {
             let filter = request.query.all === 'true' ? {} : { isActive: true };
             const promotions = await Promotion.find(filter).sort({ createdAt: -1 }).lean();
-            return { success: true, count: promotions.length, data: promotions };
+            
+            // Map legacy fields back to UI standard if missing
+            const mappedPromotions = promotions.map(p => ({
+                ...p,
+                code: p.code || p.name,
+                discountType: p.discountType || p.type,
+                discountValue: p.discountValue || p.value,
+                minOrderValue: p.minOrderValue || p.minCartValue
+            }));
+
+            return { success: true, count: mappedPromotions.length, data: mappedPromotions };
         } catch (error) {
             fastify.log.error(error);
             reply.status(500).send({ success: false, message: 'Server Error' });
@@ -49,17 +65,26 @@ async function promotionRoutes(fastify, options) {
 
     fastify.post('/api/promotions', { preHandler: [fastify.authenticate, fastify.verifyAdmin], ...promotionSchema }, async (request, reply) => {
         try {
-            const { name, type, value, minCartValue, applicableCategory, startDate, endDate, buyQty, getQty, startTime, endTime } = request.body;
+            const payload = request.body;
             
             const newPromotion = new Promotion({
-                name, type, value, minCartValue, applicableCategory, startDate, endDate
+                name: payload.name || payload.code,
+                code: payload.code,
+                type: payload.type || payload.discountType,
+                discountType: payload.discountType,
+                value: payload.value || payload.discountValue,
+                discountValue: payload.discountValue,
+                minCartValue: payload.minCartValue || payload.minOrderValue,
+                minOrderValue: payload.minOrderValue,
+                applicableCategory: payload.applicableCategory,
+                startDate: payload.startDate,
+                endDate: payload.endDate
             });
             
-            // --- OPTIMIZATION: Bypass strict mode to save advanced fields without model rebuilds ---
-            if (buyQty) newPromotion.set('buyQty', buyQty, { strict: false });
-            if (getQty) newPromotion.set('getQty', getQty, { strict: false });
-            if (startTime) newPromotion.set('startTime', startTime, { strict: false });
-            if (endTime) newPromotion.set('endTime', endTime, { strict: false });
+            if (payload.buyQty) newPromotion.set('buyQty', payload.buyQty, { strict: false });
+            if (payload.getQty) newPromotion.set('getQty', payload.getQty, { strict: false });
+            if (payload.startTime) newPromotion.set('startTime', payload.startTime, { strict: false });
+            if (payload.endTime) newPromotion.set('endTime', payload.endTime, { strict: false });
             
             await newPromotion.save();
 
