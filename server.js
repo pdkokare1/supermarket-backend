@@ -1,3 +1,5 @@
+/* server.js */
+
 const Fastify = require('fastify');
 const mongoose = require('mongoose');
 require('dotenv').config();
@@ -235,6 +237,10 @@ fastify.register(require('./routes/shiftRoutes'));
 fastify.register(require('./routes/storeRoutes'));
 fastify.register(require('./routes/registerRoutes'));
 fastify.register(require('./routes/migrateRoute'));
+
+// --- PHASE 4: NEW ENTERPRISE ROUTES ---
+fastify.register(require('./routes/settingsRoutes'));
+fastify.register(require('./routes/auditRoutes'));
 
 fastify.setErrorHandler(function (error, request, reply) {
     const apmLog = {
