@@ -1,3 +1,5 @@
+/* routes/orderRoutes.js */
+
 const mongoose = require('mongoose');
 const Order = require('../models/Order');
 const Product = require('../models/Product');
@@ -104,6 +106,28 @@ const onlineCheckoutSchema = {
     }
 };
 
+// --- PHASE 6: Omnichannel External Integration Schema ---
+const externalCheckoutSchema = {
+    schema: {
+        body: {
+            type: 'object',
+            required: ['items', 'totalAmount', 'source'],
+            properties: {
+                source: { type: 'string' }, // e.g., 'ZOMATO', 'SWIGGY', 'CUSTOM_APP'
+                externalOrderId: { type: 'string' },
+                customerName: { type: 'string' },
+                customerPhone: { type: 'string' },
+                deliveryAddress: { type: 'string' },
+                items: { type: 'array' },
+                totalAmount: { type: 'number' },
+                paymentMethod: { type: 'string' },
+                notes: { type: 'string' },
+                storeId: { type: 'string' }
+            }
+        }
+    }
+};
+
 const statusSchema = { schema: { body: { type: 'object', required: ['status'], properties: { status: { type: 'string' } } } } };
 const cancelSchema = { schema: { body: { type: 'object', required: ['reason'], properties: { reason: { type: 'string' } } } } };
 const limitSchema = { schema: { body: { type: 'object', required: ['isCreditEnabled', 'creditLimit'], properties: { isCreditEnabled: { type: 'boolean' }, creditLimit: { type: 'number' }, name: { type: 'string' } } } } };
@@ -172,6 +196,120 @@ async function orderRoutes(fastify, options) {
         });
     });
 
+    // --- PHASE 6: Omnichannel External Delivery API ---
+    fastify.post('/api/orders/external', { ...externalCheckoutSchema }, async (request, reply) => {
+        // Secure webhook integration via API Key (Must be set in your .env)
+        const apiKey = request.headers['x-api-key'];
+        if (!apiKey || apiKey !== process.env.EXTERNAL_API_KEY) {
+            return reply.status(401).send({ success: false, message: 'Unauthorized webhook access.' });
+        }
+
+        const session = await mongoose.startSession();
+        session.startTransaction();
+
+        try {
+            const { 
+                source, externalOrderId, customerName, customerPhone, deliveryAddress, items, 
+                totalAmount, paymentMethod, notes, storeId 
+            } = request.body;
+
+            // Atomic Stock Verification
+            for (const item of items) {
+                const globalUpdate = await Product.updateOne(
+                    { 
+                        _id: item.productId, 
+                        "variants._id": item.variantId,
+                        "variants.stock": { $gte: item.qty } 
+                    },
+                    { $inc: { "variants.$.stock": -item.qty } },
+                    { session }
+                );
+
+                if (globalUpdate.modifiedCount === 0) {
+                    await session.abortTransaction(); session.endSession();
+                    return reply.status(400).send({ success: false, message: `Insufficient stock for item: ${item.name}` });
+                }
+
+                if (storeId) {
+                    const localUpdate = await Product.updateOne(
+                        { 
+                            _id: item.productId,
+                            "variants": { 
+                                $elemMatch: { 
+                                    "_id": item.variantId, 
+                                    "locationInventory": { $elemMatch: { "storeId": storeId, "stock": { $gte: item.qty } } } 
+                                } 
+                            }
+                        },
+                        { $inc: { "variants.$[var].locationInventory.$[loc].stock": -item.qty } },
+                        { arrayFilters: [{ "var._id": item.variantId }, { "loc.storeId": storeId }], session }
+                    );
+                    
+                    if (localUpdate.modifiedCount === 0) {
+                        await session.abortTransaction(); session.endSession();
+                        return reply.status(400).send({ success: false, message: `Insufficient local store stock for item: ${item.name}` });
+                    }
+                }
+            }
+
+            const counter = await mongoose.model('OrderCounter').findByIdAndUpdate(
+                { _id: 'orderId' },
+                { $inc: { seq: 1 } },
+                { new: true, upsert: true, session }
+            );
+            
+            // Format order number specifically for the source platform
+            const orderNumber = `EXT-${source.toUpperCase().substring(0, 3)}-${counter.seq}`;
+            const dateString = new Date().toISOString().split('T')[0];
+
+            const formattedNotes = `[${source.toUpperCase()}] Ext ID: ${externalOrderId || 'N/A'}. ${notes || ''}`;
+
+            const newOrder = new Order({
+                orderNumber, 
+                dateString,
+                storeId: storeId || null, 
+                notes: formattedNotes,
+                customerName: customerName || `${source} Customer`, 
+                customerPhone: customerPhone || '', 
+                deliveryAddress: deliveryAddress || `${source} Pickup`, 
+                items, 
+                totalAmount,
+                paymentMethod: paymentMethod || 'Prepaid External',
+                deliveryType: 'Instant', 
+                status: 'Order Placed'
+            });
+
+            await newOrder.save({ session });
+            await session.commitTransaction();
+            session.endSession();
+            
+            if (redisCache) {
+                try { await redisCache.del('orders:analytics'); } catch(e) {}
+            }
+            
+            const payload = JSON.stringify({ type: 'NEW_ORDER', order: newOrder, source: source });
+            if (redisPub) {
+                redisPub.publish('ORDER_STREAM_EVENT', JSON.stringify({ target: 'admin', payload, storeId: storeId }));
+            } else {
+                adminConnections.forEach(conn => {
+                    if (!conn.destroyed) {
+                        conn.write(`data: ${payload}\n\n`);
+                    }
+                });
+            }
+
+            // Push directly to POS to ring the bell
+            if (fastify.broadcastToPOS) fastify.broadcastToPOS({ type: 'NEW_ORDER', orderId: newOrder._id, source: source, storeId: storeId });
+
+            return { success: true, message: `External Order Accepted from ${source}`, orderId: newOrder._id, orderNumber: orderNumber };
+        } catch (error) {
+            await session.abortTransaction();
+            session.endSession();
+            fastify.log.error('External Checkout Error:', error);
+            reply.status(500).send({ success: false, message: 'Server Error processing external checkout' });
+        }
+    });
+
     fastify.post('/api/orders', { preHandler: [fastify.authenticate], ...onlineCheckoutSchema }, async (request, reply) => {
         const session = await mongoose.startSession();
         session.startTransaction();
@@ -206,13 +344,12 @@ async function orderRoutes(fastify, options) {
                 await custProfile.save({ session });
             }
 
-            // --- RACE CONDITION FIX: Atomic Quantity Verification ---
             for (const item of items) {
                 const globalUpdate = await Product.updateOne(
                     { 
                         _id: item.productId, 
                         "variants._id": item.variantId,
-                        "variants.stock": { $gte: item.qty } // Must have enough stock exactly when query runs
+                        "variants.stock": { $gte: item.qty } 
                     },
                     { $inc: { "variants.$.stock": -item.qty } },
                     { session }
@@ -352,7 +489,6 @@ async function orderRoutes(fastify, options) {
                 }
             }
 
-            // --- RACE CONDITION FIX: Atomic Quantity Verification ---
             for (const item of items) {
                 const globalUpdate = await Product.updateOne(
                     { 
