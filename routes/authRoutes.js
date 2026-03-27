@@ -1,3 +1,5 @@
+/* routes/authRoutes.js */
+
 const User = require('../models/User');
 const bcrypt = require('bcrypt'); 
 const crypto = require('crypto');
@@ -221,12 +223,10 @@ async function authRoutes(fastify, options) {
         }
     });
 
-    // NEW LOGOUT FUNCTIONALITY
     fastify.post('/api/auth/logout', { preHandler: [fastify.authenticate] }, async (request, reply) => {
         try {
             const user = await User.findById(request.user.id);
             if (user) {
-                // Invalidate all existing tokens globally
                 user.tokenVersion = (user.tokenVersion || 0) + 1;
                 await user.save();
                 
@@ -250,17 +250,53 @@ async function authRoutes(fastify, options) {
     fastify.get('/api/auth/verify', { schema: verifySchema.schema, preHandler: [fastify.authenticate] }, async (request, reply) => {
         try {
             const { id } = request.query;
-            
             const user = await User.findOne({ _id: id });
             
             if (!user) {
                 return reply.status(401).send({ success: false, message: 'Invalid or inactive session.' });
             }
-            
             return { success: true, message: 'Session verified', data: user };
         } catch (error) {
             fastify.log.error(error);
             reply.status(500).send({ success: false, message: 'Server Error during verification' });
+        }
+    });
+
+    // --- PHASE 3: NEW STAFF CREATION ROUTE ---
+    fastify.post('/api/auth/register', { preHandler: [fastify.authenticate, fastify.verifyAdmin] }, async (request, reply) => {
+        try {
+            const { name, username, pin, role } = request.body;
+            if (!name || !username || !pin) return reply.status(400).send({ success: false, message: 'Missing required fields.' });
+
+            const existingUser = await User.findOne({ username: username.trim() });
+            if (existingUser) return reply.status(400).send({ success: false, message: 'Username already exists.' });
+
+            const hashedPin = await bcrypt.hash(pin.toString(), 10);
+            
+            const newUser = new User({
+                name: name.trim(),
+                username: username.trim(),
+                pin: hashedPin,
+                role: role || 'Cashier',
+                isActive: true
+            });
+
+            await newUser.save();
+            return { success: true, message: 'User created successfully.', data: { name: newUser.name, username: newUser.username, role: newUser.role } };
+        } catch (error) {
+            fastify.log.error(error);
+            reply.status(500).send({ success: false, message: 'Server Error during user creation.' });
+        }
+    });
+
+    // --- PHASE 3: FETCH STAFF DIRECTORY ---
+    fastify.get('/api/users/staff', { preHandler: [fastify.authenticate, fastify.verifyAdmin] }, async (request, reply) => {
+        try {
+            const staff = await User.find({ isActive: true }).select('-pin -tokenVersion -lockUntil -failedLoginAttempts').lean();
+            return { success: true, data: staff };
+        } catch (error) {
+            fastify.log.error(error);
+            reply.status(500).send({ success: false, message: 'Server Error fetching staff.' });
         }
     });
 }
