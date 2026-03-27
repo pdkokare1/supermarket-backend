@@ -163,9 +163,10 @@ fastify.decorate('closeAllSSE', () => {
 
 fastify.register(async function (fastify) {
     
-    // FIX: Removed 'async' from the route handler to prevent Fastify from auto-closing the WebSocket
     fastify.get('/api/ws/pos', { websocket: true }, (connection, req) => {
-        // Run auth and DB tasks inside a self-invoking async function
+        // FIX: Version-agnostic WebSocket binding. Safely handles Fastify 4+ updates.
+        const ws = connection.socket || connection; 
+        
         (async () => {
             try {
                 // SECURE WEBSOCKET AUTHENTICATION
@@ -179,32 +180,34 @@ fastify.register(async function (fastify) {
                     throw new Error('Invalid session');
                 }
 
-                connection.socket.storeId = user.storeId ? user.storeId.toString() : (req.query.storeId || null);
-                connection.socket.isAdmin = user.role === 'Admin';
-                connection.socket.isAlive = true; 
+                ws.storeId = user.storeId ? user.storeId.toString() : (req.query.storeId || null);
+                ws.isAdmin = user.role === 'Admin';
+                ws.isAlive = true; 
 
                 // Cloud-Proxy Safe JSON Heartbeat interception
-                connection.socket.on('message', message => {
+                ws.on('message', message => {
                     try {
                         const parsed = JSON.parse(message.toString());
                         if (parsed.type === 'PONG') {
-                            connection.socket.isAlive = true;
-                            return; // Bypass standard message logging for heartbeats
+                            ws.isAlive = true;
+                            return; 
                         }
                     } catch (e) {}
-                    fastify.log.info(`[WS Store: ${connection.socket.storeId || 'Global'}] Received: ${message}`);
+                    fastify.log.info(`[WS Store: ${ws.storeId || 'Global'}] Received: ${message}`);
                 });
                 
-                connection.socket.send(JSON.stringify({ 
+                ws.send(JSON.stringify({ 
                     type: 'CONNECTION_ESTABLISHED', 
                     message: 'Connected to DailyPick Real-Time Server securely',
-                    storeContext: connection.socket.storeId || 'Global'
+                    storeContext: ws.storeId || 'Global'
                 }));
 
             } catch (err) {
                 fastify.log.warn(`WebSocket connection rejected: ${err.message}`);
-                connection.socket.send(JSON.stringify({ type: 'ERROR', message: 'Authentication failed' }));
-                connection.socket.terminate();
+                if (ws.readyState === 1) { // 1 = OPEN
+                    ws.send(JSON.stringify({ type: 'ERROR', message: 'Authentication failed' }));
+                    ws.terminate();
+                }
             }
         })();
     });
