@@ -97,7 +97,9 @@ fastify.register(require('./routes/systemRoutes'), {
 
 // --- Feature Routes ---
 fastify.register(require('./routes/productRoutes'));
+fastify.register(require('./routes/productOpsRoutes')); // NEW: Extracted AI, CSV, and Upload logic
 fastify.register(require('./routes/orderRoutes'));
+fastify.register(require('./routes/customerRoutes')); // NEW: Extracted CRM and Customer logic
 fastify.register(require('./routes/categoryRoutes'));
 fastify.register(require('./routes/brandRoutes')); 
 fastify.register(require('./routes/distributorRoutes')); 
