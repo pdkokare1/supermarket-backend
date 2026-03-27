@@ -3,6 +3,7 @@
 const Product = require('../models/Product');
 const Order = require('../models/Order');
 const Expense = require('../models/Expense');
+const Shift = require('../models/Shift'); // Phase 6 addition
 
 async function analyticsRoutes(fastify, options) {
     
@@ -19,7 +20,6 @@ async function analyticsRoutes(fastify, options) {
                 };
             }
 
-            // 1. Calculate Revenue & COGS
             const orders = await Order.find({ 
                 ...dateFilter, 
                 status: { $nin: ['Cancelled'] } 
@@ -30,12 +30,10 @@ async function analyticsRoutes(fastify, options) {
             let totalDiscounts = 0;
             let totalTax = 0;
 
-            // To calculate COGS accurately, we map current average purchase prices
             const products = await Product.find({ isActive: true }).select('name variants').lean();
             const costMap = {};
             products.forEach(p => {
                 p.variants.forEach(v => {
-                    // Find the most recent purchase price, default to 70% of selling price if unknown
                     let avgCost = v.price * 0.7; 
                     if (v.purchaseHistory && v.purchaseHistory.length > 0) {
                         const recent = v.purchaseHistory[v.purchaseHistory.length - 1];
@@ -56,11 +54,9 @@ async function analyticsRoutes(fastify, options) {
                 });
             });
 
-            // 2. Calculate Operational Expenses
             const expenses = await Expense.find(dateFilter).lean();
             const totalExpenses = expenses.reduce((sum, exp) => sum + (exp.amount || 0), 0);
 
-            // 3. Formulate P&L
             const grossProfit = totalRevenue - totalCOGS - totalTax;
             const netProfit = grossProfit - totalExpenses;
 
@@ -90,7 +86,6 @@ async function analyticsRoutes(fastify, options) {
                 return reply.status(400).send({ success: false, message: 'Gemini API key not configured on server.' });
             }
 
-            // Gather inventory data for AI analysis
             const products = await Product.find({ isActive: true, isArchived: { $ne: true } }).lean();
             
             const inventorySnapshot = [];
@@ -109,7 +104,6 @@ async function analyticsRoutes(fastify, options) {
                 }
             });
 
-            // Limit array size to prevent token overflow on massive databases
             const analysisData = inventorySnapshot.sort((a, b) => a.currentStock - b.currentStock).slice(0, 60);
 
             if (analysisData.length === 0) {
@@ -135,7 +129,7 @@ async function analyticsRoutes(fastify, options) {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     contents: [{ parts: [{ text: prompt }] }],
-                    generationConfig: { temperature: 0.2 } // Low temp for structured data consistency
+                    generationConfig: { temperature: 0.2 } 
                 })
             });
 
@@ -156,6 +150,30 @@ async function analyticsRoutes(fastify, options) {
         } catch (error) {
             fastify.log.error('AI Forecast Error:', error);
             reply.status(500).send({ success: false, message: 'AI Engine failed to generate forecast.' });
+        }
+    });
+
+    // --- PHASE 6: Staff Leaderboard / Gamification ---
+    fastify.get('/api/analytics/leaderboard', { preHandler: [fastify.authenticate, fastify.verifyAdmin] }, async (request, reply) => {
+        try {
+            // Aggregate shift history to determine best cashiers
+            const leaderboard = await Shift.aggregate([
+                { $match: { status: 'Closed' } },
+                { 
+                    $group: {
+                        _id: "$userName",
+                        totalShifts: { $sum: 1 },
+                        totalRevenueHandled: { $sum: "$actualCash" },
+                        netDiscrepancy: { $sum: "$discrepancy" } // Closer to 0 is better
+                    }
+                },
+                { $sort: { totalRevenueHandled: -1 } } // Sort by most revenue handled
+            ]);
+
+            return { success: true, data: leaderboard };
+        } catch (error) {
+            fastify.log.error('Leaderboard Error:', error);
+            reply.status(500).send({ success: false, message: 'Server Error fetching leaderboard' });
         }
     });
 }
