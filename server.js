@@ -170,7 +170,6 @@ fastify.register(async function (fastify) {
         
         (async () => {
             try {
-                // SECURE WEBSOCKET AUTHENTICATION
                 const token = req.query.token;
                 if (!token) throw new Error('No token provided');
                 
@@ -185,7 +184,6 @@ fastify.register(async function (fastify) {
                 ws.isAdmin = user.role === 'Admin';
                 ws.isAlive = true; 
 
-                // Cloud-Proxy Safe JSON Heartbeat interception
                 ws.on('message', message => {
                     try {
                         const parsed = JSON.parse(message.toString());
@@ -205,7 +203,7 @@ fastify.register(async function (fastify) {
 
             } catch (err) {
                 fastify.log.warn(`WebSocket connection rejected: ${err.message}`);
-                if (ws.readyState === 1) { // 1 = OPEN
+                if (ws.readyState === 1) { 
                     ws.send(JSON.stringify({ type: 'ERROR', message: 'Authentication failed' }));
                     ws.terminate();
                 }
@@ -237,8 +235,6 @@ fastify.register(require('./routes/registerRoutes'));
 fastify.register(require('./routes/migrateRoute'));
 fastify.register(require('./routes/settingsRoutes'));
 fastify.register(require('./routes/auditRoutes'));
-
-// --- PHASE 5: NEW ANALYTICS & AI ROUTES ---
 fastify.register(require('./routes/analyticsRoutes'));
 
 fastify.setErrorHandler(function (error, request, reply) {
@@ -383,6 +379,10 @@ const connectDB = async () => {
 
 const startServer = async () => {
     await connectDB();
+    
+    // --- PHASE 6: Initialize Automated Cloud Backups ---
+    require('./jobs/backupCron')(fastify);
+    
     try {
         await fastify.listen({ port: PORT, host: '0.0.0.0' });
     } catch (err) {
@@ -414,6 +414,10 @@ if (process.env.ENABLE_CLUSTERING === 'true' && cluster.isPrimary) {
         require('./jobs/cronScheduler')(fastify, (newReport) => {
             latestInventoryReport = newReport;
         });
+        
+        // --- PHASE 6: Initialize Automated Cloud Backups ---
+        require('./jobs/backupCron')(fastify);
+
         fastify.listen({ port: PORT, host: '0.0.0.0' }).catch(err => {
             fastify.log.error(err);
             process.exit(1);
