@@ -3,7 +3,6 @@
 const Fastify = require('fastify');
 const mongoose = require('mongoose');
 require('dotenv').config();
-const User = require('./models/User'); 
 
 const cluster = require('cluster');
 const os = require('os');
@@ -67,7 +66,6 @@ fastify.register(require('@fastify/cookie'), {
 });
 
 fastify.register(require('@fastify/websocket'));
-
 fastify.register(require('@fastify/swagger'), {
     swagger: {
         info: { title: 'DailyPick API', description: 'Enterprise Backend API', version: '1.0.0' },
@@ -80,147 +78,24 @@ fastify.register(require('@fastify/swagger-ui'), {
     uiConfig: { docExpansion: 'none', deepLinking: false }
 });
 
-if (!process.env.JWT_PRIVATE_KEY || !process.env.JWT_PUBLIC_KEY) {
-    fastify.log.error("CRITICAL: JWT_PRIVATE_KEY or JWT_PUBLIC_KEY is missing. Server shutting down.");
-    process.exit(1);
-}
+// --- Modularized Setups ---
+require('./plugins/authSetup')(fastify);
+require('./plugins/wsSetup')(fastify);
 
-fastify.register(require('@fastify/jwt'), {
-    secret: {
-        private: process.env.JWT_PRIVATE_KEY.replace(/\\n/g, '\n'),
-        public: process.env.JWT_PUBLIC_KEY.replace(/\\n/g, '\n')
-    },
-    sign: { algorithm: 'RS256' }
+// --- Global State ---
+let latestInventoryReport = {
+    lowStock: [],
+    deadStock: [],
+    lastGenerated: null
+};
+
+// --- Modularized System Routes ---
+fastify.register(require('./routes/systemRoutes'), {
+    redisClient,
+    getLatestInventoryReport: () => latestInventoryReport
 });
 
-fastify.decorate("authenticate", async function(request, reply) {
-    try {
-        const decoded = await request.jwtVerify();
-        
-        const user = await User.findById(decoded.id).select('tokenVersion isActive');
-        if (!user || !user.isActive || user.tokenVersion !== decoded.tokenVersion) {
-            throw new Error('Token revoked or user inactive');
-        }
-    } catch (err) {
-        reply.status(401).send({ success: false, message: 'Unauthorized: Invalid or missing token.' });
-    }
-});
-
-fastify.decorate("verifyAdmin", async function(request, reply) {
-    if (request.user && request.user.role !== 'Admin') {
-        reply.status(403).send({ success: false, message: 'Forbidden: Admin access required.' });
-        return; 
-    }
-});
-
-let redisPubWS = null;
-let redisSubWS = null;
-
-if (process.env.REDIS_URL) {
-    try {
-        const Redis = require('ioredis');
-        redisPubWS = new Redis(process.env.REDIS_URL);
-        redisSubWS = new Redis(process.env.REDIS_URL);
-        
-        redisSubWS.subscribe('POS_WS_STREAM');
-        redisSubWS.on('message', (channel, messageStr) => {
-            if (channel === 'POS_WS_STREAM' && fastify.websocketServer) {
-                const parsed = JSON.parse(messageStr);
-                fastify.websocketServer.clients.forEach(function each(client) {
-                    if (client.readyState === 1) { 
-                        if (!parsed.storeId || client.storeId === parsed.storeId || client.isAdmin) {
-                            client.send(JSON.stringify(parsed));
-                        }
-                    }
-                });
-            }
-        });
-    } catch(e) {
-        fastify.log.error("Failed to initialize Redis Pub/Sub for WebSockets", e);
-    }
-}
-
-fastify.decorate('broadcastToPOS', function (message) {
-    if (redisPubWS) {
-        redisPubWS.publish('POS_WS_STREAM', JSON.stringify(message));
-    } else {
-        if (!fastify.websocketServer) return;
-        fastify.websocketServer.clients.forEach(function each(client) {
-            if (client.readyState === 1) { 
-                if (!message.storeId || client.storeId === message.storeId || client.isAdmin) {
-                    client.send(JSON.stringify(message));
-                }
-            }
-        });
-    }
-});
-
-fastify.decorate('closeAllSSE', () => {
-    if (fastify.websocketServer) {
-        fastify.websocketServer.clients.forEach((client) => {
-            client.terminate();
-        });
-    }
-}); 
-
-fastify.register(async function (fastify) {
-    
-    fastify.get('/api/ws/pos', { websocket: true }, (connection, req) => {
-        const ws = connection.socket || connection; 
-        
-        (async () => {
-            try {
-                const token = req.query.token;
-                if (!token) throw new Error('No token provided');
-                
-                const decoded = fastify.jwt.verify(token);
-                const user = await User.findById(decoded.id).select('role isActive tokenVersion storeId');
-                
-                if (!user || !user.isActive || user.tokenVersion !== decoded.tokenVersion) {
-                    throw new Error('Invalid session');
-                }
-
-                ws.storeId = user.storeId ? user.storeId.toString() : (req.query.storeId || null);
-                ws.isAdmin = user.role === 'Admin';
-                ws.isAlive = true; 
-
-                ws.on('message', message => {
-                    try {
-                        const parsed = JSON.parse(message.toString());
-                        if (parsed.type === 'PONG') {
-                            ws.isAlive = true;
-                            return; 
-                        }
-                    } catch (e) {}
-                    fastify.log.info(`[WS Store: ${ws.storeId || 'Global'}] Received: ${message}`);
-                });
-                
-                ws.send(JSON.stringify({ 
-                    type: 'CONNECTION_ESTABLISHED', 
-                    message: 'Connected to DailyPick Real-Time Server securely',
-                    storeContext: ws.storeId || 'Global'
-                }));
-
-            } catch (err) {
-                fastify.log.warn(`WebSocket connection rejected: ${err.message}`);
-                if (ws.readyState === 1) { 
-                    ws.send(JSON.stringify({ type: 'ERROR', message: 'Authentication failed' }));
-                    ws.terminate();
-                }
-            }
-        })();
-    });
-
-    setInterval(() => {
-        if (!fastify.websocketServer) return;
-        fastify.websocketServer.clients.forEach((client) => {
-            if (client.isAlive === false) return client.terminate();
-            client.isAlive = false;
-            client.send(JSON.stringify({ type: 'PING' })); 
-        });
-    }, 30000);
-});
-
+// --- Feature Routes ---
 fastify.register(require('./routes/productRoutes'));
 fastify.register(require('./routes/orderRoutes'));
 fastify.register(require('./routes/categoryRoutes'));
@@ -258,77 +133,6 @@ fastify.setErrorHandler(function (error, request, reply) {
     });
 });
 
-let latestInventoryReport = {
-    lowStock: [],
-    deadStock: [],
-    lastGenerated: null
-};
-
-let isInventoryUpdating = false;
-fastify.get('/api/inventory/report', async (request, reply) => {
-    if (redisClient) {
-        try {
-            const cachedReport = await redisClient.get('cache:inventory:report');
-            if (cachedReport) {
-                return { success: true, data: JSON.parse(cachedReport), cached: true };
-            } else if (!isInventoryUpdating) {
-                isInventoryUpdating = true;
-                setTimeout(async () => {
-                    try {
-                        await redisClient.set('cache:inventory:report', JSON.stringify(latestInventoryReport), 'EX', 60);
-                    } catch(e) {}
-                    isInventoryUpdating = false;
-                }, 0);
-            }
-        } catch (e) {
-            fastify.log.error('Redis Cache Read Error:', e);
-        }
-    }
-
-    return { success: true, data: latestInventoryReport, cached: false };
-});
-
-fastify.get('/api/health', async (request, reply) => {
-    const dbStatus = mongoose.connection.readyState === 1 ? 'Connected' : 'Disconnected';
-    let redisStatus = 'Not Configured';
-    
-    if (redisClient) {
-        try {
-            await redisClient.ping();
-            redisStatus = 'Connected';
-        } catch (e) {
-            redisStatus = 'Disconnected';
-        }
-    }
-    
-    const memoryUsage = process.memoryUsage();
-    const systemHealth = {
-        status: dbStatus === 'Connected' ? 'Healthy' : 'Error',
-        database: dbStatus,
-        redis: redisStatus,
-        uptime: process.uptime(),
-        memory: {
-            free: `${(os.freemem() / 1024 / 1024).toFixed(2)} MB`,
-            total: `${(os.totalmem() / 1024 / 1024).toFixed(2)} MB`,
-            rss: `${(memoryUsage.rss / 1024 / 1024).toFixed(2)} MB`
-        },
-        cpuLoad: os.loadavg()
-    };
-    
-    if (dbStatus !== 'Connected') {
-        reply.status(503).send(systemHealth);
-    } else {
-        reply.send(systemHealth);
-    }
-});
-
-fastify.get('/', async (request, reply) => {
-    return { 
-        status: 'Active',
-        message: 'Supermarket Fastify Backend MVP is running and connected!' 
-    };
-});
-
 const listeners = ['SIGINT', 'SIGTERM'];
 listeners.forEach((signal) => {
     process.on(signal, async () => {
@@ -347,8 +151,10 @@ listeners.forEach((signal) => {
             await fastify.close();
             await mongoose.connection.close();
             if (redisClient) await redisClient.quit();
-            if (redisPubWS) await redisPubWS.quit();
-            if (redisSubWS) await redisSubWS.quit();
+            // Call the cleanup method mapped from wsSetup.js
+            if (typeof fastify.closeRedisWS === 'function') {
+                await fastify.closeRedisWS(); 
+            }
             fastify.log.info('Clean shutdown complete.');
             process.exit(0);
         } catch (err) {
