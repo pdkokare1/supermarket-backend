@@ -414,7 +414,6 @@ async function productRoutes(fastify, options) {
         }
     });
 
-    // --- PHASE 3: BULK IMPORT (CSV & JSON Support) ---
     fastify.post('/api/products/bulk', { preHandler: [fastify.authenticate, fastify.verifyAdmin] }, async (request, reply) => {
         try {
             if (request.isMultipart && request.isMultipart()) {
@@ -476,7 +475,6 @@ async function productRoutes(fastify, options) {
                 return { success: false, message: 'No valid products found in CSV' };
             }
 
-            // Fallback for legacy JSON arrays
             const { products } = request.body;
             if (!Array.isArray(products)) return reply.status(400).send({ success: false, message: 'Invalid format' });
             
@@ -523,6 +521,60 @@ async function productRoutes(fastify, options) {
         } catch (error) { 
             fastify.log.error(error); 
             reply.status(500).send({ success: false, message: 'Server Error' }); 
+        }
+    });
+
+    // --- PHASE 4: MULTI-STORE STOCK TRANSFER ENGINE ---
+    fastify.post('/api/products/transfer', { preHandler: [fastify.authenticate, fastify.verifyAdmin] }, async (request, reply) => {
+        try {
+            const { productId, variantId, fromStoreId, toStoreId, quantity } = request.body;
+            
+            if (!productId || !variantId || !fromStoreId || !toStoreId || !quantity || quantity <= 0) {
+                return reply.status(400).send({ success: false, message: 'Invalid transfer parameters.' });
+            }
+
+            const product = await Product.findById(productId);
+            if (!product) return reply.status(404).send({ success: false, message: 'Product not found.' });
+
+            const variant = product.variants.id(variantId);
+            if (!variant) return reply.status(404).send({ success: false, message: 'Variant not found.' });
+
+            let fromLoc = variant.locationInventory.find(l => l.storeId.toString() === fromStoreId);
+            let toLoc = variant.locationInventory.find(l => l.storeId.toString() === toStoreId);
+
+            if (!fromLoc || fromLoc.stock < quantity) {
+                return reply.status(400).send({ success: false, message: 'Insufficient stock at source location.' });
+            }
+
+            fromLoc.stock -= quantity;
+            
+            if (toLoc) {
+                toLoc.stock += quantity;
+            } else {
+                variant.locationInventory.push({ storeId: toStoreId, stock: quantity });
+            }
+
+            await product.save();
+            await invalidateProductCache();
+
+            // Record this transfer securely in the Audit Log
+            const AuditLog = require('../models/AuditLog');
+            if (AuditLog) {
+                await AuditLog.create({
+                    action: 'STOCK_TRANSFER',
+                    targetType: 'Product',
+                    targetId: product._id.toString(),
+                    username: request.user ? request.user.username : 'Admin',
+                    details: { variantId, fromStoreId, toStoreId, quantity }
+                }).catch(e => fastify.log.error('AuditLog Error:', e));
+            }
+
+            if (fastify.broadcastToPOS) fastify.broadcastToPOS({ type: 'INVENTORY_UPDATED', productId: product._id, message: 'Stock Transferred' });
+
+            return { success: true, message: 'Stock transferred successfully.' };
+        } catch (error) {
+            fastify.log.error(error);
+            reply.status(500).send({ success: false, message: 'Server Error during stock transfer' });
         }
     });
 
