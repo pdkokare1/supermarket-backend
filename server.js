@@ -166,7 +166,6 @@ fastify.decorate('closeAllSSE', () => {
 fastify.register(async function (fastify) {
     
     fastify.get('/api/ws/pos', { websocket: true }, (connection, req) => {
-        // FIX: Version-agnostic WebSocket binding. Safely handles Fastify 4+ updates.
         const ws = connection.socket || connection; 
         
         (async () => {
@@ -214,7 +213,6 @@ fastify.register(async function (fastify) {
         })();
     });
 
-    // Send Application-Level JSON Pings (Bypasses Nginx/Railway proxy stripping)
     setInterval(() => {
         if (!fastify.websocketServer) return;
         fastify.websocketServer.clients.forEach((client) => {
@@ -237,10 +235,11 @@ fastify.register(require('./routes/shiftRoutes'));
 fastify.register(require('./routes/storeRoutes'));
 fastify.register(require('./routes/registerRoutes'));
 fastify.register(require('./routes/migrateRoute'));
-
-// --- PHASE 4: NEW ENTERPRISE ROUTES ---
 fastify.register(require('./routes/settingsRoutes'));
 fastify.register(require('./routes/auditRoutes'));
+
+// --- PHASE 5: NEW ANALYTICS & AI ROUTES ---
+fastify.register(require('./routes/analyticsRoutes'));
 
 fastify.setErrorHandler(function (error, request, reply) {
     const apmLog = {
