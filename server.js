@@ -6,14 +6,13 @@ require('dotenv').config();
 
 const cluster = require('cluster');
 const os = require('os');
+const connectDB = require('./config/db'); // NEW: Extracted DB Connection
 
 const fastify = Fastify({
     logger: process.env.NODE_ENV === 'production' ? { level: 'error' } : true 
 });
 
 const PORT = process.env.PORT || 3000;
-
-fastify.register(require('@fastify/helmet'));
 
 let redisClient = null;
 try {
@@ -23,65 +22,11 @@ try {
     }
 } catch(e) {}
 
-const rateLimitConfig = {
-    max: 100,
-    timeWindow: '1 minute'
-};
-if (redisClient) {
-    rateLimitConfig.redis = redisClient; 
-}
-fastify.register(require('@fastify/rate-limit'), rateLimitConfig);
-
-const dynamicOrigins = process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : [];
-const allowedOrigins = [
-    'http://localhost:3000',
-    'http://localhost:5173',
-    'http://127.0.0.1:5173',
-    process.env.FRONTEND_URL,
-    ...dynamicOrigins
-].filter(Boolean);
-
-fastify.register(require('@fastify/cors'), { 
-    origin: allowedOrigins, 
-    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    credentials: true,
-    allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'Origin', 'X-Requested-With']
-});
-
-fastify.register(require('@fastify/compress'), { global: true });
-
-fastify.register(require('@fastify/multipart'), {
-    limits: {
-        fileSize: 5 * 1024 * 1024 
-    }
-});
-
-if (process.env.NODE_ENV === 'production' && !process.env.COOKIE_SECRET) {
-    fastify.log.error("CRITICAL SECURITY ALERT: Missing COOKIE_SECRET in production. Shutting down.");
-    process.exit(1);
-}
-fastify.register(require('@fastify/cookie'), {
-    secret: process.env.COOKIE_SECRET || 'dev-fallback-secret-123',
-    hook: 'onRequest'
-});
-
-fastify.register(require('@fastify/websocket'));
-fastify.register(require('@fastify/swagger'), {
-    swagger: {
-        info: { title: 'DailyPick API', description: 'Enterprise Backend API', version: '1.0.0' },
-        consumes: ['application/json'],
-        produces: ['application/json']
-    }
-});
-fastify.register(require('@fastify/swagger-ui'), {
-    routePrefix: '/api/docs',
-    uiConfig: { docExpansion: 'none', deepLinking: false }
-});
-
 // --- Modularized Setups ---
+require('./plugins/middlewareSetup')(fastify, redisClient); // NEW: Extracted Middleware
 require('./plugins/authSetup')(fastify);
 require('./plugins/wsSetup')(fastify);
-require('./plugins/errorHandler')(fastify); // NEW: Extracted Error Handler
+require('./plugins/errorHandler')(fastify);
 
 // --- Global State ---
 let latestInventoryReport = {
@@ -97,7 +42,7 @@ fastify.register(require('./routes/systemRoutes'), {
 });
 
 // --- Feature Routes ---
-fastify.register(require('./routes')); // NEW: Loads all routes from routes/index.js
+fastify.register(require('./routes')); 
 
 const listeners = ['SIGINT', 'SIGTERM'];
 listeners.forEach((signal) => {
@@ -117,7 +62,6 @@ listeners.forEach((signal) => {
             await fastify.close();
             await mongoose.connection.close();
             if (redisClient) await redisClient.quit();
-            // Call the cleanup method mapped from wsSetup.js
             if (typeof fastify.closeRedisWS === 'function') {
                 await fastify.closeRedisWS(); 
             }
@@ -130,27 +74,8 @@ listeners.forEach((signal) => {
     });
 });
 
-const connectDB = async () => {
-    if (mongoose.connection.readyState === 1 || mongoose.connection.readyState === 2) return true;
-    let retries = 5;
-    while (retries) {
-        try {
-            await mongoose.connect(process.env.MONGO_URI, {
-                maxPoolSize: 50
-            });
-            fastify.log.info(`Successfully connected to MongoDB Atlas by Process ${process.pid}`);
-            return true;
-        } catch (err) {
-            console.error(`CRITICAL ERROR CONNECTING TO MONGODB. Retries left: ${retries - 1}`, err.message);
-            retries -= 1;
-            if (retries === 0) process.exit(1);
-            await new Promise(res => setTimeout(res, 5000));
-        }
-    }
-};
-
 const startServer = async () => {
-    await connectDB();
+    await connectDB(fastify);
     
     // --- PHASE 6: Initialize Automated Cloud Backups ---
     require('./jobs/backupCron')(fastify);
@@ -164,7 +89,7 @@ const startServer = async () => {
 };
 
 if (process.env.ENABLE_CLUSTERING === 'true' && cluster.isPrimary) {
-    connectDB().then(() => {
+    connectDB(fastify).then(() => {
         require('./jobs/cronScheduler')(fastify, (newReport) => {
             latestInventoryReport = newReport;
         });
@@ -182,7 +107,7 @@ if (process.env.ENABLE_CLUSTERING === 'true' && cluster.isPrimary) {
         });
     });
 } else if (process.env.ENABLE_CLUSTERING !== 'true') {
-    connectDB().then(() => {
+    connectDB(fastify).then(() => {
         require('./jobs/cronScheduler')(fastify, (newReport) => {
             latestInventoryReport = newReport;
         });
