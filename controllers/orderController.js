@@ -8,6 +8,37 @@ const AuditLog = require('../models/AuditLog');
 const { Parser } = require('json2csv'); 
 const sseService = require('../services/orderSseService');
 
+// ==========================================
+// --- NEW HELPER FUNCTIONS (OPTIMIZATION) ---
+// ==========================================
+
+// Helper 1: Centralized Redis Cache Invalidation
+async function clearAnalyticsCache() {
+    if (sseService.redisCache) {
+        try { await sseService.redisCache.del('orders:analytics'); } catch(e) {}
+    }
+}
+
+// Helper 2: Centralized WhatsApp Notification using CallMeBot
+function sendWhatsAppMessage(phone, msg) {
+    if (phone && phone.length >= 10 && process.env.CALLMEBOT_API_KEY && process.env.WA_PHONE_NUMBER) {
+        const waUrl = `https://api.callmebot.com/whatsapp.php?phone=${phone}&text=${encodeURIComponent(msg)}&apikey=${process.env.CALLMEBOT_API_KEY}`;
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 3000);
+        fetch(waUrl, { signal: controller.signal }).catch(() => {}).finally(() => clearTimeout(timeoutId)); 
+    }
+}
+
+// Helper 3: Centralized Order Number Generation
+async function generateOrderSequence(session) {
+    const counter = await mongoose.model('OrderCounter').findByIdAndUpdate(
+        { _id: 'orderId' },
+        { $inc: { seq: 1 } },
+        { new: true, upsert: true, session }
+    );
+    return counter.seq;
+}
+
 // --- OPTIMIZATION: Consolidated Reusable Inventory Logic ---
 async function deductInventory(items, storeId, session) {
     for (const item of items) {
@@ -47,6 +78,10 @@ async function deductInventory(items, storeId, session) {
     }
     return { success: true };
 }
+
+// ==========================================
+// --- CONTROLLER EXPORTS ---
+// ==========================================
 
 exports.streamAdmin = async (request, reply) => {
     reply.hijack(); 
@@ -104,13 +139,8 @@ exports.externalCheckout = async (request, reply) => {
             return reply.status(400).send(inventoryCheck);
         }
 
-        const counter = await mongoose.model('OrderCounter').findByIdAndUpdate(
-            { _id: 'orderId' },
-            { $inc: { seq: 1 } },
-            { new: true, upsert: true, session }
-        );
-        
-        const orderNumber = `EXT-${source.toUpperCase().substring(0, 3)}-${counter.seq}`;
+        const seqNumber = await generateOrderSequence(session);
+        const orderNumber = `EXT-${source.toUpperCase().substring(0, 3)}-${seqNumber}`;
         const dateString = new Date().toISOString().split('T')[0];
         const formattedNotes = `[${source.toUpperCase()}] Ext ID: ${externalOrderId || 'N/A'}. ${notes || ''}`;
 
@@ -125,9 +155,7 @@ exports.externalCheckout = async (request, reply) => {
         await session.commitTransaction();
         session.endSession();
         
-        if (sseService.redisCache) {
-            try { await sseService.redisCache.del('orders:analytics'); } catch(e) {}
-        }
+        await clearAnalyticsCache();
         
         const payload = JSON.stringify({ type: 'NEW_ORDER', order: newOrder, source: source });
         sseService.publishEvent('admin', payload, { storeId });
@@ -180,12 +208,8 @@ exports.onlineCheckout = async (request, reply) => {
             return reply.status(400).send(inventoryCheck);
         }
 
-        const counter = await mongoose.model('OrderCounter').findByIdAndUpdate(
-            { _id: 'orderId' },
-            { $inc: { seq: 1 } },
-            { new: true, upsert: true, session }
-        );
-        const orderNumber = `ORD-${counter.seq}`;
+        const seqNumber = await generateOrderSequence(session);
+        const orderNumber = `ORD-${seqNumber}`;
         const dateString = new Date().toISOString().split('T')[0];
 
         const newOrder = new Order({
@@ -198,23 +222,15 @@ exports.onlineCheckout = async (request, reply) => {
         await session.commitTransaction();
         session.endSession();
         
-        if (sseService.redisCache) {
-            try { await sseService.redisCache.del('orders:analytics'); } catch(e) {}
-        }
+        await clearAnalyticsCache();
         
         const payload = JSON.stringify({ type: 'NEW_ORDER', order: newOrder });
         sseService.publishEvent('admin', payload, { storeId });
 
         if (request.server.broadcastToPOS) request.server.broadcastToPOS({ type: 'NEW_ORDER', orderId: newOrder._id, storeId: storeId });
 
-        if (customerPhone && customerPhone.length >= 10 && process.env.CALLMEBOT_API_KEY && process.env.WA_PHONE_NUMBER) {
-            const msg = `DailyPick Order Received! 🛒\nOrder ID: ${newOrder.orderNumber}\nTotal: ₹${totalAmount}\nDelivery: ${scheduleTime}\nThanks for shopping!`;
-            const waUrl = `https://api.callmebot.com/whatsapp.php?phone=${customerPhone}&text=${encodeURIComponent(msg)}&apikey=${process.env.CALLMEBOT_API_KEY}`;
-            
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 3000);
-            fetch(waUrl, { signal: controller.signal }).catch(() => {}).finally(() => clearTimeout(timeoutId)); 
-        }
+        const msg = `DailyPick Order Received! 🛒\nOrder ID: ${newOrder.orderNumber}\nTotal: ₹${totalAmount}\nDelivery: ${scheduleTime}\nThanks for shopping!`;
+        sendWhatsAppMessage(customerPhone, msg);
 
         return { success: true, message: 'Order Placed Successfully', orderId: newOrder._id };
     } catch (error) {
@@ -272,12 +288,8 @@ exports.posCheckout = async (request, reply) => {
             return reply.status(400).send(inventoryCheck);
         }
 
-        const counter = await mongoose.model('OrderCounter').findByIdAndUpdate(
-            { _id: 'orderId' },
-            { $inc: { seq: 1 } },
-            { new: true, upsert: true, session }
-        );
-        const orderNumber = `ORD-${counter.seq}`;
+        const seqNumber = await generateOrderSequence(session);
+        const orderNumber = `ORD-${seqNumber}`;
         const dateString = new Date().toISOString().split('T')[0];
 
         const newOrder = new Order({
@@ -291,21 +303,13 @@ exports.posCheckout = async (request, reply) => {
         await session.commitTransaction();
         session.endSession();
         
-        if (sseService.redisCache) {
-            try { await sseService.redisCache.del('orders:analytics'); } catch(e) {}
-        }
+        await clearAnalyticsCache();
 
         if (request.server.broadcastToPOS) request.server.broadcastToPOS({ type: 'NEW_ORDER', orderId: newOrder._id, source: 'POS', storeId: storeId });
 
-        if (customerPhone && customerPhone.length >= 10 && process.env.CALLMEBOT_API_KEY && process.env.WA_PHONE_NUMBER) {
-            const loyaltyMsg = pointsRedeemed > 0 ? ` Points Redeemed: ${pointsRedeemed}.` : '';
-            const msg = `Thank you for shopping at DailyPick! 🛒\nOrder: ${newOrder.orderNumber}\nTotal: ₹${totalAmount}\n${loyaltyMsg}\nVisit again!`;
-            const waUrl = `https://api.callmebot.com/whatsapp.php?phone=${customerPhone}&text=${encodeURIComponent(msg)}&apikey=${process.env.CALLMEBOT_API_KEY}`;
-            
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 3000);
-            fetch(waUrl, { signal: controller.signal }).catch(() => {}).finally(() => clearTimeout(timeoutId)); 
-        }
+        const loyaltyMsg = pointsRedeemed > 0 ? ` Points Redeemed: ${pointsRedeemed}.` : '';
+        const msg = `Thank you for shopping at DailyPick! 🛒\nOrder: ${newOrder.orderNumber}\nTotal: ₹${totalAmount}\n${loyaltyMsg}\nVisit again!`;
+        sendWhatsAppMessage(customerPhone, msg);
 
         return { success: true, message: 'POS Transaction Complete', orderId: newOrder._id, orderData: newOrder };
     } catch (error) {
@@ -441,7 +445,8 @@ exports.partialRefund = async (request, reply) => {
         await session.commitTransaction();
         session.endSession();
         
-        if (sseService.redisCache) { try { await sseService.redisCache.del('orders:analytics'); } catch(e) {} }
+        await clearAnalyticsCache();
+        
         return { success: true, message: 'Item Partially Refunded', data: order };
     } catch (error) {
         await session.abortTransaction();
@@ -506,9 +511,7 @@ exports.cancelOrder = async (request, reply) => {
         await session.commitTransaction();
         session.endSession();
         
-        if (sseService.redisCache) {
-            try { await sseService.redisCache.del('orders:analytics'); } catch(e) {}
-        }
+        await clearAnalyticsCache();
 
         const payload = JSON.stringify({ type: 'STATUS_UPDATE', status: 'Cancelled' });
         sseService.publishEvent('customer', payload, { orderId: order._id });
