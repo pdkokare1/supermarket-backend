@@ -5,12 +5,24 @@ const Distributor = require('../models/Distributor');
 const AuditLog = require('../models/AuditLog');
 const cacheService = require('../services/productCacheService');
 
-// --- OPTIMIZATION: Reusable POS Broadcast Logic ---
-const broadcastInventoryUpdate = (request, payload) => {
+// ==========================================
+// --- NEW HELPER FUNCTIONS (OPTIMIZATION) ---
+// ==========================================
+
+// --- OPTIMIZATION: Consolidated Cache & POS Broadcast Logic ---
+const syncAndBroadcast = async (request, productId, extraPayload = {}) => {
+    // 1. Invalidate cache globally
+    await cacheService.invalidateProductCache();
+    
+    // 2. Broadcast to connected POS devices
     if (request.server.broadcastToPOS) {
-        request.server.broadcastToPOS({ type: 'INVENTORY_UPDATED', ...payload });
+        request.server.broadcastToPOS({ type: 'INVENTORY_UPDATED', productId, ...extraPayload });
     }
 };
+
+// ==========================================
+// --- CONTROLLER EXPORTS ---
+// ==========================================
 
 exports.getProducts = async (request, reply) => {
     try {
@@ -104,9 +116,8 @@ exports.createProduct = async (request, reply) => {
         });
         
         await newProduct.save();
-        await cacheService.invalidateProductCache(); 
         
-        broadcastInventoryUpdate(request, { productId: newProduct._id });
+        await syncAndBroadcast(request, newProduct._id);
         
         return { success: true, message: 'Product added', data: newProduct };
     } catch (error) { 
@@ -130,9 +141,7 @@ exports.updateProduct = async (request, reply) => {
         
         if (!updatedProduct) return reply.status(404).send({ success: false, message: 'Product Not found' });
         
-        await cacheService.invalidateProductCache(); 
-        
-        broadcastInventoryUpdate(request, { productId: updatedProduct._id });
+        await syncAndBroadcast(request, updatedProduct._id);
 
         return { success: true, message: 'Product updated', data: updatedProduct };
     } catch (error) { 
@@ -150,9 +159,7 @@ exports.archiveProduct = async (request, reply) => {
         product.isActive = false; 
         await product.save();
         
-        await cacheService.invalidateProductCache(); 
-        
-        broadcastInventoryUpdate(request, { productId: product._id });
+        await syncAndBroadcast(request, product._id);
 
         return { success: true, message: `Product archived securely`, data: product };
     } catch (error) { 
@@ -202,9 +209,7 @@ exports.restockProduct = async (request, reply) => {
             );
         }
 
-        await cacheService.invalidateProductCache(); 
-        
-        broadcastInventoryUpdate(request, { productId: product._id, message: 'Stock Refilled', storeId: storeId });
+        await syncAndBroadcast(request, product._id, { message: 'Stock Refilled', storeId: storeId });
 
         return { success: true, message: 'Restock processed successfully', data: product };
     } catch (error) { 
@@ -237,9 +242,8 @@ exports.rtvProduct = async (request, reply) => {
         }
         
         await product.save();
-        await cacheService.invalidateProductCache(); 
         
-        broadcastInventoryUpdate(request, { productId: product._id, message: 'Stock Returned', storeId: storeId });
+        await syncAndBroadcast(request, product._id, { message: 'Stock Returned', storeId: storeId });
 
         return { success: true, message: 'RTV processed successfully', data: product };
     } catch (error) { 
@@ -256,9 +260,7 @@ exports.toggleProductStatus = async (request, reply) => {
         product.isActive = !product.isActive; 
         await product.save();
         
-        await cacheService.invalidateProductCache(); 
-        
-        broadcastInventoryUpdate(request, { productId: product._id });
+        await syncAndBroadcast(request, product._id);
 
         return { success: true, message: `Product Status Toggled`, data: product };
     } catch (error) { 
@@ -297,8 +299,7 @@ exports.transferStock = async (request, reply) => {
         }
 
         await product.save();
-        await cacheService.invalidateProductCache();
-
+        
         if (AuditLog) {
             await AuditLog.create({
                 action: 'STOCK_TRANSFER',
@@ -309,7 +310,7 @@ exports.transferStock = async (request, reply) => {
             }).catch(e => request.server.log.error('AuditLog Error:', e));
         }
 
-        broadcastInventoryUpdate(request, { productId: product._id, message: 'Stock Transferred' });
+        await syncAndBroadcast(request, product._id, { message: 'Stock Transferred' });
 
         return { success: true, message: 'Stock transferred successfully.' };
     } catch (error) {
