@@ -81,6 +81,7 @@ fastify.register(require('@fastify/swagger-ui'), {
 // --- Modularized Setups ---
 require('./plugins/authSetup')(fastify);
 require('./plugins/wsSetup')(fastify);
+require('./plugins/errorHandler')(fastify); // NEW: Extracted Error Handler
 
 // --- Global State ---
 let latestInventoryReport = {
@@ -96,45 +97,7 @@ fastify.register(require('./routes/systemRoutes'), {
 });
 
 // --- Feature Routes ---
-fastify.register(require('./routes/productRoutes'));
-fastify.register(require('./routes/productOpsRoutes')); 
-fastify.register(require('./routes/orderRoutes'));
-fastify.register(require('./routes/customerRoutes')); 
-fastify.register(require('./routes/categoryRoutes'));
-fastify.register(require('./routes/brandRoutes')); 
-fastify.register(require('./routes/distributorRoutes')); 
-fastify.register(require('./routes/expenseRoutes')); 
-fastify.register(require('./routes/authRoutes')); 
-fastify.register(require('./routes/staffRoutes')); // NEW: Extracted Staff Management logic
-fastify.register(require('./routes/promotionRoutes')); 
-fastify.register(require('./routes/shiftRoutes'));
-fastify.register(require('./routes/storeRoutes'));
-fastify.register(require('./routes/registerRoutes'));
-fastify.register(require('./routes/migrateRoute'));
-fastify.register(require('./routes/settingsRoutes'));
-fastify.register(require('./routes/auditRoutes'));
-fastify.register(require('./routes/analyticsRoutes'));
-
-fastify.setErrorHandler(function (error, request, reply) {
-    const apmLog = {
-        event: 'CRITICAL_ERROR',
-        timestamp: new Date().toISOString(),
-        method: request.method,
-        url: request.url,
-        userId: request.user ? request.user.id : 'Unauthenticated',
-        errorName: error.name,
-        errorMessage: error.message,
-        payload: request.body ? '[REDACTED]' : null 
-    };
-    
-    fastify.log.error(`[APM MONITOR] ${JSON.stringify(apmLog)}`);
-    if (process.env.NODE_ENV !== 'production') fastify.log.error(error); 
-
-    reply.status(error.statusCode || 500).send({
-        success: false,
-        message: error.message || 'Internal Server Error'
-    });
-});
+fastify.register(require('./routes')); // NEW: Loads all routes from routes/index.js
 
 const listeners = ['SIGINT', 'SIGTERM'];
 listeners.forEach((signal) => {
