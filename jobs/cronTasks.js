@@ -20,6 +20,57 @@ cloudinary.config({
     api_secret: process.env.CLOUDINARY_API_SECRET
 });
 
+// ==========================================
+// --- NEW HELPER FUNCTIONS (OPTIMIZATION) ---
+// ==========================================
+
+async function sendAdminEmail(fastify, subject, htmlContent, textContent) {
+    if (process.env.EMAIL_USER && process.env.EMAIL_PASS && process.env.TARGET_EMAIL) {
+        try {
+            const transporter = nodemailer.createTransport({
+                service: 'gmail',
+                auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS }
+            });
+            
+            const mailOptions = {
+                from: `"DailyPick Server" <${process.env.EMAIL_USER}>`,
+                to: process.env.TARGET_EMAIL,
+                subject: subject
+            };
+            
+            if (htmlContent) mailOptions.html = htmlContent;
+            if (textContent) mailOptions.text = textContent;
+
+            await transporter.sendMail(mailOptions);
+            return true;
+        } catch (emailErr) {
+            if (fastify) fastify.log.error('Failed to send Admin Email:', emailErr);
+            return false;
+        }
+    }
+    return false;
+}
+
+async function sendAdminWhatsApp(fastify, messageText) {
+    if (process.env.WA_PHONE_NUMBER && process.env.CALLMEBOT_API_KEY) {
+        try {
+            const encodedText = encodeURIComponent(messageText);
+            const waUrl = `https://api.callmebot.com/whatsapp.php?phone=${process.env.WA_PHONE_NUMBER}&text=${encodedText}&apikey=${process.env.CALLMEBOT_API_KEY}`;
+            
+            await fetch(waUrl);
+            return true;
+        } catch (waErr) {
+            if (fastify) fastify.log.error('Failed to send Admin WhatsApp:', waErr);
+            return false;
+        }
+    }
+    return false;
+}
+
+// ==========================================
+// --- CRON JOB EXPORTS ---
+// ==========================================
+
 async function runWithLock(jobName, fastify, task) {
     try {
         const lockSchema = new mongoose.Schema({ jobName: { type: String, unique: true }, lockedAt: Date });
@@ -281,12 +332,7 @@ async function runDailyInventory(fastify, updateInventoryReport) {
             });
         }
 
-        if (lowStockItems.length > 0 && process.env.EMAIL_USER && process.env.EMAIL_PASS && process.env.TARGET_EMAIL) {
-            const transporter = nodemailer.createTransport({
-                service: 'gmail',
-                auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS }
-            });
-            
+        if (lowStockItems.length > 0) {
             let htmlList = lowStockItems.map(item => `<li><strong>${item.name} (${item.variant})</strong> - Stock: <span style="color:red;">${item.stock}</span> (Runway: ${item.daysLeft} days)</li>`).join('');
             
             const htmlContent = `
@@ -296,13 +342,8 @@ async function runDailyInventory(fastify, updateInventoryReport) {
                 <p>Log in to the DailyPick Admin Panel to process Supplier Purchase Orders.</p>
             `;
 
-            await transporter.sendMail({
-                from: `"DailyPick Server" <${process.env.EMAIL_USER}>`,
-                to: process.env.TARGET_EMAIL,
-                subject: `⚠️ Action Required: ${lowStockItems.length} items need restock`, 
-                html: htmlContent
-            });
-            fastify.log.info('9:00 AM Low Stock Email Alert sent successfully.');
+            const emailSent = await sendAdminEmail(fastify, `⚠️ Action Required: ${lowStockItems.length} items need restock`, htmlContent);
+            if (emailSent) fastify.log.info('9:00 AM Low Stock Email Alert sent successfully.');
         }
 
         fastify.log.info(`CRON REPORT: ${lowStockItems.length} Low Stock, ${deadStockItems.length} Dead Stock.`);
@@ -391,48 +432,18 @@ async function runEODBackup(fastify) {
             fastify.log.error('Cloudinary Backup Failed:', cloudinaryErr);
             emailAppend = `\n\n(Warning: Secure Cloudinary Backups failed. Check API Keys.)`;
             
-            if (process.env.WA_PHONE_NUMBER && process.env.CALLMEBOT_API_KEY) {
-                try {
-                    const errorText = encodeURIComponent(`CRITICAL: Cloudinary Backup Failed for ${dateString}.`);
-                    await fetch(`https://api.callmebot.com/whatsapp.php?phone=${process.env.WA_PHONE_NUMBER}&text=${errorText}&apikey=${process.env.CALLMEBOT_API_KEY}`);
-                } catch(e) {}
-            }
+            await sendAdminWhatsApp(fastify, `CRITICAL: Cloudinary Backup Failed for ${dateString}.`);
         } finally {
             if (productsPath && fs.existsSync(productsPath)) fs.unlinkSync(productsPath);
             if (customersPath && fs.existsSync(customersPath)) fs.unlinkSync(customersPath);
             if (ordersPath && fs.existsSync(ordersPath)) fs.unlinkSync(ordersPath);
         }
 
-        if (process.env.EMAIL_USER && process.env.EMAIL_PASS && process.env.TARGET_EMAIL) {
-            try {
-                const transporter = nodemailer.createTransport({
-                    service: 'gmail',
-                    auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS }
-                });
-                
-                await transporter.sendMail({
-                    from: `"DailyPick Server" <${process.env.EMAIL_USER}>`,
-                    to: process.env.TARGET_EMAIL,
-                    subject: `EOD Report & Backup: ₹${netProfit.toFixed(2)} Net Profit`, 
-                    text: reportText + emailAppend
-                });
-                fastify.log.info('11:59 PM EOD Email sent successfully.');
-            } catch (emailErr) {
-                fastify.log.error('Failed to send EOD Email:', emailErr);
-            }
-        }
+        const emailSent = await sendAdminEmail(fastify, `EOD Report & Backup: ₹${netProfit.toFixed(2)} Net Profit`, null, reportText + emailAppend);
+        if (emailSent) fastify.log.info('11:59 PM EOD Email sent successfully.');
 
-        if (process.env.WA_PHONE_NUMBER && process.env.CALLMEBOT_API_KEY) {
-            try {
-                const encodedText = encodeURIComponent(reportText + `Great work today! 🚀`);
-                const waUrl = `https://api.callmebot.com/whatsapp.php?phone=${process.env.WA_PHONE_NUMBER}&text=${encodedText}&apikey=${process.env.CALLMEBOT_API_KEY}`;
-                
-                await fetch(waUrl);
-                fastify.log.info('EOD WhatsApp sent successfully.');
-            } catch (waErr) {
-                fastify.log.error('Failed to send EOD WhatsApp:', waErr);
-            }
-        }
+        const waSent = await sendAdminWhatsApp(fastify, reportText + `Great work today! 🚀`);
+        if (waSent) fastify.log.info('EOD WhatsApp sent successfully.');
 
     } catch (err) {
         fastify.log.error('11:59 PM EOD CRON Job Error:', err);
