@@ -5,6 +5,29 @@ const bcrypt = require('bcrypt');
 const crypto = require('crypto');
 const AuditLog = require('../models/AuditLog'); 
 
+// ==========================================
+// --- NEW HELPER FUNCTIONS (OPTIMIZATION) ---
+// ==========================================
+
+// --- OPTIMIZATION: Centralized Audit Logging ---
+const logAuthEvent = async (request, action, targetId, username, details = {}, userId = null) => {
+    const logEntry = {
+        action,
+        targetType: 'Auth',
+        targetId,
+        username: username || 'Unknown'
+    };
+    
+    if (Object.keys(details).length > 0) logEntry.details = details;
+    if (userId) logEntry.userId = userId;
+
+    await AuditLog.create(logEntry).catch(e => request.server.log.error('AuditLog Error:', e));
+};
+
+// ==========================================
+// --- CONTROLLER EXPORTS ---
+// ==========================================
+
 exports.setupAdmin = async (request, reply) => {
     try {
         if (process.env.NODE_ENV === 'production') {
@@ -55,26 +78,12 @@ exports.login = async (request, reply) => {
         }).collation({ locale: 'en', strength: 2 }); 
         
         if (!user) {
-            await AuditLog.create({ 
-                action: 'FAILED_LOGIN_ATTEMPT', 
-                targetType: 'Auth', 
-                targetId: 'Login', 
-                username: safeUsername || 'Unknown', 
-                details: { ip: request.ip, reason: 'User not found' } 
-            }).catch(e => request.server.log.error('AuditLog Error:', e));
-
+            await logAuthEvent(request, 'FAILED_LOGIN_ATTEMPT', 'Login', safeUsername, { ip: request.ip, reason: 'User not found' });
             return reply.status(401).send({ success: false, message: 'Invalid Username or PIN.' });
         }
 
         if (user.isLocked) {
-            await AuditLog.create({ 
-                action: 'FAILED_LOGIN_ATTEMPT', 
-                targetType: 'Auth', 
-                targetId: user._id.toString(), 
-                username: user.username, 
-                details: { ip: request.ip, reason: 'Account locked' } 
-            }).catch(e => request.server.log.error('AuditLog Error:', e));
-
+            await logAuthEvent(request, 'FAILED_LOGIN_ATTEMPT', user._id.toString(), user.username, { ip: request.ip, reason: 'Account locked' });
             return reply.status(403).send({ 
                 success: false, 
                 message: 'Account locked due to too many failed attempts. Try again in 15 minutes.' 
@@ -100,14 +109,7 @@ exports.login = async (request, reply) => {
             }
             await user.save();
 
-            await AuditLog.create({ 
-                action: 'FAILED_LOGIN_ATTEMPT', 
-                targetType: 'Auth', 
-                targetId: user._id.toString(), 
-                username: user.username, 
-                details: { ip: request.ip, reason: 'Invalid PIN' } 
-            }).catch(e => request.server.log.error('AuditLog Error:', e));
-
+            await logAuthEvent(request, 'FAILED_LOGIN_ATTEMPT', user._id.toString(), user.username, { ip: request.ip, reason: 'Invalid PIN' });
             return reply.status(401).send({ success: false, message: 'Invalid Username or PIN.' });
         }
         
@@ -135,14 +137,7 @@ exports.login = async (request, reply) => {
             tokenVersion: user.tokenVersion || 0 
         }, { expiresIn: '7d' }); 
         
-        await AuditLog.create({ 
-            userId: user._id, 
-            username: user.username, 
-            action: 'SUCCESSFUL_LOGIN', 
-            targetType: 'Auth', 
-            targetId: user._id.toString(), 
-            details: { role: user.role, ip: request.ip } 
-        }).catch(e => request.server.log.error('AuditLog Error:', e));
+        await logAuthEvent(request, 'SUCCESSFUL_LOGIN', user._id.toString(), user.username, { role: user.role, ip: request.ip }, user._id);
 
         return { success: true, message: 'Login successful', data: user, token: token };
         
@@ -188,13 +183,7 @@ exports.logout = async (request, reply) => {
             user.tokenVersion = (user.tokenVersion || 0) + 1;
             await user.save();
             
-            await AuditLog.create({ 
-                userId: user._id, 
-                username: user.username, 
-                action: 'LOGOUT', 
-                targetType: 'Auth', 
-                targetId: user._id.toString()
-            }).catch(e => request.server.log.error('AuditLog Error:', e));
+            await logAuthEvent(request, 'LOGOUT', user._id.toString(), user.username, {}, user._id);
         }
 
         reply.clearCookie('refreshToken', { path: '/' });
