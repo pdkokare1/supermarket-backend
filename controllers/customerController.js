@@ -1,28 +1,11 @@
 /* controllers/customerController.js */
 
-const Customer = require('../models/Customer');
-const Order = require('../models/Order');
 const { Parser } = require('json2csv');
+const customerService = require('../services/customerService');
 
 exports.getCustomersFromOrders = async (request, reply) => {
     try {
-        const customerList = await Order.aggregate([
-            { $match: { status: { $ne: 'Cancelled' } } },
-            { $sort: { createdAt: 1 } }, 
-            { 
-                $group: {
-                    _id: { $ifNull: ["$customerPhone", "Unknown"] },
-                    name: { $last: { $ifNull: ["$customerName", "Guest"] } },
-                    phone: { $last: { $ifNull: ["$customerPhone", "Unknown"] } },
-                    orderCount: { $sum: 1 },
-                    lifetimeValue: { $sum: "$totalAmount" },
-                    lastOrderDate: { $max: "$createdAt" }
-                }
-            },
-            { $sort: { lifetimeValue: -1 } },
-            { $project: { _id: 0 } } 
-        ]);
-
+        const customerList = await customerService.getAggregatedCustomers();
         return { success: true, count: customerList.length, data: customerList };
     } catch (error) {
         request.server.log.error('CRM Error:', error);
@@ -32,7 +15,7 @@ exports.getCustomersFromOrders = async (request, reply) => {
 
 exports.exportCustomers = async (request, reply) => {
     try {
-        const customers = await Customer.find({}).lean();
+        const customers = await customerService.getAllCustomers();
         const exportData = customers.map(c => ({
             Name: c.name,
             Phone: c.phone,
@@ -43,8 +26,7 @@ exports.exportCustomers = async (request, reply) => {
             JoinedDate: new Date(c.createdAt).toLocaleDateString()
         }));
 
-        const json2csvParser = new Parser();
-        const csv = json2csvParser.parse(exportData);
+        const csv = new Parser().parse(exportData);
 
         reply.header('Content-Type', 'text/csv');
         reply.header('Content-Disposition', `attachment; filename="customers_export_${new Date().toISOString().split('T')[0]}.csv"`);
@@ -57,9 +39,8 @@ exports.exportCustomers = async (request, reply) => {
 
 exports.getProfile = async (request, reply) => {
     try {
-        const cust = await Customer.findOne({ phone: request.params.phone }).lean();
-        if (!cust) return { success: true, data: null }; 
-        return { success: true, data: cust };
+        const cust = await customerService.getCustomerByPhone(request.params.phone);
+        return { success: true, data: cust || null };
     } catch (error) {
         reply.status(500).send({ success: false, message: 'Error fetching profile' });
     }
@@ -68,19 +49,7 @@ exports.getProfile = async (request, reply) => {
 exports.updateLimit = async (request, reply) => {
     try {
         const { isCreditEnabled, creditLimit, name } = request.body;
-        let cust = await Customer.findOne({ phone: request.params.phone });
-        
-        if (!cust) {
-            cust = new Customer({ 
-                phone: request.params.phone, 
-                name: name || 'Valued Customer' 
-            });
-        }
-        
-        cust.isCreditEnabled = isCreditEnabled;
-        cust.creditLimit = Number(creditLimit);
-        await cust.save();
-        
+        const cust = await customerService.updateCustomerLimit(request.params.phone, name, isCreditEnabled, creditLimit);
         return { success: true, data: cust };
     } catch (error) {
         reply.status(500).send({ success: false, message: 'Error updating limit' });
@@ -89,24 +58,17 @@ exports.updateLimit = async (request, reply) => {
 
 exports.recordPayment = async (request, reply) => {
     try {
-        const { amount } = request.body;
-        let cust = await Customer.findOne({ phone: request.params.phone });
-        
-        if (!cust) return reply.status(404).send({ success: false, message: 'Customer not found.' });
-        
-        cust.creditUsed -= Number(amount);
-        if (cust.creditUsed < 0) cust.creditUsed = 0; 
-        
-        await cust.save();
+        const cust = await customerService.recordPayment(request.params.phone, request.body.amount);
         return { success: true, data: cust, message: 'Payment recorded successfully' };
     } catch (error) {
+        if (error.message === 'Customer not found.') return reply.status(404).send({ success: false, message: error.message });
         reply.status(500).send({ success: false, message: 'Error recording payment' });
     }
 };
 
 exports.getAllCustomers = async (request, reply) => {
     try {
-        const customers = await Customer.find({}).lean();
+        const customers = await customerService.getAllCustomers();
         return { success: true, count: customers.length, data: customers };
     } catch (error) {
         request.server.log.error('CRM Error:', error);
