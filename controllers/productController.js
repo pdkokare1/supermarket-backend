@@ -1,23 +1,57 @@
 /* controllers/productController.js */
 
 const Product = require('../models/Product');
-const Distributor = require('../models/Distributor');
-const AuditLog = require('../models/AuditLog');
+const crypto = require('crypto');
 const cacheService = require('../services/productCacheService');
+const inventoryService = require('../services/inventoryService'); // NEW IMPORT
 
 // ==========================================
-// --- NEW HELPER FUNCTIONS (OPTIMIZATION) ---
+// --- HELPER FUNCTIONS ---
 // ==========================================
 
-// --- OPTIMIZATION: Consolidated Cache & POS Broadcast Logic ---
 const syncAndBroadcast = async (request, productId, extraPayload = {}) => {
-    // 1. Invalidate cache globally
     await cacheService.invalidateProductCache();
-    
-    // 2. Broadcast to connected POS devices
     if (request.server.broadcastToPOS) {
         request.server.broadcastToPOS({ type: 'INVENTORY_UPDATED', productId, ...extraPayload });
     }
+};
+
+// OPTIMIZATION: Extracted query building logic out of the main controller
+const buildProductQuery = (queryObj) => {
+    let filter = queryObj.all === 'true' 
+        ? { isArchived: { $ne: true } } 
+        : { isActive: true, isArchived: { $ne: true } };
+    
+    if (queryObj.search) { 
+        filter.$or = [ 
+            { name: { $regex: queryObj.search, $options: 'i' } }, 
+            { searchTags: { $regex: queryObj.search, $options: 'i' } } 
+        ]; 
+    }
+    
+    if (queryObj.category && queryObj.category !== 'All') filter.category = queryObj.category; 
+    if (queryObj.brand && queryObj.brand !== 'All') filter.brand = queryObj.brand;
+    if (queryObj.distributor && queryObj.distributor !== 'All') filter.distributorName = queryObj.distributor;
+
+    if (queryObj.stockStatus === 'out') {
+        filter['variants.stock'] = { $lte: 0 };
+    } else if (queryObj.stockStatus === 'dead') {
+        filter['variants.stock'] = { $gt: 15 };
+    } else if (queryObj.stockStatus === 'low') {
+        filter.$expr = {
+            $anyElementTrue: {
+                $map: {
+                    input: "$variants", as: "v", in: {
+                        $and: [
+                            { $gt: ["$$v.stock", 0] },
+                            { $lte: ["$$v.stock", { $ifNull: ["$$v.lowStockThreshold", 5] }] }
+                        ]
+                    }
+                }
+            }
+        };
+    }
+    return filter;
 };
 
 // ==========================================
@@ -26,54 +60,16 @@ const syncAndBroadcast = async (request, productId, extraPayload = {}) => {
 
 exports.getProducts = async (request, reply) => {
     try {
-        const sortedQuery = Object.keys(request.query).sort().reduce((acc, key) => {
-            acc[key] = request.query[key];
-            return acc;
-        }, {});
-        
-        const cacheKey = `products:${JSON.stringify(sortedQuery)}`;
+        // OPTIMIZATION: Faster cache key generation using native hashing instead of sorting object keys
+        const queryHash = crypto.createHash('md5').update(JSON.stringify(request.query)).digest('hex');
+        const cacheKey = `products:${queryHash}`;
+
         if (cacheService.redisCache) {
             const cachedResponse = await cacheService.redisCache.get(cacheKey);
-            if (cachedResponse) {
-                return JSON.parse(cachedResponse);
-            }
+            if (cachedResponse) return JSON.parse(cachedResponse);
         }
 
-        let filter = request.query.all === 'true' 
-            ? { isArchived: { $ne: true } } 
-            : { isActive: true, isArchived: { $ne: true } };
-        
-        if (request.query.search) { 
-            filter.$or = [ 
-                { name: { $regex: request.query.search, $options: 'i' } }, 
-                { searchTags: { $regex: request.query.search, $options: 'i' } } 
-            ]; 
-        }
-        
-        if (request.query.category && request.query.category !== 'All') filter.category = request.query.category; 
-        if (request.query.brand && request.query.brand !== 'All') filter.brand = request.query.brand;
-        if (request.query.distributor && request.query.distributor !== 'All') filter.distributorName = request.query.distributor;
-
-        if (request.query.stockStatus === 'out') {
-            filter['variants.stock'] = { $lte: 0 };
-        } else if (request.query.stockStatus === 'dead') {
-            filter['variants.stock'] = { $gt: 15 };
-        } else if (request.query.stockStatus === 'low') {
-            filter.$expr = {
-                $anyElementTrue: {
-                    $map: {
-                        input: "$variants",
-                        as: "v",
-                        in: {
-                            $and: [
-                                { $gt: ["$$v.stock", 0] },
-                                { $lte: ["$$v.stock", { $ifNull: ["$$v.lowStockThreshold", 5] }] }
-                            ]
-                        }
-                    }
-                }
-            };
-        }
+        const filter = buildProductQuery(request.query); 
         
         const page = parseInt(request.query.page) || 1; 
         const limit = parseInt(request.query.limit); 
@@ -83,23 +79,15 @@ exports.getProducts = async (request, reply) => {
         if (request.query.sort === 'stock_low') sortQuery = { "variants.stock": 1 }; 
         
         let query = Product.find(filter).sort(sortQuery);
+        if (limit) query = query.skip((page - 1) * limit).limit(limit); 
         
-        if (limit) { 
-            const skip = (page - 1) * limit; 
-            query = query.skip(skip).limit(limit); 
-        }
-        
-        const [products, total] = await Promise.all([
-            query.lean(), 
-            Product.countDocuments(filter)
-        ]);
+        const [products, total] = await Promise.all([query.lean(), Product.countDocuments(filter)]);
         
         const responseData = { success: true, count: products.length, total: total, data: products };
         
         if (cacheService.redisCache) {
             await cacheService.redisCache.set(cacheKey, JSON.stringify(responseData), 'EX', 3600); 
         }
-
         return responseData;
     } catch (error) { 
         request.server.log.error(error); 
@@ -109,16 +97,10 @@ exports.getProducts = async (request, reply) => {
 
 exports.createProduct = async (request, reply) => {
     try {
-        const { name, category, brand, distributorName, imageUrl, searchTags, variants, hsnCode, taxRate, taxType } = request.body;
-        
-        const newProduct = new Product({ 
-            name, category, brand, distributorName, imageUrl, searchTags, variants, hsnCode, taxRate, taxType 
-        });
-        
+        const newProduct = new Product(request.body);
         await newProduct.save();
         
         await syncAndBroadcast(request, newProduct._id);
-        
         return { success: true, message: 'Product added', data: newProduct };
     } catch (error) { 
         request.server.log.error(error); 
@@ -129,7 +111,6 @@ exports.createProduct = async (request, reply) => {
 exports.updateProduct = async (request, reply) => {
     try {
         const { name, category, brand, distributorName, imageUrl, searchTags, variants, hsnCode, taxRate, taxType } = request.body;
-        
         const updateData = { name, category, brand, distributorName, searchTags, variants, hsnCode, taxRate, taxType };
         if (imageUrl !== undefined && imageUrl !== null) updateData.imageUrl = imageUrl;
         
@@ -142,7 +123,6 @@ exports.updateProduct = async (request, reply) => {
         if (!updatedProduct) return reply.status(404).send({ success: false, message: 'Product Not found' });
         
         await syncAndBroadcast(request, updatedProduct._id);
-
         return { success: true, message: 'Product updated', data: updatedProduct };
     } catch (error) { 
         request.server.log.error(error); 
@@ -160,95 +140,10 @@ exports.archiveProduct = async (request, reply) => {
         await product.save();
         
         await syncAndBroadcast(request, product._id);
-
         return { success: true, message: `Product archived securely`, data: product };
     } catch (error) { 
         request.server.log.error(error); 
         reply.status(500).send({ success: false, message: 'Server Error archiving product' }); 
-    }
-};
-
-exports.restockProduct = async (request, reply) => {
-    try {
-        const { variantId, invoiceNumber, addedQuantity, purchasingPrice, newSellingPrice, paymentStatus, storeId } = request.body;
-        
-        const product = await Product.findById(request.params.id);
-        if (!product) return reply.status(404).send({ success: false, message: 'Product not found' });
-        
-        const variant = product.variants.id(variantId);
-        if (!variant) return reply.status(404).send({ success: false, message: 'Variant not found' });
-        
-        variant.purchaseHistory.push({ 
-            invoiceNumber, 
-            addedQuantity: Number(addedQuantity), 
-            purchasingPrice: Number(purchasingPrice), 
-            sellingPrice: Number(newSellingPrice),
-            storeId: storeId 
-        });
-        
-        variant.stock += Number(addedQuantity); 
-        variant.price = Number(newSellingPrice);
-
-        if (storeId) {
-            let locStock = variant.locationInventory.find(l => l.storeId && l.storeId.toString() === storeId);
-            if (locStock) {
-                locStock.stock += Number(addedQuantity);
-            } else {
-                variant.locationInventory.push({ storeId: storeId, stock: Number(addedQuantity) });
-            }
-        }
-        
-        await product.save();
-        
-        if (paymentStatus === 'Credit' && product.distributorName) {
-            const totalCost = Number(addedQuantity) * Number(purchasingPrice);
-            await Distributor.findOneAndUpdate(
-                { name: product.distributorName },
-                { $inc: { totalPendingAmount: totalCost } },
-                { upsert: true }
-            );
-        }
-
-        await syncAndBroadcast(request, product._id, { message: 'Stock Refilled', storeId: storeId });
-
-        return { success: true, message: 'Restock processed successfully', data: product };
-    } catch (error) { 
-        request.server.log.error(error); 
-        reply.status(500).send({ success: false, message: 'Server Error restocking product' }); 
-    }
-};
-
-exports.rtvProduct = async (request, reply) => {
-    try {
-        const { variantId, distributorName, returnedQuantity, refundAmount, reason, storeId } = request.body;
-        
-        const product = await Product.findById(request.params.id);
-        if (!product) return reply.status(404).send({ success: false, message: 'Product not found' });
-        
-        const variant = product.variants.id(variantId);
-        if (!variant) return reply.status(404).send({ success: false, message: 'Variant not found' });
-        
-        if (variant.stock < returnedQuantity) return reply.status(400).send({ success: false, message: 'Not enough stock to return' });
-
-        variant.returnHistory.push({ distributorName, returnedQuantity: Number(returnedQuantity), refundAmount: Number(refundAmount), reason, storeId });
-        
-        variant.stock -= Number(returnedQuantity); 
-
-        if (storeId) {
-            let locStock = variant.locationInventory.find(l => l.storeId && l.storeId.toString() === storeId);
-            if (locStock && locStock.stock >= returnedQuantity) {
-                locStock.stock -= Number(returnedQuantity);
-            }
-        }
-        
-        await product.save();
-        
-        await syncAndBroadcast(request, product._id, { message: 'Stock Returned', storeId: storeId });
-
-        return { success: true, message: 'RTV processed successfully', data: product };
-    } catch (error) { 
-        request.server.log.error(error); 
-        reply.status(500).send({ success: false, message: 'Server Error processing RTV' }); 
     }
 };
 
@@ -261,7 +156,6 @@ exports.toggleProductStatus = async (request, reply) => {
         await product.save();
         
         await syncAndBroadcast(request, product._id);
-
         return { success: true, message: `Product Status Toggled`, data: product };
     } catch (error) { 
         request.server.log.error(error); 
@@ -269,51 +163,40 @@ exports.toggleProductStatus = async (request, reply) => {
     }
 };
 
+exports.restockProduct = async (request, reply) => {
+    try {
+        const product = await inventoryService.processRestock(request.params.id, request.body);
+        await syncAndBroadcast(request, product._id, { message: 'Stock Refilled', storeId: request.body.storeId });
+        return { success: true, message: 'Restock processed successfully', data: product };
+    } catch (error) { 
+        if (error.message.includes('not found')) return reply.status(404).send({ success: false, message: error.message });
+        request.server.log.error(error); 
+        reply.status(500).send({ success: false, message: 'Server Error restocking product' }); 
+    }
+};
+
+exports.rtvProduct = async (request, reply) => {
+    try {
+        const product = await inventoryService.processRTV(request.params.id, request.body);
+        await syncAndBroadcast(request, product._id, { message: 'Stock Returned', storeId: request.body.storeId });
+        return { success: true, message: 'RTV processed successfully', data: product };
+    } catch (error) { 
+        if (error.message.includes('not found') || error.message.includes('Not enough stock')) return reply.status(400).send({ success: false, message: error.message });
+        request.server.log.error(error); 
+        reply.status(500).send({ success: false, message: 'Server Error processing RTV' }); 
+    }
+};
+
 exports.transferStock = async (request, reply) => {
     try {
-        const { productId, variantId, fromStoreId, toStoreId, quantity } = request.body;
-        
-        if (!productId || !variantId || !fromStoreId || !toStoreId || !quantity || quantity <= 0) {
-            return reply.status(400).send({ success: false, message: 'Invalid transfer parameters.' });
-        }
-
-        const product = await Product.findById(productId);
-        if (!product) return reply.status(404).send({ success: false, message: 'Product not found.' });
-
-        const variant = product.variants.id(variantId);
-        if (!variant) return reply.status(404).send({ success: false, message: 'Variant not found.' });
-
-        let fromLoc = variant.locationInventory.find(l => l.storeId.toString() === fromStoreId);
-        let toLoc = variant.locationInventory.find(l => l.storeId.toString() === toStoreId);
-
-        if (!fromLoc || fromLoc.stock < quantity) {
-            return reply.status(400).send({ success: false, message: 'Insufficient stock at source location.' });
-        }
-
-        fromLoc.stock -= quantity;
-        
-        if (toLoc) {
-            toLoc.stock += quantity;
-        } else {
-            variant.locationInventory.push({ storeId: toStoreId, stock: quantity });
-        }
-
-        await product.save();
-        
-        if (AuditLog) {
-            await AuditLog.create({
-                action: 'STOCK_TRANSFER',
-                targetType: 'Product',
-                targetId: product._id.toString(),
-                username: request.user ? request.user.username : 'Admin',
-                details: { variantId, fromStoreId, toStoreId, quantity }
-            }).catch(e => request.server.log.error('AuditLog Error:', e));
-        }
-
+        const username = request.user ? request.user.username : 'Admin';
+        const product = await inventoryService.processTransfer(request.body, username, request.server.log.error.bind(request.server.log));
         await syncAndBroadcast(request, product._id, { message: 'Stock Transferred' });
-
         return { success: true, message: 'Stock transferred successfully.' };
     } catch (error) {
+        if (error.message.includes('not found') || error.message.includes('Insufficient') || error.message.includes('Invalid')) {
+            return reply.status(400).send({ success: false, message: error.message });
+        }
         request.server.log.error(error);
         reply.status(500).send({ success: false, message: 'Server Error during stock transfer' });
     }
