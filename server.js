@@ -74,11 +74,16 @@ listeners.forEach((signal) => {
     });
 });
 
+// OPTIMIZATION: Consolidated startup routines
+const initScheduler = () => {
+    require('./jobs/cronScheduler')(fastify, (newReport) => {
+        latestInventoryReport = newReport;
+    });
+};
+
 const startServer = async () => {
     await connectDB(fastify);
-    
-    // --- PHASE 6: Initialize Automated Cloud Backups ---
-    require('./jobs/backupCron')(fastify);
+    require('./jobs/backupCron')(fastify); // --- PHASE 6: Initialize Automated Cloud Backups ---
     
     try {
         await fastify.listen({ port: PORT, host: '0.0.0.0' });
@@ -90,9 +95,7 @@ const startServer = async () => {
 
 if (process.env.ENABLE_CLUSTERING === 'true' && cluster.isPrimary) {
     connectDB(fastify).then(() => {
-        require('./jobs/cronScheduler')(fastify, (newReport) => {
-            latestInventoryReport = newReport;
-        });
+        initScheduler();
 
         const numCPUs = os.cpus().length;
         console.log(`[CLUSTER] Primary Process ${process.pid} running. Distributing traffic across ${numCPUs} CPUs...`);
@@ -107,19 +110,8 @@ if (process.env.ENABLE_CLUSTERING === 'true' && cluster.isPrimary) {
         });
     });
 } else if (process.env.ENABLE_CLUSTERING !== 'true') {
-    connectDB(fastify).then(() => {
-        require('./jobs/cronScheduler')(fastify, (newReport) => {
-            latestInventoryReport = newReport;
-        });
-        
-        // --- PHASE 6: Initialize Automated Cloud Backups ---
-        require('./jobs/backupCron')(fastify);
-
-        fastify.listen({ port: PORT, host: '0.0.0.0' }).catch(err => {
-            fastify.log.error(err);
-            process.exit(1);
-        });
-    });
+    initScheduler();
+    startServer(); // Reuses startServer to prevent duplicate listen and backupCron code
 } else {
-    startServer();
+    startServer(); // Worker processes
 }
