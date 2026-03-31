@@ -8,7 +8,7 @@ try {
         redisCache = new Redis(process.env.REDIS_URL);
     }
 } catch (e) {
-    console.error("Redis Initialization Error in Product Cache Service:", e);
+    console.error("[CACHE SERVICE] Redis Initialization Error:", e.message);
 }
 
 const invalidateProductCache = async () => {
@@ -23,7 +23,7 @@ const invalidateProductCache = async () => {
                 }
             } while (cursor !== '0');
         } catch(e) {
-            console.error("Error invalidating product cache:", e);
+            console.error("[CACHE SERVICE] Error invalidating product cache:", e.message);
         }
     }
 };
