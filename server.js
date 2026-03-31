@@ -6,7 +6,7 @@ require('dotenv').config();
 
 const cluster = require('cluster');
 const os = require('os');
-const connectDB = require('./config/db'); // NEW: Extracted DB Connection
+const connectDB = require('./config/db');
 
 const fastify = Fastify({
     logger: process.env.NODE_ENV === 'production' ? { level: 'error' } : true 
@@ -23,7 +23,7 @@ try {
 } catch(e) {}
 
 // --- Modularized Setups ---
-require('./plugins/middlewareSetup')(fastify, redisClient); // NEW: Extracted Middleware
+require('./plugins/middlewareSetup')(fastify, redisClient); 
 require('./plugins/authSetup')(fastify);
 require('./plugins/wsSetup')(fastify);
 require('./plugins/errorHandler')(fastify);
@@ -44,37 +44,39 @@ fastify.register(require('./routes/systemRoutes'), {
 // --- Feature Routes ---
 fastify.register(require('./routes')); 
 
-const listeners = ['SIGINT', 'SIGTERM'];
-listeners.forEach((signal) => {
-    process.on(signal, async () => {
-        fastify.log.info(`${signal} received. Shutting down gracefully...`);
-        
-        if (typeof fastify.closeAllSSE === 'function') {
-            fastify.closeAllSSE();
-        }
-        
-        setTimeout(() => {
-            fastify.log.error('Forcing shutdown after timeout. Some active processes may have been terminated.');
-            process.exit(1);
-        }, 15000).unref(); 
+// ==========================================
+// --- INITIALIZATION HELPERS ---
+// ==========================================
 
-        try {
-            await fastify.close();
-            await mongoose.connection.close();
-            if (redisClient) await redisClient.quit();
-            if (typeof fastify.closeRedisWS === 'function') {
-                await fastify.closeRedisWS(); 
+const setupGracefulShutdown = () => {
+    const listeners = ['SIGINT', 'SIGTERM'];
+    listeners.forEach((signal) => {
+        process.on(signal, async () => {
+            fastify.log.info(`${signal} received. Shutting down gracefully...`);
+            
+            if (typeof fastify.closeAllSSE === 'function') fastify.closeAllSSE();
+            
+            setTimeout(() => {
+                fastify.log.error('Forcing shutdown after timeout. Some active processes may have been terminated.');
+                process.exit(1);
+            }, 15000).unref(); 
+
+            try {
+                await fastify.close();
+                await mongoose.connection.close();
+                if (redisClient) await redisClient.quit();
+                if (typeof fastify.closeRedisWS === 'function') await fastify.closeRedisWS(); 
+                
+                fastify.log.info('Clean shutdown complete.');
+                process.exit(0);
+            } catch (err) {
+                fastify.log.error('Error during shutdown:', err);
+                process.exit(1);
             }
-            fastify.log.info('Clean shutdown complete.');
-            process.exit(0);
-        } catch (err) {
-            fastify.log.error('Error during shutdown:', err);
-            process.exit(1);
-        }
+        });
     });
-});
+};
 
-// OPTIMIZATION: Consolidated startup routines
 const initScheduler = () => {
     require('./jobs/cronScheduler')(fastify, (newReport) => {
         latestInventoryReport = newReport;
@@ -83,7 +85,7 @@ const initScheduler = () => {
 
 const startServer = async () => {
     await connectDB(fastify);
-    require('./jobs/backupCron')(fastify); // --- PHASE 6: Initialize Automated Cloud Backups ---
+    require('./jobs/backupCron')(fastify); 
     
     try {
         await fastify.listen({ port: PORT, host: '0.0.0.0' });
@@ -93,25 +95,32 @@ const startServer = async () => {
     }
 };
 
-if (process.env.ENABLE_CLUSTERING === 'true' && cluster.isPrimary) {
+const setupCluster = () => {
     connectDB(fastify).then(() => {
         initScheduler();
-
         const numCPUs = os.cpus().length;
         console.log(`[CLUSTER] Primary Process ${process.pid} running. Distributing traffic across ${numCPUs} CPUs...`);
         
-        for (let i = 0; i < numCPUs; i++) {
-            cluster.fork(); 
-        }
+        for (let i = 0; i < numCPUs; i++) cluster.fork(); 
 
         cluster.on('exit', (worker, code, signal) => {
             console.log(`[CLUSTER] Worker ${worker.process.pid} died or crashed. Auto-restarting...`);
             cluster.fork(); 
         });
     });
+};
+
+// ==========================================
+// --- EXECUTION BOOTSTRAP ---
+// ==========================================
+
+setupGracefulShutdown();
+
+if (process.env.ENABLE_CLUSTERING === 'true' && cluster.isPrimary) {
+    setupCluster();
 } else if (process.env.ENABLE_CLUSTERING !== 'true') {
     initScheduler();
-    startServer(); // Reuses startServer to prevent duplicate listen and backupCron code
+    startServer(); 
 } else {
     startServer(); // Worker processes
 }
