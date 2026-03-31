@@ -3,7 +3,7 @@
 const Order = require('../models/Order');
 const { Parser } = require('json2csv'); 
 const sseService = require('../services/orderSseService');
-const orderService = require('../services/orderService'); // NEW IMPORT
+const orderService = require('../services/orderService'); 
 
 // ==========================================
 // --- CONTROLLER EXPORTS ---
@@ -189,97 +189,32 @@ exports.cancelOrder = async (request, reply) => {
     }
 };
 
+// OPTIMIZED: Aggregation logic moved to orderService
 exports.getAnalytics = async (request, reply) => {
     try {
-        if (sseService.redisCache) {
-            const cachedAnalytics = await sseService.redisCache.get('orders:analytics');
-            if (cachedAnalytics) return JSON.parse(cachedAnalytics); 
-        }
-        
-        const today = new Date(); today.setHours(23, 59, 59, 999);
-        const sevenDaysAgo = new Date(today); sevenDaysAgo.setDate(today.getDate() - 6); sevenDaysAgo.setHours(0, 0, 0, 0);
-
-        const revenueAgg = await Order.aggregate([
-            { $match: { status: { $in: ['Dispatched', 'Completed'] }, createdAt: { $gte: sevenDaysAgo, $lte: today } } },
-            { $group: { _id: "$dateString", dailyRevenue: { $sum: "$totalAmount" } } },
-            { $sort: { _id: 1 } }
-        ]);
-
-        let revenueLast7Days = [0, 0, 0, 0, 0, 0, 0];
-        const datesToMap = [];
-        for(let i=0; i<7; i++){
-            const d = new Date(sevenDaysAgo); d.setDate(sevenDaysAgo.getDate() + i); datesToMap.push(d.toISOString().split('T')[0]);
-        }
-        
-        revenueAgg.forEach(item => {
-            const index = datesToMap.indexOf(item._id);
-            if (index !== -1) revenueLast7Days[index] = item.dailyRevenue;
-        });
-
-        const topItemsAgg = await Order.aggregate([
-            { $match: { status: { $in: ['Dispatched', 'Completed'] }, createdAt: { $gte: sevenDaysAgo, $lte: today } } },
-            { $unwind: "$items" },
-            { $group: { _id: { name: "$items.name", variant: "$items.selectedVariant" }, qty: { $sum: "$items.qty" }, revenue: { $sum: { $multiply: ["$items.price", "$items.qty"] } } } },
-            { $sort: { qty: -1 } },
-            { $limit: 5 }
-        ]);
-
-        const topItems = topItemsAgg.map(item => ({ name: `${item._id.name} (${item._id.variant})`, qty: item.qty, revenue: item.revenue }));
-
-        const responsePayload = { success: true, data: { chartLabels: ['Day 1', 'Day 2', 'Day 3', 'Day 4', 'Day 5', 'Yesterday', 'Today'], revenueData: revenueLast7Days, topItems: topItems } };
-        if (sseService.redisCache) await sseService.redisCache.set('orders:analytics', JSON.stringify(responsePayload), 'EX', 900);
-
-        return responsePayload;
+        return await orderService.getAnalyticsData();
     } catch (error) {
         request.server.log.error('Analytics Error:', error);
         reply.status(500).send({ success: false, message: 'Server Error fetching analytics' });
     }
 };
 
+// OPTIMIZED: Query and pagination logic moved to orderService
 exports.getOrders = async (request, reply) => {
     try {
-        let filter = {};
-        if (request.query.tab === 'Instant') filter.deliveryType = { $ne: 'Routine' };
-        if (request.query.tab === 'Routine') filter.deliveryType = 'Routine';
-
-        const today = new Date(); today.setHours(0, 0, 0, 0);
-        const yesterday = new Date(today); yesterday.setDate(yesterday.getDate() - 1);
-        const sevenDaysAgo = new Date(today); sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
-
-        if (request.query.dateFilter === 'Today') filter.createdAt = { $gte: today };
-        else if (request.query.dateFilter === 'Yesterday') filter.createdAt = { $gte: yesterday, $lt: today };
-        else if (request.query.dateFilter === '7Days') filter.createdAt = { $gte: sevenDaysAgo };
-
-        const page = parseInt(request.query.page) || 1;
-        const limit = parseInt(request.query.limit);
-
-        let query = Order.find(filter).sort({ createdAt: -1 });
-        if (limit) query = query.skip((page - 1) * limit).limit(limit);
-
-        const [orders, total, pendingOrders] = await Promise.all([
-            query.lean(), Order.countDocuments(filter), Order.find({ status: { $in: ['Order Placed', 'Packing'] } }).lean()
-        ]);
-
-        return { 
-            success: true, count: orders.length, total: total, data: orders,
-            stats: { pendingCount: pendingOrders.length, pendingRevenue: pendingOrders.reduce((sum, o) => sum + o.totalAmount, 0) }
-        };
+        return await orderService.getOrdersList(request.query);
     } catch (error) {
         request.server.log.error('Fetch Error:', error);
         reply.status(500).send({ success: false, message: 'Server Error fetching orders' });
     }
 };
 
+// OPTIMIZED: DB mapping logic moved to orderService
 exports.exportOrders = async (request, reply) => {
     try {
-        const orders = await Order.find().sort({ createdAt: -1 }).lean();
-        const exportData = orders.map(o => ({
-            OrderID: o.orderNumber || o._id.toString(), Date: new Date(o.createdAt).toLocaleString(),
-            CustomerName: o.customerName, Phone: o.customerPhone, TotalAmount: o.totalAmount,
-            Status: o.status, PaymentMethod: o.paymentMethod, DeliveryType: o.deliveryType
-        }));
-
+        const exportData = await orderService.getAllOrdersForExport();
         const csv = new Parser().parse(exportData);
+        
         reply.header('Content-Type', 'text/csv');
         reply.header('Content-Disposition', `attachment; filename="orders_export_${new Date().toISOString().split('T')[0]}.csv"`);
         return reply.send(csv);
