@@ -4,6 +4,7 @@ const User = require('../models/User');
 const bcrypt = require('bcrypt'); 
 const crypto = require('crypto');
 const AuditLog = require('../models/AuditLog'); 
+const AppError = require('../utils/AppError'); // NEW IMPORT
 
 exports.logEvent = async (action, targetId, username, details = {}, userId = null, logError) => {
     const logEntry = { action, targetType: 'Auth', targetId, username: username || 'Unknown' };
@@ -13,13 +14,13 @@ exports.logEvent = async (action, targetId, username, details = {}, userId = nul
 };
 
 exports.setupDefaultAdmin = async (envSetupKey, queryKey, isProduction) => {
-    if (isProduction) throw { status: 403, message: 'Forbidden: Setup route disabled in production.' };
+    if (isProduction) throw new AppError('Forbidden: Setup route disabled in production.', 403);
 
     if (envSetupKey) {
         const providedKey = Buffer.from(queryKey || '');
         const actualKey = Buffer.from(envSetupKey);
         if (providedKey.length !== actualKey.length || !crypto.timingSafeEqual(providedKey, actualKey)) {
-            throw { status: 403, message: 'Forbidden: Invalid Setup Key' };
+            throw new AppError('Forbidden: Invalid Setup Key', 403);
         }
     }
 
@@ -46,10 +47,10 @@ exports.authenticateUser = async (username, pin, ip) => {
     const user = await User.findOne({ $or: [{ username: safeUsername }, { name: safeUsername }] })
                            .collation({ locale: 'en', strength: 2 }); 
     
-    if (!user) throw { status: 401, message: 'Invalid Username or PIN.', safeUsername, reason: 'User not found' };
+    if (!user) throw new AppError('Invalid Username or PIN.', 401, { safeUsername, reason: 'User not found' });
 
     if (user.isLocked) {
-        throw { status: 403, message: 'Account locked due to too many failed attempts. Try again in 15 minutes.', user, reason: 'Account locked' };
+        throw new AppError('Account locked due to too many failed attempts. Try again in 15 minutes.', 403, { user, reason: 'Account locked' });
     }
     
     const isHashed = user.pin.startsWith('$2a$') || user.pin.startsWith('$2b$');
@@ -68,7 +69,7 @@ exports.authenticateUser = async (username, pin, ip) => {
         user.failedLoginAttempts = (user.failedLoginAttempts || 0) + 1;
         if (user.failedLoginAttempts >= 5) user.lockUntil = Date.now() + 15 * 60 * 1000; 
         await user.save();
-        throw { status: 401, message: 'Invalid Username or PIN.', user, reason: 'Invalid PIN' };
+        throw new AppError('Invalid Username or PIN.', 401, { user, reason: 'Invalid PIN' });
     }
     
     user.failedLoginAttempts = 0;
@@ -80,7 +81,7 @@ exports.authenticateUser = async (username, pin, ip) => {
 exports.validateRefreshToken = async (decodedId, decodedVersion) => {
     const user = await User.findById(decodedId);
     if (!user || !user.isActive || user.tokenVersion !== decodedVersion) {
-        throw { status: 401, message: 'Invalid or revoked session' };
+        throw new AppError('Invalid or revoked session', 401);
     }
     return user;
 };
@@ -94,7 +95,6 @@ exports.revokeSession = async (userId) => {
     return user;
 };
 
-// NEW FUNCTION: Extracted from authController to maintain architecture integrity
 exports.getUserById = async (id) => {
     return await User.findOne({ _id: id });
 };
