@@ -6,7 +6,8 @@ const Product = require('../models/Product');
 const Customer = require('../models/Customer');
 const AuditLog = require('../models/AuditLog');
 const sseService = require('./orderSseService');
-const { withTransaction } = require('../utils/dbUtils'); // NEW IMPORT
+const { withTransaction } = require('../utils/dbUtils');
+const AppError = require('../utils/AppError'); // NEW IMPORT
 
 // ==========================================
 // --- HELPER FUNCTIONS ---
@@ -94,10 +95,10 @@ async function deductInventory(items, storeId, session) {
 
 function validateAndApplyPayLater(custProfile, amount) {
     if (!custProfile || !custProfile.isCreditEnabled) {
-        const err = new Error('Pay Later is not enabled for this account.'); err.statusCode = 400; throw err;
+        throw new AppError('Pay Later is not enabled for this account.', 400);
     }
     if ((custProfile.creditUsed + amount) > custProfile.creditLimit) {
-        const err = new Error(`Credit limit exceeded. Available credit: ₹${custProfile.creditLimit - custProfile.creditUsed}`); err.statusCode = 400; throw err;
+        throw new AppError(`Credit limit exceeded. Available credit: ₹${custProfile.creditLimit - custProfile.creditUsed}`, 400);
     }
     custProfile.creditUsed += amount;
 }
@@ -120,7 +121,7 @@ exports.processExternalCheckout = async (payload) => {
 
         const inventoryCheck = await deductInventory(items, storeId, session);
         if (!inventoryCheck.success) {
-            const err = new Error(inventoryCheck.message); err.statusCode = 400; throw err;
+            throw new AppError(inventoryCheck.message, 400);
         }
 
         const seqNumber = await generateOrderSequence(session);
@@ -155,7 +156,7 @@ exports.processOnlineCheckout = async (payload) => {
         if (!custProfile) {
             custProfile = new Customer({ phone: customerPhone, name: customerName });
             if (paymentMethod === 'Pay Later') {
-                const err = new Error('Pay Later is not enabled for this new account.'); err.statusCode = 400; throw err;
+                throw new AppError('Pay Later is not enabled for this new account.', 400);
             }
         } else if (custProfile.name !== customerName) {
             custProfile.name = customerName; 
@@ -164,7 +165,7 @@ exports.processOnlineCheckout = async (payload) => {
 
         const inventoryCheck = await deductInventory(items, storeId, session);
         if (!inventoryCheck.success) {
-            const err = new Error(inventoryCheck.message); err.statusCode = 400; throw err;
+            throw new AppError(inventoryCheck.message, 400);
         }
 
         const seqNumber = await generateOrderSequence(session);
@@ -207,7 +208,7 @@ exports.processPosCheckout = async (payload) => {
                 await custProfile.save({ session });
             } else {
                 if (paymentMethod === 'Pay Later') {
-                    const err = new Error('Pay Later is not enabled for this new account.'); err.statusCode = 400; throw err;
+                    throw new AppError('Pay Later is not enabled for this new account.', 400);
                 }
                 const earnedPoints = Math.floor(totalAmount / 100);
                 custProfile = new Customer({ phone: customerPhone, name: 'In-Store Customer', loyaltyPoints: earnedPoints });
@@ -218,7 +219,7 @@ exports.processPosCheckout = async (payload) => {
 
         const inventoryCheck = await deductInventory(items, storeId, session);
         if (!inventoryCheck.success) {
-            const err = new Error(inventoryCheck.message); err.statusCode = 400; throw err;
+            throw new AppError(inventoryCheck.message, 400);
         }
 
         const seqNumber = await generateOrderSequence(session);
@@ -248,7 +249,7 @@ exports.processPartialRefund = async (orderId, payload, user) => {
         const { productId, variantId, qtyToRefund, newTotalAmount } = payload;
         const order = await Order.findById(orderId).session(session);
         if (!order) {
-            const err = new Error('Order not found'); err.statusCode = 404; throw err;
+            throw new AppError('Order not found', 404);
         }
 
         await Product.updateOne(
@@ -301,7 +302,7 @@ exports.processCancelOrder = async (orderId, reason, user) => {
     return withTransaction(async (session) => {
         const order = await Order.findById(orderId).session(session);
         if (!order) {
-            const err = new Error('Order not found'); err.statusCode = 404; throw err;
+            throw new AppError('Order not found', 404);
         }
         
         order.status = 'Cancelled';
