@@ -16,32 +16,48 @@ module.exports = function(fastify) {
 
         fastify.log.info('[SECURITY] Starting automated Cloud Database Backup...');
         
+        const fileName = `DailyPick_Backup_${new Date().toISOString().split('T')[0]}.json`;
+        const filePath = path.join(__dirname, `../${fileName}`);
+        
         try {
-            // 1. Extract all collections dynamically
+            // OPTIMIZATION: Stream data directly to disk to prevent RAM exhaustion
+            const fileStream = fs.createWriteStream(filePath);
+            fileStream.write('{\n');
+            
             const collections = await mongoose.connection.db.listCollections().toArray();
-            const backupData = {};
-
-            for (let col of collections) {
-                const data = await mongoose.connection.db.collection(col.name).find({}).toArray();
-                backupData[col.name] = data;
+            
+            for (let i = 0; i < collections.length; i++) {
+                const colName = collections[i].name;
+                fileStream.write(`  "${colName}": [\n`);
+                
+                const cursor = mongoose.connection.db.collection(colName).find({});
+                let isFirstDoc = true;
+                
+                for await (const doc of cursor) {
+                    if (!isFirstDoc) fileStream.write(',\n');
+                    fileStream.write(`    ${JSON.stringify(doc)}`);
+                    isFirstDoc = false;
+                }
+                
+                fileStream.write('\n  ]');
+                if (i < collections.length - 1) fileStream.write(',');
+                fileStream.write('\n');
             }
+            fileStream.write('}\n');
+            fileStream.end();
 
-            // 2. Write to temporary local JSON file
-            const backupString = JSON.stringify(backupData, null, 2);
-            const fileName = `DailyPick_Backup_${new Date().toISOString().split('T')[0]}.json`;
-            const filePath = path.join(__dirname, `../${fileName}`);
-            fs.writeFileSync(filePath, backupString);
+            await new Promise(resolve => fileStream.on('finish', resolve));
 
-            // 3. Configure Email Transport
+            // Configure Email Transport
             const transporter = nodemailer.createTransport({
-                service: 'gmail', // Defaulting to Gmail, change if using AWS SES/SendGrid
+                service: 'gmail', 
                 auth: {
                     user: process.env.SMTP_USER,
                     pass: process.env.SMTP_PASS
                 }
             });
 
-            // 4. Send Email with Attachment
+            // Send Email with Attachment
             await transporter.sendMail({
                 from: `"DailyPick Security Watchdog" <${process.env.SMTP_USER}>`,
                 to: process.env.BACKUP_EMAIL,
@@ -55,12 +71,13 @@ module.exports = function(fastify) {
                 ]
             });
 
-            // 5. Clean up local file to save disk space
-            fs.unlinkSync(filePath); 
+            // Clean up local file to save disk space
+            if (fs.existsSync(filePath)) fs.unlinkSync(filePath); 
             fastify.log.info('[SECURITY] Automated backup completed and emailed securely.');
 
         } catch (error) {
             fastify.log.error('[SECURITY] Backup Cron Error:', error);
+            if (fs.existsSync(filePath)) fs.unlinkSync(filePath); 
         }
     });
 };
