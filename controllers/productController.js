@@ -9,6 +9,11 @@ const inventoryService = require('../services/inventoryService');
 // --- HELPER FUNCTIONS ---
 // ==========================================
 
+const handleServerError = (request, reply, error, contextMessage) => {
+    request.server.log.error(`${contextMessage} Error:`, error);
+    reply.status(500).send({ success: false, message: `Server Error ${contextMessage}` });
+};
+
 const syncAndBroadcast = async (request, productId, extraPayload = {}) => {
     await cacheService.invalidateProductCache();
     if (request.server.broadcastToPOS) {
@@ -93,8 +98,7 @@ exports.getProducts = async (request, reply) => {
         
         return responseData;
     } catch (error) { 
-        request.server.log.error(error); 
-        reply.status(500).send({ success: false, message: 'Server Error fetching products' }); 
+        handleServerError(request, reply, error, 'fetching products');
     }
 };
 
@@ -106,8 +110,7 @@ exports.createProduct = async (request, reply) => {
         await syncAndBroadcast(request, newProduct._id);
         return { success: true, message: 'Product added', data: newProduct };
     } catch (error) { 
-        request.server.log.error(error); 
-        reply.status(500).send({ success: false, message: 'Server Error creating product' }); 
+        handleServerError(request, reply, error, 'creating product');
     }
 };
 
@@ -128,8 +131,7 @@ exports.updateProduct = async (request, reply) => {
         await syncAndBroadcast(request, updatedProduct._id);
         return { success: true, message: 'Product updated', data: updatedProduct };
     } catch (error) { 
-        request.server.log.error(error); 
-        reply.status(500).send({ success: false, message: 'Server Error updating product' }); 
+        handleServerError(request, reply, error, 'updating product');
     }
 };
 
@@ -145,8 +147,7 @@ exports.archiveProduct = async (request, reply) => {
         await syncAndBroadcast(request, product._id);
         return { success: true, message: `Product archived securely`, data: product };
     } catch (error) { 
-        request.server.log.error(error); 
-        reply.status(500).send({ success: false, message: 'Server Error archiving product' }); 
+        handleServerError(request, reply, error, 'archiving product');
     }
 };
 
@@ -161,8 +162,7 @@ exports.toggleProductStatus = async (request, reply) => {
         await syncAndBroadcast(request, product._id);
         return { success: true, message: `Product Status Toggled`, data: product };
     } catch (error) { 
-        request.server.log.error(error); 
-        reply.status(500).send({ success: false, message: 'Server Error toggling status' }); 
+        handleServerError(request, reply, error, 'toggling status');
     }
 };
 
@@ -173,8 +173,7 @@ exports.restockProduct = async (request, reply) => {
         return { success: true, message: 'Restock processed successfully', data: product };
     } catch (error) { 
         if (error.message.includes('not found')) return reply.status(404).send({ success: false, message: error.message });
-        request.server.log.error(error); 
-        reply.status(500).send({ success: false, message: 'Server Error restocking product' }); 
+        handleServerError(request, reply, error, 'restocking product');
     }
 };
 
@@ -185,8 +184,7 @@ exports.rtvProduct = async (request, reply) => {
         return { success: true, message: 'RTV processed successfully', data: product };
     } catch (error) { 
         if (error.message.includes('not found') || error.message.includes('Not enough stock')) return reply.status(400).send({ success: false, message: error.message });
-        request.server.log.error(error); 
-        reply.status(500).send({ success: false, message: 'Server Error processing RTV' }); 
+        handleServerError(request, reply, error, 'processing RTV');
     }
 };
 
@@ -200,7 +198,6 @@ exports.transferStock = async (request, reply) => {
         if (error.message.includes('not found') || error.message.includes('Insufficient') || error.message.includes('Invalid')) {
             return reply.status(400).send({ success: false, message: error.message });
         }
-        request.server.log.error(error);
-        reply.status(500).send({ success: false, message: 'Server Error during stock transfer' });
+        handleServerError(request, reply, error, 'during stock transfer');
     }
 };
