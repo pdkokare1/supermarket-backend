@@ -3,7 +3,8 @@
 const Product = require('../models/Product');
 const Distributor = require('../models/Distributor');
 const AuditLog = require('../models/AuditLog');
-const { withTransaction } = require('../utils/dbUtils'); // NEW IMPORT
+const { withTransaction } = require('../utils/dbUtils'); 
+const AppError = require('../utils/AppError'); // NEW IMPORT
 
 // ==========================================
 // --- HELPER FUNCTIONS ---
@@ -14,10 +15,10 @@ const getProductAndVariant = async (productId, variantId, session = null) => {
     if (session) query.session(session);
     
     const product = await query;
-    if (!product) throw new Error('Product not found');
+    if (!product) throw new AppError('Product not found', 404);
     
     const variant = product.variants.id(variantId);
-    if (!variant) throw new Error('Variant not found');
+    if (!variant) throw new AppError('Variant not found', 404);
     
     return { product, variant };
 };
@@ -72,7 +73,9 @@ exports.processRTV = async (productId, payload) => {
         
         const { product, variant } = await getProductAndVariant(productId, variantId, session);
         
-        if (variant.stock < returnedQuantity) throw new Error('Not enough stock to return');
+        if (variant.stock < returnedQuantity) {
+            throw new AppError('Not enough stock to return', 400);
+        }
 
         variant.returnHistory.push({ distributorName, returnedQuantity: Number(returnedQuantity), refundAmount: Number(refundAmount), reason, storeId });
         
@@ -95,7 +98,7 @@ exports.processTransfer = async (payload, username, logError) => {
         const { productId, variantId, fromStoreId, toStoreId, quantity } = payload;
         
         if (!productId || !variantId || !fromStoreId || !toStoreId || !quantity || quantity <= 0) {
-            throw new Error('Invalid transfer parameters.');
+            throw new AppError('Invalid transfer parameters.', 400);
         }
 
         const { product, variant } = await getProductAndVariant(productId, variantId, session);
@@ -104,7 +107,7 @@ exports.processTransfer = async (payload, username, logError) => {
         let toLoc = variant.locationInventory.find(l => l.storeId.toString() === toStoreId);
 
         if (!fromLoc || fromLoc.stock < quantity) {
-            throw new Error('Insufficient stock at source location.');
+            throw new AppError('Insufficient stock at source location.', 400);
         }
 
         fromLoc.stock -= quantity;
