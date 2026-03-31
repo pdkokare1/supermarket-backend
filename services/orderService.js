@@ -74,6 +74,26 @@ async function deductInventory(items, storeId, session) {
     return { success: true };
 }
 
+// NEW: Consolidated Pay Later charge validation
+function validateAndApplyPayLater(custProfile, amount) {
+    if (!custProfile || !custProfile.isCreditEnabled) {
+        const err = new Error('Pay Later is not enabled for this account.'); err.statusCode = 400; throw err;
+    }
+    if ((custProfile.creditUsed + amount) > custProfile.creditLimit) {
+        const err = new Error(`Credit limit exceeded. Available credit: ₹${custProfile.creditLimit - custProfile.creditUsed}`); err.statusCode = 400; throw err;
+    }
+    custProfile.creditUsed += amount;
+}
+
+// NEW: Consolidated Pay Later refund processing
+async function processPayLaterRefund(customerPhone, amount, session) {
+    const custProfile = await Customer.findOne({ phone: customerPhone }).session(session);
+    if (custProfile) {
+        custProfile.creditUsed = Math.max(0, custProfile.creditUsed - amount);
+        await custProfile.save({ session });
+    }
+}
+
 // ==========================================
 // --- TRANSACTION SERVICES ---
 // ==========================================
@@ -118,26 +138,21 @@ exports.processOnlineCheckout = async (payload) => {
     try {
         const { customerName, customerPhone, deliveryAddress, items, totalAmount, deliveryType, scheduleTime, paymentMethod, notes, storeId } = payload;
         
+        let custProfile = await Customer.findOne({ phone: customerPhone }).session(session);
+        
         if (paymentMethod === 'Pay Later') {
-            const customerProfile = await Customer.findOne({ phone: customerPhone }).session(session);
-            if (!customerProfile || !customerProfile.isCreditEnabled) {
-                const err = new Error('Pay Later is not enabled for this account.'); err.statusCode = 400; throw err;
-            }
-            if ((customerProfile.creditUsed + totalAmount) > customerProfile.creditLimit) {
-                const err = new Error(`Credit limit exceeded. Available credit: ₹${customerProfile.creditLimit - customerProfile.creditUsed}`); err.statusCode = 400; throw err;
-            }
-            customerProfile.creditUsed += totalAmount;
-            await customerProfile.save({ session });
+            validateAndApplyPayLater(custProfile, totalAmount);
         }
 
-        let custProfile = await Customer.findOne({ phone: customerPhone }).session(session);
         if (!custProfile) {
             custProfile = new Customer({ phone: customerPhone, name: customerName });
-            await custProfile.save({ session });
+            if (paymentMethod === 'Pay Later') {
+                const err = new Error('Pay Later is not enabled for this new account.'); err.statusCode = 400; throw err;
+            }
         } else if (custProfile.name !== customerName) {
             custProfile.name = customerName; 
-            await custProfile.save({ session });
         }
+        await custProfile.save({ session });
 
         const inventoryCheck = await deductInventory(items, storeId, session);
         if (!inventoryCheck.success) {
@@ -185,16 +200,13 @@ exports.processPosCheckout = async (payload) => {
                 custProfile.loyaltyPoints = (custProfile.loyaltyPoints || 0) + Math.floor(totalAmount / 100);
                 
                 if (paymentMethod === 'Pay Later') {
-                    if (!custProfile.isCreditEnabled) {
-                        const err = new Error('Pay Later disabled.'); err.statusCode = 400; throw err;
-                    }
-                    if ((custProfile.creditUsed + totalAmount) > custProfile.creditLimit) {
-                        const err = new Error('Credit limit exceeded.'); err.statusCode = 400; throw err;
-                    }
-                    custProfile.creditUsed += totalAmount;
+                    validateAndApplyPayLater(custProfile, totalAmount);
                 }
                 await custProfile.save({ session });
             } else {
+                if (paymentMethod === 'Pay Later') {
+                    const err = new Error('Pay Later is not enabled for this new account.'); err.statusCode = 400; throw err;
+                }
                 const earnedPoints = Math.floor(totalAmount / 100);
                 custProfile = new Customer({ phone: customerPhone, name: 'In-Store Customer', loyaltyPoints: earnedPoints });
                 await custProfile.save({ session });
@@ -271,11 +283,7 @@ exports.processPartialRefund = async (orderId, payload, user) => {
         if (order.paymentMethod === 'Pay Later') {
             const diff = order.totalAmount - newTotalAmount;
             if (diff > 0) {
-                const custProfile = await Customer.findOne({ phone: order.customerPhone }).session(session);
-                if (custProfile) {
-                    custProfile.creditUsed = Math.max(0, custProfile.creditUsed - diff);
-                    await custProfile.save({ session });
-                }
+                await processPayLaterRefund(order.customerPhone, diff, session);
             }
         }
         
@@ -309,11 +317,7 @@ exports.processCancelOrder = async (orderId, reason, user) => {
         order.status = 'Cancelled';
 
         if (order.paymentMethod === 'Pay Later') {
-            const custProfile = await Customer.findOne({ phone: order.customerPhone }).session(session);
-            if (custProfile) {
-                custProfile.creditUsed = Math.max(0, custProfile.creditUsed - order.totalAmount);
-                await custProfile.save({ session });
-            }
+            await processPayLaterRefund(order.customerPhone, order.totalAmount, session);
         }
 
         for (const item of order.items) {
@@ -348,4 +352,88 @@ exports.processCancelOrder = async (orderId, reason, user) => {
     } catch (error) {
         await session.abortTransaction(); session.endSession(); throw error;
     }
+};
+
+// ==========================================
+// --- DATA RETRIEVAL SERVICES (NEW) ---
+// ==========================================
+
+exports.getAnalyticsData = async () => {
+    if (sseService.redisCache) {
+        const cachedAnalytics = await sseService.redisCache.get('orders:analytics');
+        if (cachedAnalytics) return JSON.parse(cachedAnalytics); 
+    }
+    
+    const today = new Date(); today.setHours(23, 59, 59, 999);
+    const sevenDaysAgo = new Date(today); sevenDaysAgo.setDate(today.getDate() - 6); sevenDaysAgo.setHours(0, 0, 0, 0);
+
+    const revenueAgg = await Order.aggregate([
+        { $match: { status: { $in: ['Dispatched', 'Completed'] }, createdAt: { $gte: sevenDaysAgo, $lte: today } } },
+        { $group: { _id: "$dateString", dailyRevenue: { $sum: "$totalAmount" } } },
+        { $sort: { _id: 1 } }
+    ]);
+
+    let revenueLast7Days = [0, 0, 0, 0, 0, 0, 0];
+    const datesToMap = [];
+    for(let i=0; i<7; i++){
+        const d = new Date(sevenDaysAgo); d.setDate(sevenDaysAgo.getDate() + i); datesToMap.push(d.toISOString().split('T')[0]);
+    }
+    
+    revenueAgg.forEach(item => {
+        const index = datesToMap.indexOf(item._id);
+        if (index !== -1) revenueLast7Days[index] = item.dailyRevenue;
+    });
+
+    const topItemsAgg = await Order.aggregate([
+        { $match: { status: { $in: ['Dispatched', 'Completed'] }, createdAt: { $gte: sevenDaysAgo, $lte: today } } },
+        { $unwind: "$items" },
+        { $group: { _id: { name: "$items.name", variant: "$items.selectedVariant" }, qty: { $sum: "$items.qty" }, revenue: { $sum: { $multiply: ["$items.price", "$items.qty"] } } } },
+        { $sort: { qty: -1 } },
+        { $limit: 5 }
+    ]);
+
+    const topItems = topItemsAgg.map(item => ({ name: `${item._id.name} (${item._id.variant})`, qty: item.qty, revenue: item.revenue }));
+
+    const responsePayload = { success: true, data: { chartLabels: ['Day 1', 'Day 2', 'Day 3', 'Day 4', 'Day 5', 'Yesterday', 'Today'], revenueData: revenueLast7Days, topItems: topItems } };
+    if (sseService.redisCache) await sseService.redisCache.set('orders:analytics', JSON.stringify(responsePayload), 'EX', 900);
+
+    return responsePayload;
+};
+
+exports.getOrdersList = async (queryParams) => {
+    let filter = {};
+    if (queryParams.tab === 'Instant') filter.deliveryType = { $ne: 'Routine' };
+    if (queryParams.tab === 'Routine') filter.deliveryType = 'Routine';
+
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const yesterday = new Date(today); yesterday.setDate(yesterday.getDate() - 1);
+    const sevenDaysAgo = new Date(today); sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+
+    if (queryParams.dateFilter === 'Today') filter.createdAt = { $gte: today };
+    else if (queryParams.dateFilter === 'Yesterday') filter.createdAt = { $gte: yesterday, $lt: today };
+    else if (queryParams.dateFilter === '7Days') filter.createdAt = { $gte: sevenDaysAgo };
+
+    const page = parseInt(queryParams.page) || 1;
+    const limit = parseInt(queryParams.limit);
+
+    let query = Order.find(filter).sort({ createdAt: -1 });
+    if (limit) query = query.skip((page - 1) * limit).limit(limit);
+
+    const [orders, total, pendingOrders] = await Promise.all([
+        query.lean(), Order.countDocuments(filter), Order.find({ status: { $in: ['Order Placed', 'Packing'] } }).lean()
+    ]);
+
+    return { 
+        success: true, count: orders.length, total: total, data: orders,
+        stats: { pendingCount: pendingOrders.length, pendingRevenue: pendingOrders.reduce((sum, o) => sum + o.totalAmount, 0) }
+    };
+};
+
+exports.getAllOrdersForExport = async () => {
+    const orders = await Order.find().sort({ createdAt: -1 }).lean();
+    return orders.map(o => ({
+        OrderID: o.orderNumber || o._id.toString(), Date: new Date(o.createdAt).toLocaleString(),
+        CustomerName: o.customerName, Phone: o.customerPhone, TotalAmount: o.totalAmount,
+        Status: o.status, PaymentMethod: o.paymentMethod, DeliveryType: o.deliveryType
+    }));
 };
