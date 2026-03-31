@@ -3,7 +3,8 @@
 const Product = require('../models/Product');
 const crypto = require('crypto');
 const cacheService = require('../services/productCacheService');
-const inventoryService = require('../services/inventoryService'); 
+const inventoryService = require('../services/inventoryService');
+const productService = require('../services/productService'); // NEW IMPORT
 
 // ==========================================
 // --- HELPER FUNCTIONS ---
@@ -19,43 +20,6 @@ const syncAndBroadcast = async (request, productId, extraPayload = {}) => {
     if (request.server.broadcastToPOS) {
         request.server.broadcastToPOS({ type: 'INVENTORY_UPDATED', productId, ...extraPayload });
     }
-};
-
-const buildProductQuery = (queryObj) => {
-    let filter = queryObj.all === 'true' 
-        ? { isArchived: { $ne: true } } 
-        : { isActive: true, isArchived: { $ne: true } };
-    
-    if (queryObj.search) { 
-        filter.$or = [ 
-            { name: { $regex: queryObj.search, $options: 'i' } }, 
-            { searchTags: { $regex: queryObj.search, $options: 'i' } } 
-        ]; 
-    }
-    
-    if (queryObj.category && queryObj.category !== 'All') filter.category = queryObj.category; 
-    if (queryObj.brand && queryObj.brand !== 'All') filter.brand = queryObj.brand;
-    if (queryObj.distributor && queryObj.distributor !== 'All') filter.distributorName = queryObj.distributor;
-
-    if (queryObj.stockStatus === 'out') {
-        filter['variants.stock'] = { $lte: 0 };
-    } else if (queryObj.stockStatus === 'dead') {
-        filter['variants.stock'] = { $gt: 15 };
-    } else if (queryObj.stockStatus === 'low') {
-        filter.$expr = {
-            $anyElementTrue: {
-                $map: {
-                    input: "$variants", as: "v", in: {
-                        $and: [
-                            { $gt: ["$$v.stock", 0] },
-                            { $lte: ["$$v.stock", { $ifNull: ["$$v.lowStockThreshold", 5] }] }
-                        ]
-                    }
-                }
-            }
-        };
-    }
-    return filter;
 };
 
 const getCachedData = async (query) => {
@@ -80,7 +44,7 @@ exports.getProducts = async (request, reply) => {
         const { cacheKey, data } = await getCachedData(request.query);
         if (data) return data;
 
-        const filter = buildProductQuery(request.query); 
+        const filter = productService.buildProductQuery(request.query); 
         const page = parseInt(request.query.page) || 1; 
         const limit = parseInt(request.query.limit); 
         
