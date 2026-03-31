@@ -93,3 +93,8 @@ exports.revokeSession = async (userId) => {
     }
     return user;
 };
+
+// NEW FUNCTION: Extracted from authController to maintain architecture integrity
+exports.getUserById = async (id) => {
+    return await User.findOne({ _id: id });
+};
