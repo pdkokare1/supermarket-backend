@@ -7,6 +7,14 @@ const customerService = require('../services/customerService');
 // --- HELPER FUNCTIONS ---
 // ==========================================
 
+const handleCustomerError = (request, reply, error, contextMessage) => {
+    if (error.message === 'Customer not found.') {
+        return reply.status(404).send({ success: false, message: error.message });
+    }
+    request.server.log.error(`[Customer] ${contextMessage} Error:`, error);
+    reply.status(500).send({ success: false, message: `Server Error ${contextMessage.toLowerCase()}` });
+};
+
 const formatCustomerForExport = (c) => ({
     Name: c.name,
     Phone: c.phone,
@@ -26,8 +34,7 @@ exports.getCustomersFromOrders = async (request, reply) => {
         const customerList = await customerService.getAggregatedCustomers();
         return { success: true, count: customerList.length, data: customerList };
     } catch (error) {
-        request.server.log.error('CRM Error:', error);
-        reply.status(500).send({ success: false, message: 'Server Error fetching customers' });
+        handleCustomerError(request, reply, error, 'fetching customers from orders');
     }
 };
 
@@ -42,8 +49,7 @@ exports.exportCustomers = async (request, reply) => {
         reply.header('Content-Disposition', `attachment; filename="customers_export_${new Date().toISOString().split('T')[0]}.csv"`);
         return reply.send(csv);
     } catch (error) {
-        request.server.log.error('Export Error:', error);
-        reply.status(500).send({ success: false, message: 'Server Error exporting customers' });
+        handleCustomerError(request, reply, error, 'exporting customers');
     }
 };
 
@@ -52,7 +58,7 @@ exports.getProfile = async (request, reply) => {
         const cust = await customerService.getCustomerByPhone(request.params.phone);
         return { success: true, data: cust || null };
     } catch (error) {
-        reply.status(500).send({ success: false, message: 'Error fetching profile' });
+        handleCustomerError(request, reply, error, 'fetching profile');
     }
 };
 
@@ -62,7 +68,7 @@ exports.updateLimit = async (request, reply) => {
         const cust = await customerService.updateCustomerLimit(request.params.phone, name, isCreditEnabled, creditLimit);
         return { success: true, data: cust };
     } catch (error) {
-        reply.status(500).send({ success: false, message: 'Error updating limit' });
+        handleCustomerError(request, reply, error, 'updating limit');
     }
 };
 
@@ -71,8 +77,7 @@ exports.recordPayment = async (request, reply) => {
         const cust = await customerService.recordPayment(request.params.phone, request.body.amount);
         return { success: true, data: cust, message: 'Payment recorded successfully' };
     } catch (error) {
-        if (error.message === 'Customer not found.') return reply.status(404).send({ success: false, message: error.message });
-        reply.status(500).send({ success: false, message: 'Error recording payment' });
+        handleCustomerError(request, reply, error, 'recording payment');
     }
 };
 
@@ -81,7 +86,6 @@ exports.getAllCustomers = async (request, reply) => {
         const customers = await customerService.getAllCustomers();
         return { success: true, count: customers.length, data: customers };
     } catch (error) {
-        request.server.log.error('CRM Error:', error);
-        reply.status(500).send({ success: false, message: 'Server Error fetching all customers' });
+        handleCustomerError(request, reply, error, 'fetching all customers');
     }
 };
