@@ -11,6 +11,21 @@ const sseService = require('./orderSseService');
 // --- HELPER FUNCTIONS ---
 // ==========================================
 
+async function withTransaction(operation) {
+    const session = await mongoose.startSession();
+    session.startTransaction();
+    try {
+        const result = await operation(session);
+        await session.commitTransaction();
+        session.endSession();
+        return result;
+    } catch (error) {
+        await session.abortTransaction();
+        session.endSession();
+        throw error;
+    }
+}
+
 async function clearAnalyticsCache() {
     if (sseService.redisCache) {
         try { await sseService.redisCache.del('orders:analytics'); } catch(e) {}
@@ -35,9 +50,7 @@ async function generateOrderSequence(session) {
     return counter.seq;
 }
 
-// OPTIMIZED: Two-step Bulk Read/Write reduces DB trips from O(N) to O(1)
 async function deductInventory(items, storeId, session) {
-    // 1. Bulk Read: Fetch all required products in one go to verify stock
     const productIds = items.map(item => item.productId);
     const products = await Product.find({ _id: { $in: productIds } }).session(session).lean();
     
@@ -46,7 +59,6 @@ async function deductInventory(items, storeId, session) {
 
     const bulkOperations = [];
 
-    // 2. Validate stock in memory & prepare operations
     for (const item of items) {
         const product = productMap[item.productId.toString()];
         if (!product) {
@@ -58,12 +70,10 @@ async function deductInventory(items, storeId, session) {
             return { success: false, message: `Variant not found for item: ${item.name}` };
         }
 
-        // Exact error retention: Check global stock
         if (variant.stock < item.qty) {
             return { success: false, message: `Insufficient global stock for item: ${item.name}` };
         }
 
-        // Exact error retention: Check local store stock
         if (storeId) {
             const locStock = variant.locationInventory ? variant.locationInventory.find(l => l.storeId.toString() === storeId.toString()) : null;
             if (!locStock || locStock.stock < item.qty) {
@@ -71,7 +81,6 @@ async function deductInventory(items, storeId, session) {
             }
         }
 
-        // Prepare Global deduction operation
         bulkOperations.push({
             updateOne: {
                 filter: { _id: item.productId, "variants._id": item.variantId },
@@ -79,7 +88,6 @@ async function deductInventory(items, storeId, session) {
             }
         });
 
-        // Prepare Local deduction operation
         if (storeId) {
             bulkOperations.push({
                 updateOne: {
@@ -91,7 +99,6 @@ async function deductInventory(items, storeId, session) {
         }
     }
 
-    // 3. Bulk Write: Execute all deductions in a single database command
     if (bulkOperations.length > 0) {
         await Product.bulkWrite(bulkOperations, { session });
     }
@@ -99,7 +106,6 @@ async function deductInventory(items, storeId, session) {
     return { success: true };
 }
 
-// NEW: Consolidated Pay Later charge validation
 function validateAndApplyPayLater(custProfile, amount) {
     if (!custProfile || !custProfile.isCreditEnabled) {
         const err = new Error('Pay Later is not enabled for this account.'); err.statusCode = 400; throw err;
@@ -110,7 +116,6 @@ function validateAndApplyPayLater(custProfile, amount) {
     custProfile.creditUsed += amount;
 }
 
-// NEW: Consolidated Pay Later refund processing
 async function processPayLaterRefund(customerPhone, amount, session) {
     const custProfile = await Customer.findOne({ phone: customerPhone }).session(session);
     if (custProfile) {
@@ -124,9 +129,7 @@ async function processPayLaterRefund(customerPhone, amount, session) {
 // ==========================================
 
 exports.processExternalCheckout = async (payload) => {
-    const session = await mongoose.startSession();
-    session.startTransaction();
-    try {
+    return withTransaction(async (session) => {
         const { source, externalOrderId, customerName, customerPhone, deliveryAddress, items, totalAmount, paymentMethod, notes, storeId } = payload;
 
         const inventoryCheck = await deductInventory(items, storeId, session);
@@ -147,20 +150,14 @@ exports.processExternalCheckout = async (payload) => {
         });
 
         await newOrder.save({ session });
-        await session.commitTransaction();
-        session.endSession();
         await clearAnalyticsCache();
 
         return newOrder;
-    } catch (error) {
-        await session.abortTransaction(); session.endSession(); throw error;
-    }
+    });
 };
 
 exports.processOnlineCheckout = async (payload) => {
-    const session = await mongoose.startSession();
-    session.startTransaction();
-    try {
+    return withTransaction(async (session) => {
         const { customerName, customerPhone, deliveryAddress, items, totalAmount, deliveryType, scheduleTime, paymentMethod, notes, storeId } = payload;
         
         let custProfile = await Customer.findOne({ phone: customerPhone }).session(session);
@@ -195,23 +192,17 @@ exports.processOnlineCheckout = async (payload) => {
         });
 
         await newOrder.save({ session });
-        await session.commitTransaction();
-        session.endSession();
         await clearAnalyticsCache();
 
         const msg = `DailyPick Order Received! 🛒\nOrder ID: ${newOrder.orderNumber}\nTotal: ₹${totalAmount}\nDelivery: ${scheduleTime}\nThanks for shopping!`;
         sendWhatsAppMessage(customerPhone, msg);
 
         return newOrder;
-    } catch (error) {
-        await session.abortTransaction(); session.endSession(); throw error;
-    }
+    });
 };
 
 exports.processPosCheckout = async (payload) => {
-    const session = await mongoose.startSession();
-    session.startTransaction();
-    try {
+    return withTransaction(async (session) => {
         const { customerPhone, items, totalAmount, taxAmount, discountAmount, paymentMethod, splitDetails, pointsRedeemed, notes, storeId, registerId } = payload;
         let finalCustomerName = 'Walk-in Guest';
 
@@ -256,8 +247,6 @@ exports.processPosCheckout = async (payload) => {
         });
 
         await newOrder.save({ session });
-        await session.commitTransaction();
-        session.endSession();
         await clearAnalyticsCache();
 
         const loyaltyMsg = pointsRedeemed > 0 ? ` Points Redeemed: ${pointsRedeemed}.` : '';
@@ -265,15 +254,11 @@ exports.processPosCheckout = async (payload) => {
         sendWhatsAppMessage(customerPhone, msg);
 
         return newOrder;
-    } catch (error) {
-        await session.abortTransaction(); session.endSession(); throw error;
-    }
+    });
 };
 
 exports.processPartialRefund = async (orderId, payload, user) => {
-    const session = await mongoose.startSession();
-    session.startTransaction();
-    try {
+    return withTransaction(async (session) => {
         const { productId, variantId, qtyToRefund, newTotalAmount } = payload;
         const order = await Order.findById(orderId).session(session);
         if (!order) {
@@ -320,20 +305,14 @@ exports.processPartialRefund = async (orderId, payload, user) => {
             targetType: 'Order', targetId: order._id.toString(), details: { refundedItem: productId, qty: qtyToRefund }
         }], { session });
 
-        await session.commitTransaction();
-        session.endSession();
         await clearAnalyticsCache();
         
         return order;
-    } catch (error) {
-        await session.abortTransaction(); session.endSession(); throw error;
-    }
+    });
 };
 
 exports.processCancelOrder = async (orderId, reason, user) => {
-    const session = await mongoose.startSession();
-    session.startTransaction();
-    try {
+    return withTransaction(async (session) => {
         const order = await Order.findById(orderId).session(session);
         if (!order) {
             const err = new Error('Order not found'); err.statusCode = 404; throw err;
@@ -369,14 +348,10 @@ exports.processCancelOrder = async (orderId, reason, user) => {
             details: { reason: reason || 'Not provided', amountRefunded: order.totalAmount }
         }], { session });
         
-        await session.commitTransaction();
-        session.endSession();
         await clearAnalyticsCache();
 
         return order;
-    } catch (error) {
-        await session.abortTransaction(); session.endSession(); throw error;
-    }
+    });
 };
 
 // ==========================================
