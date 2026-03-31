@@ -1,25 +1,19 @@
 /* routes/index.js */
 
+const fs = require('fs');
+const path = require('path');
+
 async function apiRoutes(fastify, options) {
-    // --- Feature Routes ---
-    fastify.register(require('./productRoutes'));
-    fastify.register(require('./productOpsRoutes')); 
-    fastify.register(require('./orderRoutes'));
-    fastify.register(require('./customerRoutes')); 
-    fastify.register(require('./categoryRoutes'));
-    fastify.register(require('./brandRoutes')); 
-    fastify.register(require('./distributorRoutes')); 
-    fastify.register(require('./expenseRoutes')); 
-    fastify.register(require('./authRoutes')); 
-    fastify.register(require('./staffRoutes')); 
-    fastify.register(require('./promotionRoutes')); 
-    fastify.register(require('./shiftRoutes'));
-    fastify.register(require('./storeRoutes'));
-    fastify.register(require('./registerRoutes'));
-    fastify.register(require('./migrateRoute'));
-    fastify.register(require('./settingsRoutes'));
-    fastify.register(require('./auditRoutes'));
-    fastify.register(require('./analyticsRoutes'));
+    // Dynamically read all files in the current directory
+    const routesDir = __dirname;
+    const files = fs.readdirSync(routesDir);
+
+    for (const file of files) {
+        // Skip this index.js file and ensure it's a javascript file
+        if (file !== 'index.js' && file.endsWith('.js')) {
+            fastify.register(require(path.join(routesDir, file)));
+        }
+    }
 }
 
 module.exports = apiRoutes;
