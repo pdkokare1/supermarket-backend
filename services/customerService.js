@@ -45,8 +45,8 @@ exports.recordPayment = async (phone, amount) => {
     let cust = await Customer.findOne({ phone });
     if (!cust) throw new Error('Customer not found.');
     
-    cust.creditUsed -= Number(amount);
-    if (cust.creditUsed < 0) cust.creditUsed = 0; 
+    // Optimized: Replaced manual negative check with Math.max
+    cust.creditUsed = Math.max(0, cust.creditUsed - Number(amount));
     
     await cust.save();
     return cust;
