@@ -7,7 +7,6 @@ const fs = require('fs');
 const path = require('path');
 
 module.exports = function(fastify) {
-    // Schedule: Runs every Sunday at 3:00 AM Server Time
     cron.schedule('0 3 * * 0', async () => {
         if (!process.env.BACKUP_EMAIL || !process.env.SMTP_USER || !process.env.SMTP_PASS) {
             fastify.log.warn('[SECURITY] Backup Cron: Email configuration missing. Skipping automated backup.');
@@ -20,7 +19,6 @@ module.exports = function(fastify) {
         const filePath = path.join(__dirname, `../${fileName}`);
         
         try {
-            // OPTIMIZATION: Stream data directly to disk to prevent RAM exhaustion
             const fileStream = fs.createWriteStream(filePath);
             fileStream.write('{\n');
             
@@ -48,7 +46,6 @@ module.exports = function(fastify) {
 
             await new Promise(resolve => fileStream.on('finish', resolve));
 
-            // Configure Email Transport
             const transporter = nodemailer.createTransport({
                 service: 'gmail', 
                 auth: {
@@ -57,27 +54,23 @@ module.exports = function(fastify) {
                 }
             });
 
-            // Send Email with Attachment
             await transporter.sendMail({
                 from: `"DailyPick Security Watchdog" <${process.env.SMTP_USER}>`,
                 to: process.env.BACKUP_EMAIL,
                 subject: `🔒 Automated Database Backup - ${new Date().toLocaleDateString()}`,
                 text: 'Attached is the automated weekly secure backup of your entire MongoDB database. Keep this file safe.',
-                attachments: [
-                    {
-                        filename: fileName,
-                        path: filePath
-                    }
-                ]
+                attachments: [{ filename: fileName, path: filePath }]
             });
 
-            // Clean up local file to save disk space
-            if (fs.existsSync(filePath)) fs.unlinkSync(filePath); 
             fastify.log.info('[SECURITY] Automated backup completed and emailed securely.');
 
         } catch (error) {
             fastify.log.error('[SECURITY] Backup Cron Error:', error);
-            if (fs.existsSync(filePath)) fs.unlinkSync(filePath); 
+        } finally {
+            // OPTIMIZATION: Guaranteed cleanup prevents server disk space exhaustion
+            if (fs.existsSync(filePath)) {
+                fs.unlinkSync(filePath); 
+            }
         }
     });
 };
