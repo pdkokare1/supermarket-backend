@@ -7,6 +7,12 @@ const User = require('../models/User');
 // --- HELPER FUNCTIONS ---
 // ==========================================
 
+const handleAuthError = (request, reply, error, contextMessage) => {
+    if (error.status) return reply.status(error.status).send({ success: false, message: error.message });
+    request.server.log.error(`[Auth] ${contextMessage} Error:`, error);
+    reply.status(500).send({ success: false, message: `Server Error ${contextMessage.toLowerCase()}` });
+};
+
 const generateTokens = (request, user) => {
     const tokenVersion = user.tokenVersion || 0;
     
@@ -32,9 +38,7 @@ exports.setupAdmin = async (request, reply) => {
         const result = await authService.setupDefaultAdmin(process.env.SETUP_KEY, request.query.key, process.env.NODE_ENV === 'production');
         return { success: true, message: result.message };
     } catch (error) {
-        if (error.status) return reply.status(error.status).send({ success: false, message: error.message });
-        request.server.log.error(error);
-        reply.status(500).send({ success: false, message: 'Server Error' });
+        handleAuthError(request, reply, error, 'during setup');
     }
 };
 
@@ -93,8 +97,7 @@ exports.logout = async (request, reply) => {
         reply.clearCookie('refreshToken', { path: '/' });
         return { success: true, message: 'Logged out successfully globally.' };
     } catch (error) {
-        request.server.log.error(error);
-        reply.status(500).send({ success: false, message: 'Server Error during logout' });
+        handleAuthError(request, reply, error, 'during logout');
     }
 };
 
@@ -105,7 +108,6 @@ exports.verify = async (request, reply) => {
         
         return { success: true, message: 'Session verified', data: user };
     } catch (error) {
-        request.server.log.error(error);
-        reply.status(500).send({ success: false, message: 'Server Error during verification' });
+        handleAuthError(request, reply, error, 'during verification');
     }
 };
