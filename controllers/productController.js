@@ -3,7 +3,7 @@
 const Product = require('../models/Product');
 const crypto = require('crypto');
 const cacheService = require('../services/productCacheService');
-const inventoryService = require('../services/inventoryService'); // NEW IMPORT
+const inventoryService = require('../services/inventoryService'); 
 
 // ==========================================
 // --- HELPER FUNCTIONS ---
@@ -16,7 +16,6 @@ const syncAndBroadcast = async (request, productId, extraPayload = {}) => {
     }
 };
 
-// OPTIMIZATION: Extracted query building logic out of the main controller
 const buildProductQuery = (queryObj) => {
     let filter = queryObj.all === 'true' 
         ? { isArchived: { $ne: true } } 
@@ -54,23 +53,29 @@ const buildProductQuery = (queryObj) => {
     return filter;
 };
 
+const getCachedData = async (query) => {
+    if (!cacheService.redisCache) return { cacheKey: null, data: null };
+    const cacheKey = `products:${crypto.createHash('md5').update(JSON.stringify(query)).digest('hex')}`;
+    const cachedResponse = await cacheService.redisCache.get(cacheKey);
+    return { cacheKey, data: cachedResponse ? JSON.parse(cachedResponse) : null };
+};
+
+const setCachedData = async (cacheKey, responseData) => {
+    if (cacheService.redisCache && cacheKey) {
+        await cacheService.redisCache.set(cacheKey, JSON.stringify(responseData), 'EX', 3600); 
+    }
+};
+
 // ==========================================
 // --- CONTROLLER EXPORTS ---
 // ==========================================
 
 exports.getProducts = async (request, reply) => {
     try {
-        // OPTIMIZATION: Faster cache key generation using native hashing instead of sorting object keys
-        const queryHash = crypto.createHash('md5').update(JSON.stringify(request.query)).digest('hex');
-        const cacheKey = `products:${queryHash}`;
-
-        if (cacheService.redisCache) {
-            const cachedResponse = await cacheService.redisCache.get(cacheKey);
-            if (cachedResponse) return JSON.parse(cachedResponse);
-        }
+        const { cacheKey, data } = await getCachedData(request.query);
+        if (data) return data;
 
         const filter = buildProductQuery(request.query); 
-        
         const page = parseInt(request.query.page) || 1; 
         const limit = parseInt(request.query.limit); 
         
@@ -84,10 +89,8 @@ exports.getProducts = async (request, reply) => {
         const [products, total] = await Promise.all([query.lean(), Product.countDocuments(filter)]);
         
         const responseData = { success: true, count: products.length, total: total, data: products };
+        await setCachedData(cacheKey, responseData);
         
-        if (cacheService.redisCache) {
-            await cacheService.redisCache.set(cacheKey, JSON.stringify(responseData), 'EX', 3600); 
-        }
         return responseData;
     } catch (error) { 
         request.server.log.error(error); 
