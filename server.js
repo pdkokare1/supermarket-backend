@@ -20,7 +20,9 @@ try {
     if (process.env.REDIS_URL) {
         redisClient = new Redis(process.env.REDIS_URL);
     }
-} catch(e) {}
+} catch(e) {
+    console.warn('[SERVER] Redis initialization failed:', e.message);
+}
 
 // --- Modularized Setups ---
 require('./plugins/middlewareSetup')(fastify, redisClient); 
