@@ -1,9 +1,10 @@
 /* controllers/orderController.js */
 
 const Order = require('../models/Order');
-const { Parser } = require('json2csv'); 
 const sseService = require('../services/orderSseService');
 const orderService = require('../services/orderService'); 
+const { handleControllerError } = require('../utils/errorUtils'); // NEW IMPORT
+const { sendCsvResponse } = require('../utils/csvUtils'); // NEW IMPORT
 
 // ==========================================
 // --- HELPER FUNCTIONS ---
@@ -18,14 +19,6 @@ const setSSEHeaders = (request, reply) => {
         'Access-Control-Allow-Credentials': 'true',
         'X-Accel-Buffering': 'no'            
     });
-};
-
-const handleControllerError = (request, reply, error, contextMessage) => {
-    if (error.statusCode === 400) return reply.status(400).send({ success: false, message: error.message });
-    if (error.statusCode === 404) return reply.status(404).send({ success: false, message: error.message });
-    
-    request.server.log.error(`${contextMessage} Error:`, error);
-    reply.status(500).send({ success: false, message: `Server Error ${contextMessage.toLowerCase()}` });
 };
 
 const notifyNewOrder = (request, order, storeId, source = null) => {
@@ -197,11 +190,7 @@ exports.getOrders = async (request, reply) => {
 exports.exportOrders = async (request, reply) => {
     try {
         const exportData = await orderService.getAllOrdersForExport();
-        const csv = new Parser().parse(exportData);
-        
-        reply.header('Content-Type', 'text/csv');
-        reply.header('Content-Disposition', `attachment; filename="orders_export_${new Date().toISOString().split('T')[0]}.csv"`);
-        return reply.send(csv);
+        return sendCsvResponse(reply, exportData, 'orders');
     } catch (error) {
         handleControllerError(request, reply, error, 'exporting orders');
     }
