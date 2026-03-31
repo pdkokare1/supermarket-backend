@@ -9,6 +9,25 @@ const orderService = require('../services/orderService');
 // --- HELPER FUNCTIONS ---
 // ==========================================
 
+const setSSEHeaders = (request, reply) => {
+    reply.hijack(); 
+    reply.raw.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Access-Control-Allow-Origin': request.headers.origin || '*',  
+        'Access-Control-Allow-Credentials': 'true',
+        'X-Accel-Buffering': 'no'            
+    });
+};
+
+const handleControllerError = (request, reply, error, contextMessage) => {
+    if (error.statusCode === 400) return reply.status(400).send({ success: false, message: error.message });
+    if (error.statusCode === 404) return reply.status(404).send({ success: false, message: error.message });
+    
+    request.server.log.error(`${contextMessage} Error:`, error);
+    reply.status(500).send({ success: false, message: `Server Error ${contextMessage.toLowerCase()}` });
+};
+
 const notifyNewOrder = (request, order, storeId, source = null) => {
     const payloadObj = { type: 'NEW_ORDER', order };
     if (source) payloadObj.source = source;
@@ -36,14 +55,7 @@ const notifyStatusUpdate = (request, orderId, status, storeId) => {
 // ==========================================
 
 exports.streamAdmin = async (request, reply) => {
-    reply.hijack(); 
-    reply.raw.writeHead(200, {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        'Access-Control-Allow-Origin': request.headers.origin || '*',  
-        'Access-Control-Allow-Credentials': 'true',
-        'X-Accel-Buffering': 'no'            
-    });
+    setSSEHeaders(request, reply);
     reply.raw.write('data: {"message": "Admin Stream Connected"}\n\n');
     
     sseService.addAdminConnection(reply.raw);
@@ -54,16 +66,8 @@ exports.streamAdmin = async (request, reply) => {
 };
 
 exports.streamCustomer = async (request, reply) => {
-    reply.hijack(); 
     const orderId = request.params.id;
-    
-    reply.raw.writeHead(200, {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        'Access-Control-Allow-Origin': request.headers.origin || '*',  
-        'Access-Control-Allow-Credentials': 'true',
-        'X-Accel-Buffering': 'no'            
-    });
+    setSSEHeaders(request, reply);
     reply.raw.write('data: {"message": "Tracking Stream Connected"}\n\n');
     
     sseService.addCustomerConnection(orderId, reply.raw);
@@ -84,9 +88,7 @@ exports.externalCheckout = async (request, reply) => {
         notifyNewOrder(request, newOrder, request.body.storeId, request.body.source);
         return { success: true, message: `External Order Accepted from ${request.body.source}`, orderId: newOrder._id, orderNumber: newOrder.orderNumber };
     } catch (error) {
-        if (error.statusCode === 400) return reply.status(400).send({ success: false, message: error.message });
-        request.server.log.error('External Checkout Error:', error);
-        reply.status(500).send({ success: false, message: 'Server Error processing external checkout' });
+        handleControllerError(request, reply, error, 'processing external checkout');
     }
 };
 
@@ -96,9 +98,7 @@ exports.onlineCheckout = async (request, reply) => {
         notifyNewOrder(request, newOrder, request.body.storeId);
         return { success: true, message: 'Order Placed Successfully', orderId: newOrder._id };
     } catch (error) {
-        if (error.statusCode === 400) return reply.status(400).send({ success: false, message: error.message });
-        request.server.log.error('Checkout Error:', error);
-        reply.status(500).send({ success: false, message: 'Server Error processing checkout' });
+        handleControllerError(request, reply, error, 'processing checkout');
     }
 };
 
@@ -112,9 +112,7 @@ exports.posCheckout = async (request, reply) => {
 
         return { success: true, message: 'POS Transaction Complete', orderId: newOrder._id, orderData: newOrder };
     } catch (error) {
-        if (error.statusCode === 400) return reply.status(400).send({ success: false, message: error.message });
-        request.server.log.error('POS Checkout Error:', error);
-        reply.status(500).send({ success: false, message: 'Server Error processing POS transaction' });
+        handleControllerError(request, reply, error, 'processing POS transaction');
     }
 };
 
@@ -168,9 +166,7 @@ exports.partialRefund = async (request, reply) => {
         const order = await orderService.processPartialRefund(request.params.id, request.body, request.user);
         return { success: true, message: 'Item Partially Refunded', data: order };
     } catch (error) {
-        if (error.statusCode === 404) return reply.status(404).send({ success: false, message: error.message });
-        request.server.log.error('Partial Refund Error:', error);
-        reply.status(500).send({ success: false, message: 'Server Error processing refund' });
+        handleControllerError(request, reply, error, 'processing refund');
     }
 };
 
@@ -181,9 +177,7 @@ exports.cancelOrder = async (request, reply) => {
         notifyStatusUpdate(request, order._id, 'Cancelled', order.storeId);
         return { success: true, message: 'Order Cancelled and Stock Refunded', data: order };
     } catch (error) {
-        if (error.statusCode === 404) return reply.status(404).send({ success: false, message: error.message });
-        request.server.log.error('Cancel Error:', error);
-        reply.status(500).send({ success: false, message: 'Server Error cancelling order' });
+        handleControllerError(request, reply, error, 'cancelling order');
     }
 };
 
