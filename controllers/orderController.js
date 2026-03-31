@@ -6,6 +6,32 @@ const sseService = require('../services/orderSseService');
 const orderService = require('../services/orderService'); 
 
 // ==========================================
+// --- HELPER FUNCTIONS ---
+// ==========================================
+
+const notifyNewOrder = (request, order, storeId, source = null) => {
+    const payloadObj = { type: 'NEW_ORDER', order };
+    if (source) payloadObj.source = source;
+    
+    sseService.publishEvent('admin', JSON.stringify(payloadObj), { storeId });
+
+    if (request.server.broadcastToPOS) {
+        const posPayload = { type: 'NEW_ORDER', orderId: order._id, storeId };
+        if (source) posPayload.source = source;
+        request.server.broadcastToPOS(posPayload);
+    }
+};
+
+const notifyStatusUpdate = (request, orderId, status, storeId) => {
+    const payload = JSON.stringify({ type: 'STATUS_UPDATE', status });
+    sseService.publishEvent('customer', payload, { orderId });
+
+    if (request.server.broadcastToPOS) {
+        request.server.broadcastToPOS({ type: 'ORDER_STATUS_UPDATED', orderId, status, storeId });
+    }
+};
+
+// ==========================================
 // --- CONTROLLER EXPORTS ---
 // ==========================================
 
@@ -55,14 +81,7 @@ exports.externalCheckout = async (request, reply) => {
 
     try {
         const newOrder = await orderService.processExternalCheckout(request.body);
-        
-        const payload = JSON.stringify({ type: 'NEW_ORDER', order: newOrder, source: request.body.source });
-        sseService.publishEvent('admin', payload, { storeId: request.body.storeId });
-
-        if (request.server.broadcastToPOS) {
-            request.server.broadcastToPOS({ type: 'NEW_ORDER', orderId: newOrder._id, source: request.body.source, storeId: request.body.storeId });
-        }
-
+        notifyNewOrder(request, newOrder, request.body.storeId, request.body.source);
         return { success: true, message: `External Order Accepted from ${request.body.source}`, orderId: newOrder._id, orderNumber: newOrder.orderNumber };
     } catch (error) {
         if (error.statusCode === 400) return reply.status(400).send({ success: false, message: error.message });
@@ -74,14 +93,7 @@ exports.externalCheckout = async (request, reply) => {
 exports.onlineCheckout = async (request, reply) => {
     try {
         const newOrder = await orderService.processOnlineCheckout(request.body);
-        
-        const payload = JSON.stringify({ type: 'NEW_ORDER', order: newOrder });
-        sseService.publishEvent('admin', payload, { storeId: request.body.storeId });
-
-        if (request.server.broadcastToPOS) {
-            request.server.broadcastToPOS({ type: 'NEW_ORDER', orderId: newOrder._id, storeId: request.body.storeId });
-        }
-
+        notifyNewOrder(request, newOrder, request.body.storeId);
         return { success: true, message: 'Order Placed Successfully', orderId: newOrder._id };
     } catch (error) {
         if (error.statusCode === 400) return reply.status(400).send({ success: false, message: error.message });
@@ -93,7 +105,7 @@ exports.onlineCheckout = async (request, reply) => {
 exports.posCheckout = async (request, reply) => {
     try {
         const newOrder = await orderService.processPosCheckout(request.body);
-
+        
         if (request.server.broadcastToPOS) {
             request.server.broadcastToPOS({ type: 'NEW_ORDER', orderId: newOrder._id, source: 'POS', storeId: request.body.storeId });
         }
@@ -130,13 +142,7 @@ exports.updateStatus = async (request, reply) => {
         
         if (!order) return reply.status(404).send({ success: false, message: 'Order not found' });
 
-        const payload = JSON.stringify({ type: 'STATUS_UPDATE', status: status });
-        sseService.publishEvent('customer', payload, { orderId: order._id });
-
-        if (request.server.broadcastToPOS) {
-            request.server.broadcastToPOS({ type: 'ORDER_STATUS_UPDATED', orderId: order._id, status: status, storeId: order.storeId });
-        }
-
+        notifyStatusUpdate(request, order._id, status, order.storeId);
         return { success: true, data: order };
     } catch (error) {
         request.server.log.error('Status Update Error:', error);
@@ -149,11 +155,7 @@ exports.dispatchOrder = async (request, reply) => {
         const order = await Order.findByIdAndUpdate(request.params.id, { status: 'Dispatched' }, { new: true });
         if (!order) return reply.status(404).send({ success: false, message: 'Order not found' });
 
-        const payload = JSON.stringify({ type: 'STATUS_UPDATE', status: 'Dispatched' });
-        sseService.publishEvent('customer', payload, { orderId: order._id });
-
-        if (request.server.broadcastToPOS) request.server.broadcastToPOS({ type: 'ORDER_STATUS_UPDATED', orderId: order._id, status: 'Dispatched', storeId: order.storeId });
-
+        notifyStatusUpdate(request, order._id, 'Dispatched', order.storeId);
         return { success: true, data: order };
     } catch (error) {
         request.server.log.error('Dispatch Error:', error);
@@ -176,11 +178,7 @@ exports.cancelOrder = async (request, reply) => {
     try {
         const order = await orderService.processCancelOrder(request.params.id, request.body.reason, request.user);
         
-        const payload = JSON.stringify({ type: 'STATUS_UPDATE', status: 'Cancelled' });
-        sseService.publishEvent('customer', payload, { orderId: order._id });
-
-        if (request.server.broadcastToPOS) request.server.broadcastToPOS({ type: 'ORDER_STATUS_UPDATED', orderId: order._id, status: 'Cancelled', storeId: order.storeId });
-
+        notifyStatusUpdate(request, order._id, 'Cancelled', order.storeId);
         return { success: true, message: 'Order Cancelled and Stock Refunded', data: order };
     } catch (error) {
         if (error.statusCode === 404) return reply.status(404).send({ success: false, message: error.message });
@@ -189,7 +187,6 @@ exports.cancelOrder = async (request, reply) => {
     }
 };
 
-// OPTIMIZED: Aggregation logic moved to orderService
 exports.getAnalytics = async (request, reply) => {
     try {
         return await orderService.getAnalyticsData();
@@ -199,7 +196,6 @@ exports.getAnalytics = async (request, reply) => {
     }
 };
 
-// OPTIMIZED: Query and pagination logic moved to orderService
 exports.getOrders = async (request, reply) => {
     try {
         return await orderService.getOrdersList(request.query);
@@ -209,7 +205,6 @@ exports.getOrders = async (request, reply) => {
     }
 };
 
-// OPTIMIZED: DB mapping logic moved to orderService
 exports.exportOrders = async (request, reply) => {
     try {
         const exportData = await orderService.getAllOrdersForExport();
