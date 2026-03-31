@@ -128,8 +128,7 @@ exports.assignDriver = async (request, reply) => {
         if (!order) return reply.status(404).send({ success: false, message: 'Order not found' });
         return { success: true, data: order, message: 'Driver assigned successfully' };
     } catch (error) {
-        request.server.log.error('Driver Assignment Error:', error);
-        reply.status(500).send({ success: false, message: 'Server Error assigning driver' });
+        handleControllerError(request, reply, error, 'assigning driver');
     }
 };
 
@@ -143,8 +142,7 @@ exports.updateStatus = async (request, reply) => {
         notifyStatusUpdate(request, order._id, status, order.storeId);
         return { success: true, data: order };
     } catch (error) {
-        request.server.log.error('Status Update Error:', error);
-        reply.status(500).send({ success: false, message: 'Server Error updating status' });
+        handleControllerError(request, reply, error, 'updating status');
     }
 };
 
@@ -156,8 +154,7 @@ exports.dispatchOrder = async (request, reply) => {
         notifyStatusUpdate(request, order._id, 'Dispatched', order.storeId);
         return { success: true, data: order };
     } catch (error) {
-        request.server.log.error('Dispatch Error:', error);
-        reply.status(500).send({ success: false, message: 'Server Error dispatching order' });
+        handleControllerError(request, reply, error, 'dispatching order');
     }
 };
 
@@ -185,8 +182,7 @@ exports.getAnalytics = async (request, reply) => {
     try {
         return await orderService.getAnalyticsData();
     } catch (error) {
-        request.server.log.error('Analytics Error:', error);
-        reply.status(500).send({ success: false, message: 'Server Error fetching analytics' });
+        handleControllerError(request, reply, error, 'fetching analytics');
     }
 };
 
@@ -194,8 +190,7 @@ exports.getOrders = async (request, reply) => {
     try {
         return await orderService.getOrdersList(request.query);
     } catch (error) {
-        request.server.log.error('Fetch Error:', error);
-        reply.status(500).send({ success: false, message: 'Server Error fetching orders' });
+        handleControllerError(request, reply, error, 'fetching orders');
     }
 };
 
@@ -208,8 +203,7 @@ exports.exportOrders = async (request, reply) => {
         reply.header('Content-Disposition', `attachment; filename="orders_export_${new Date().toISOString().split('T')[0]}.csv"`);
         return reply.send(csv);
     } catch (error) {
-        request.server.log.error('Export Error:', error);
-        reply.status(500).send({ success: false, message: 'Server Error exporting orders' });
+        handleControllerError(request, reply, error, 'exporting orders');
     }
 };
 
@@ -219,7 +213,6 @@ exports.getOrderById = async (request, reply) => {
         if (!order) return reply.status(404).send({ success: false, message: 'Order not found' });
         return { success: true, data: order };
     } catch (error) {
-        request.server.log.error('Tracking Error:', error);
-        reply.status(500).send({ success: false, message: 'Server Error fetching order status' });
+        handleControllerError(request, reply, error, 'fetching order status');
     }
 };
