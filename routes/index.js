@@ -4,9 +4,9 @@ const fs = require('fs');
 const path = require('path');
 
 async function apiRoutes(fastify, options) {
-    // Dynamically read all files in the current directory
+    // Dynamically read all files in the current directory asynchronously
     const routesDir = __dirname;
-    const files = fs.readdirSync(routesDir);
+    const files = await fs.promises.readdir(routesDir);
 
     for (const file of files) {
         // Skip this index.js file and ensure it's a javascript file
