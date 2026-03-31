@@ -4,16 +4,12 @@ const Product = require('../models/Product');
 const crypto = require('crypto');
 const cacheService = require('../services/productCacheService');
 const inventoryService = require('../services/inventoryService');
-const productService = require('../services/productService'); // NEW IMPORT
+const productService = require('../services/productService');
+const { handleControllerError } = require('../utils/errorUtils'); // NEW IMPORT
 
 // ==========================================
 // --- HELPER FUNCTIONS ---
 // ==========================================
-
-const handleServerError = (request, reply, error, contextMessage) => {
-    request.server.log.error(`${contextMessage} Error:`, error);
-    reply.status(500).send({ success: false, message: `Server Error ${contextMessage}` });
-};
 
 const syncAndBroadcast = async (request, productId, extraPayload = {}) => {
     await cacheService.invalidateProductCache();
@@ -62,7 +58,7 @@ exports.getProducts = async (request, reply) => {
         
         return responseData;
     } catch (error) { 
-        handleServerError(request, reply, error, 'fetching products');
+        handleControllerError(request, reply, error, 'fetching products');
     }
 };
 
@@ -74,7 +70,7 @@ exports.createProduct = async (request, reply) => {
         await syncAndBroadcast(request, newProduct._id);
         return { success: true, message: 'Product added', data: newProduct };
     } catch (error) { 
-        handleServerError(request, reply, error, 'creating product');
+        handleControllerError(request, reply, error, 'creating product');
     }
 };
 
@@ -95,7 +91,7 @@ exports.updateProduct = async (request, reply) => {
         await syncAndBroadcast(request, updatedProduct._id);
         return { success: true, message: 'Product updated', data: updatedProduct };
     } catch (error) { 
-        handleServerError(request, reply, error, 'updating product');
+        handleControllerError(request, reply, error, 'updating product');
     }
 };
 
@@ -111,7 +107,7 @@ exports.archiveProduct = async (request, reply) => {
         await syncAndBroadcast(request, product._id);
         return { success: true, message: `Product archived securely`, data: product };
     } catch (error) { 
-        handleServerError(request, reply, error, 'archiving product');
+        handleControllerError(request, reply, error, 'archiving product');
     }
 };
 
@@ -126,7 +122,7 @@ exports.toggleProductStatus = async (request, reply) => {
         await syncAndBroadcast(request, product._id);
         return { success: true, message: `Product Status Toggled`, data: product };
     } catch (error) { 
-        handleServerError(request, reply, error, 'toggling status');
+        handleControllerError(request, reply, error, 'toggling status');
     }
 };
 
@@ -137,7 +133,7 @@ exports.restockProduct = async (request, reply) => {
         return { success: true, message: 'Restock processed successfully', data: product };
     } catch (error) { 
         if (error.message.includes('not found')) return reply.status(404).send({ success: false, message: error.message });
-        handleServerError(request, reply, error, 'restocking product');
+        handleControllerError(request, reply, error, 'restocking product');
     }
 };
 
@@ -148,7 +144,7 @@ exports.rtvProduct = async (request, reply) => {
         return { success: true, message: 'RTV processed successfully', data: product };
     } catch (error) { 
         if (error.message.includes('not found') || error.message.includes('Not enough stock')) return reply.status(400).send({ success: false, message: error.message });
-        handleServerError(request, reply, error, 'processing RTV');
+        handleControllerError(request, reply, error, 'processing RTV');
     }
 };
 
@@ -162,6 +158,6 @@ exports.transferStock = async (request, reply) => {
         if (error.message.includes('not found') || error.message.includes('Insufficient') || error.message.includes('Invalid')) {
             return reply.status(400).send({ success: false, message: error.message });
         }
-        handleServerError(request, reply, error, 'during stock transfer');
+        handleControllerError(request, reply, error, 'during stock transfer');
     }
 };
