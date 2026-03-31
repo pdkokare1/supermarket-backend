@@ -4,14 +4,28 @@ const Product = require('../models/Product');
 const Distributor = require('../models/Distributor');
 const AuditLog = require('../models/AuditLog');
 
-exports.processRestock = async (productId, payload) => {
-    const { variantId, invoiceNumber, addedQuantity, purchasingPrice, newSellingPrice, paymentStatus, storeId } = payload;
-    
+// ==========================================
+// --- HELPER FUNCTIONS ---
+// ==========================================
+
+const getProductAndVariant = async (productId, variantId) => {
     const product = await Product.findById(productId);
     if (!product) throw new Error('Product not found');
     
     const variant = product.variants.id(variantId);
     if (!variant) throw new Error('Variant not found');
+    
+    return { product, variant };
+};
+
+// ==========================================
+// --- SERVICE EXPORTS ---
+// ==========================================
+
+exports.processRestock = async (productId, payload) => {
+    const { variantId, invoiceNumber, addedQuantity, purchasingPrice, newSellingPrice, paymentStatus, storeId } = payload;
+    
+    const { product, variant } = await getProductAndVariant(productId, variantId);
     
     variant.purchaseHistory.push({ 
         invoiceNumber, 
@@ -49,11 +63,7 @@ exports.processRestock = async (productId, payload) => {
 exports.processRTV = async (productId, payload) => {
     const { variantId, distributorName, returnedQuantity, refundAmount, reason, storeId } = payload;
     
-    const product = await Product.findById(productId);
-    if (!product) throw new Error('Product not found');
-    
-    const variant = product.variants.id(variantId);
-    if (!variant) throw new Error('Variant not found');
+    const { product, variant } = await getProductAndVariant(productId, variantId);
     
     if (variant.stock < returnedQuantity) throw new Error('Not enough stock to return');
 
@@ -79,11 +89,7 @@ exports.processTransfer = async (payload, username, logError) => {
         throw new Error('Invalid transfer parameters.');
     }
 
-    const product = await Product.findById(productId);
-    if (!product) throw new Error('Product not found.');
-
-    const variant = product.variants.id(variantId);
-    if (!variant) throw new Error('Variant not found.');
+    const { product, variant } = await getProductAndVariant(productId, variantId);
 
     let fromLoc = variant.locationInventory.find(l => l.storeId.toString() === fromStoreId);
     let toLoc = variant.locationInventory.find(l => l.storeId.toString() === toStoreId);
