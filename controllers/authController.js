@@ -1,17 +1,11 @@
 /* controllers/authController.js */
 
 const authService = require('../services/authService');
-const User = require('../models/User');
+const { handleControllerError } = require('../utils/errorUtils'); // NEW IMPORT
 
 // ==========================================
 // --- HELPER FUNCTIONS ---
 // ==========================================
-
-const handleAuthError = (request, reply, error, contextMessage) => {
-    if (error.status) return reply.status(error.status).send({ success: false, message: error.message });
-    request.server.log.error(`[Auth] ${contextMessage} Error:`, error);
-    reply.status(500).send({ success: false, message: `Server Error ${contextMessage.toLowerCase()}` });
-};
 
 const generateTokens = (request, user) => {
     const tokenVersion = user.tokenVersion || 0;
@@ -38,7 +32,7 @@ exports.setupAdmin = async (request, reply) => {
         const result = await authService.setupDefaultAdmin(process.env.SETUP_KEY, request.query.key, process.env.NODE_ENV === 'production');
         return { success: true, message: result.message };
     } catch (error) {
-        handleAuthError(request, reply, error, 'during setup');
+        handleControllerError(request, reply, error, 'Auth Setup');
     }
 };
 
@@ -97,17 +91,17 @@ exports.logout = async (request, reply) => {
         reply.clearCookie('refreshToken', { path: '/' });
         return { success: true, message: 'Logged out successfully globally.' };
     } catch (error) {
-        handleAuthError(request, reply, error, 'during logout');
+        handleControllerError(request, reply, error, 'Auth Logout');
     }
 };
 
 exports.verify = async (request, reply) => {
     try {
-        const user = await User.findOne({ _id: request.query.id });
+        const user = await authService.getUserById(request.query.id);
         if (!user) return reply.status(401).send({ success: false, message: 'Invalid or inactive session.' });
         
         return { success: true, message: 'Session verified', data: user };
     } catch (error) {
-        handleAuthError(request, reply, error, 'during verification');
+        handleControllerError(request, reply, error, 'Auth Verification');
     }
 };
