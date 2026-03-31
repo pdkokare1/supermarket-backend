@@ -6,6 +6,19 @@ module.exports = function (fastify) {
     let redisPubWS = null;
     let redisSubWS = null;
 
+    // NEW: Abstracted Broadcast Helper
+    const sendToClients = (messageObj) => {
+        if (!fastify.websocketServer) return;
+        const msgStr = JSON.stringify(messageObj);
+        fastify.websocketServer.clients.forEach(function each(client) {
+            if (client.readyState === 1) { 
+                if (!messageObj.storeId || client.storeId === messageObj.storeId || client.isAdmin) {
+                    client.send(msgStr);
+                }
+            }
+        });
+    };
+
     if (process.env.REDIS_URL) {
         try {
             const Redis = require('ioredis');
@@ -14,15 +27,9 @@ module.exports = function (fastify) {
             
             redisSubWS.subscribe('POS_WS_STREAM');
             redisSubWS.on('message', (channel, messageStr) => {
-                if (channel === 'POS_WS_STREAM' && fastify.websocketServer) {
+                if (channel === 'POS_WS_STREAM') {
                     const parsed = JSON.parse(messageStr);
-                    fastify.websocketServer.clients.forEach(function each(client) {
-                        if (client.readyState === 1) { 
-                            if (!parsed.storeId || client.storeId === parsed.storeId || client.isAdmin) {
-                                client.send(JSON.stringify(parsed));
-                            }
-                        }
-                    });
+                    sendToClients(parsed);
                 }
             });
         } catch(e) {
@@ -34,14 +41,7 @@ module.exports = function (fastify) {
         if (redisPubWS) {
             redisPubWS.publish('POS_WS_STREAM', JSON.stringify(message));
         } else {
-            if (!fastify.websocketServer) return;
-            fastify.websocketServer.clients.forEach(function each(client) {
-                if (client.readyState === 1) { 
-                    if (!message.storeId || client.storeId === message.storeId || client.isAdmin) {
-                        client.send(JSON.stringify(message));
-                    }
-                }
-            });
+            sendToClients(message);
         }
     });
 
@@ -53,7 +53,6 @@ module.exports = function (fastify) {
         }
     });
     
-    // Safety feature attached to allow server.js to shut down Redis gracefully
     fastify.decorate('closeRedisWS', async () => {
         if (redisPubWS) await redisPubWS.quit();
         if (redisSubWS) await redisSubWS.quit();
