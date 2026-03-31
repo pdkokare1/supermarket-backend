@@ -6,25 +6,11 @@ const Product = require('../models/Product');
 const Customer = require('../models/Customer');
 const AuditLog = require('../models/AuditLog');
 const sseService = require('./orderSseService');
+const { withTransaction } = require('../utils/dbUtils'); // NEW IMPORT
 
 // ==========================================
 // --- HELPER FUNCTIONS ---
 // ==========================================
-
-async function withTransaction(operation) {
-    const session = await mongoose.startSession();
-    session.startTransaction();
-    try {
-        const result = await operation(session);
-        await session.commitTransaction();
-        session.endSession();
-        return result;
-    } catch (error) {
-        await session.abortTransaction();
-        session.endSession();
-        throw error;
-    }
-}
 
 async function clearAnalyticsCache() {
     if (sseService.redisCache) {
