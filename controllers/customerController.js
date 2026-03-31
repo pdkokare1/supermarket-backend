@@ -3,6 +3,24 @@
 const { Parser } = require('json2csv');
 const customerService = require('../services/customerService');
 
+// ==========================================
+// --- HELPER FUNCTIONS ---
+// ==========================================
+
+const formatCustomerForExport = (c) => ({
+    Name: c.name,
+    Phone: c.phone,
+    LoyaltyPoints: c.loyaltyPoints || 0,
+    CreditEnabled: c.isCreditEnabled ? 'Yes' : 'No',
+    CreditLimit: c.creditLimit || 0,
+    CreditUsed: c.creditUsed || 0,
+    JoinedDate: new Date(c.createdAt).toLocaleDateString()
+});
+
+// ==========================================
+// --- CONTROLLER EXPORTS ---
+// ==========================================
+
 exports.getCustomersFromOrders = async (request, reply) => {
     try {
         const customerList = await customerService.getAggregatedCustomers();
@@ -16,15 +34,7 @@ exports.getCustomersFromOrders = async (request, reply) => {
 exports.exportCustomers = async (request, reply) => {
     try {
         const customers = await customerService.getAllCustomers();
-        const exportData = customers.map(c => ({
-            Name: c.name,
-            Phone: c.phone,
-            LoyaltyPoints: c.loyaltyPoints || 0,
-            CreditEnabled: c.isCreditEnabled ? 'Yes' : 'No',
-            CreditLimit: c.creditLimit || 0,
-            CreditUsed: c.creditUsed || 0,
-            JoinedDate: new Date(c.createdAt).toLocaleDateString()
-        }));
+        const exportData = customers.map(formatCustomerForExport);
 
         const csv = new Parser().parse(exportData);
 
