@@ -1,11 +1,9 @@
 /* jobs/cronTasks.js */
 
 const mongoose = require('mongoose');
-const Product = require('../models/Product'); 
-const Order = require('../models/Order');     
-const Expense = require('../models/Expense'); 
-const Customer = require('../models/Customer'); 
-const AuditLog = require('../models/AuditLog'); 
+const Product = require('../models/Product'); // Retained for backup stream
+const Order = require('../models/Order');     // Retained for backup stream
+const Customer = require('../models/Customer'); // Retained for backup stream
 const nodemailer = require('nodemailer');    
 const cloudinary = require('cloudinary').v2; 
 
@@ -13,6 +11,11 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const zlib = require('zlib'); 
+
+// --- IMPORTED MODULAR SERVICES ---
+const inventoryService = require('../services/inventoryService');
+const orderService = require('../services/orderService');
+const auditService = require('../services/auditService');
 
 cloudinary.config({
     cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
@@ -152,26 +155,8 @@ const uploadFileToCloudinary = async (filePath, filename, retries = 3) => {
 async function runExpiryMonitor(fastify) {
     fastify.log.info('Running 12:00 AM Expiry & Wastage Monitor CRON Job...');
     try {
-        const sevenDaysFromNow = new Date();
-        sevenDaysFromNow.setDate(sevenDaysFromNow.getDate() + 7);
-
-        // OPTIMIZATION: Memory-safe cursor streaming instead of loading all products into RAM
-        const productCursor = Product.find({ isActive: true, "variants.expiryDate": { $ne: null } }).lean().cursor();
-        let expiringItems = [];
-
-        for await (const p of productCursor) {
-            p.variants.forEach(v => {
-                if (v.expiryDate && new Date(v.expiryDate) <= sevenDaysFromNow && v.stock > 0) {
-                    expiringItems.push({
-                        productId: p._id,
-                        name: p.name,
-                        variant: v.weightOrVolume,
-                        stock: v.stock,
-                        expiryDate: v.expiryDate
-                    });
-                }
-            });
-        }
+        // OPTIMIZED: Logic moved to inventoryService
+        const expiringItems = await inventoryService.getExpiringProducts(7);
 
         if (expiringItems.length > 0) {
             fastify.log.warn(`[WASTAGE WARNING] ${expiringItems.length} items expiring within 7 days.`);
@@ -191,20 +176,9 @@ async function runExpiryMonitor(fastify) {
 async function runDataRetentionCleanup(fastify) {
     fastify.log.info('Running 3:00 AM Data Retention Cleanup (90 Days)...');
     try {
-        const ninetyDaysAgo = new Date();
-        ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
-
-        const deletedOrders = await Order.deleteMany({ 
-            status: 'Cancelled', 
-            createdAt: { $lt: ninetyDaysAgo } 
-        });
-        
-        let deletedLogs = { deletedCount: 0 };
-        if (AuditLog) {
-            deletedLogs = await AuditLog.deleteMany({ 
-                createdAt: { $lt: ninetyDaysAgo } 
-            });
-        }
+        // OPTIMIZED: Delegated explicitly to services
+        const deletedOrders = await orderService.deleteOldCancelledOrders(90);
+        const deletedLogs = await auditService.deleteOldAuditLogs(90);
 
         fastify.log.info(`[CLEANUP] Deleted ${deletedOrders.deletedCount} old cancelled orders and ${deletedLogs.deletedCount} old audit logs.`);
     } catch(err) {
@@ -215,24 +189,10 @@ async function runDataRetentionCleanup(fastify) {
 async function runRoutineDeliveries(fastify) {
     fastify.log.info('Running 6:00 AM Routine Deliveries CRON Job...');
     try {
-        const routineOrders = await Order.find({ deliveryType: 'Routine', status: { $ne: 'Cancelled' } }).lean();
-        
-        if (routineOrders.length > 0) {
-            const newOrdersToInsert = routineOrders.map(ro => ({
-                customerName: ro.customerName,
-                customerPhone: ro.customerPhone,
-                deliveryAddress: ro.deliveryAddress,
-                items: ro.items,
-                totalAmount: ro.totalAmount,
-                paymentMethod: ro.paymentMethod,
-                deliveryType: 'Instant', 
-                scheduleTime: 'Generated via Routine',
-                status: 'Order Placed'
-            }));
-            
-            await Order.insertMany(newOrdersToInsert);
+        const generatedCount = await orderService.generateRoutineDeliveries();
+        if (generatedCount > 0) {
+            fastify.log.info(`Successfully generated ${generatedCount} routine orders for today.`);
         }
-        fastify.log.info(`Successfully generated ${routineOrders.length} routine orders for today.`);
     } catch (err) {
         fastify.log.error('6:00 AM Routine CRON Job Error:', err);
     }
@@ -246,84 +206,9 @@ async function runDailyInventory(fastify, updateInventoryReport) {
         const deadStockQty = Number(process.env.DEAD_STOCK_QTY) || 15;
         const deadStockDays = Number(process.env.DEAD_STOCK_DAYS) || 30;
 
-        const dateAgo = new Date();
-        dateAgo.setDate(dateAgo.getDate() - velocityDays);
-
-        const velocityAgg = await Order.aggregate([
-            { 
-                $match: { 
-                    createdAt: { $gte: dateAgo },
-                    status: { $in: ['Completed', 'Dispatched'] }
-                } 
-            },
-            { $unwind: "$items" },
-            { 
-                $group: { 
-                    _id: "$items.variantId", 
-                    totalSold: { $sum: "$items.qty" } 
-                } 
-            }
-        ]);
-
-        let variantSales = {};
-        velocityAgg.forEach(v => {
-            if (v._id) variantSales[v._id.toString()] = v.totalSold;
-        });
-
-        const productCursor = Product.find({ isActive: true }).cursor();
-        let lowStockItems = [];
-        let deadStockItems = [];
-        let bulkOps = []; 
-        
-        for await (let p of productCursor) {
-            let isModified = false;
-            
-            if (p.variants) {
-                p.variants.forEach(v => {
-                    const totalSold = variantSales[v._id.toString()] || 0;
-                    const dailyAvg = totalSold / velocityDays;
-                    v.averageDailySales = Number(dailyAvg.toFixed(2));
-
-                    if (dailyAvg > 0) {
-                        v.daysOfStock = Number((v.stock / dailyAvg).toFixed(1));
-                    } else {
-                        v.daysOfStock = 999;
-                    }
-                    isModified = true;
-
-                    if (v.stock <= (v.lowStockThreshold || lowStockThreshold) || (v.daysOfStock < 3 && v.stock > 0)) {
-                        lowStockItems.push({ 
-                            name: p.name, 
-                            variant: v.weightOrVolume, 
-                            stock: v.stock,
-                            daysLeft: v.daysOfStock 
-                        });
-                    }
-                    
-                    if (v.stock > deadStockQty && v.daysOfStock > deadStockDays) {
-                        deadStockItems.push({ 
-                            name: p.name, 
-                            variant: v.weightOrVolume, 
-                            stock: v.stock,
-                            daysLeft: v.daysOfStock 
-                        });
-                    }
-                });
-            }
-            
-            if (isModified) {
-                bulkOps.push({
-                    updateOne: {
-                        filter: { _id: p._id },
-                        update: { $set: { variants: p.variants } }
-                    }
-                });
-            }
-        }
-
-        if (bulkOps.length > 0) {
-            await Product.bulkWrite(bulkOps);
-        }
+        const { lowStockItems, deadStockItems } = await inventoryService.calculateSalesVelocityAndStock(
+            velocityDays, lowStockThreshold, deadStockQty, deadStockDays
+        );
 
         if (updateInventoryReport) {
             updateInventoryReport({
@@ -360,57 +245,21 @@ async function runEODBackup(fastify) {
         today.setHours(0, 0, 0, 0);
         const tomorrow = new Date(today);
         tomorrow.setDate(tomorrow.getDate() + 1);
-
-        // OPTIMIZATION: Memory-safe cursor streaming instead of loading all orders into RAM
-        const orderCursor = Order.find({
-            createdAt: { $gte: today, $lt: tomorrow },
-            status: { $ne: 'Cancelled' }
-        }).lean().cursor();
-
-        let totalRevenue = 0;
-        let cash = 0;
-        let upi = 0;
-        let payLater = 0;
-        let totalOrderCount = 0;
-
-        for await (const o of orderCursor) {
-            totalOrderCount++;
-            totalRevenue += o.totalAmount;
-            
-            if (o.paymentMethod === 'Cash') {
-                cash += o.totalAmount;
-            } else if (o.paymentMethod === 'UPI') {
-                upi += o.totalAmount;
-            } else if (o.paymentMethod === 'Pay Later') {
-                payLater += o.totalAmount;
-            } else if (o.paymentMethod === 'Split' && o.splitDetails) {
-                cash += (o.splitDetails.cash || 0);
-                upi += (o.splitDetails.upi || 0);
-            }
-        }
-
         const todayStr = new Date().toDateString();
-        
-        // OPTIMIZATION: Memory-safe cursor for expenses
-        const expenseCursor = Expense.find({ dateStr: todayStr }).lean().cursor();
-        let totalExpenses = 0;
-        for await (const ex of expenseCursor) {
-            totalExpenses += ex.amount;
-        }
-        
-        const netProfit = totalRevenue - totalExpenses;
+
+        const f = await orderService.getDailyFinancialTotals(today, tomorrow, todayStr);
 
         const dateString = new Date().toLocaleDateString();
         let reportText = `📈 *DailyPick EOD Report*\nDate: ${dateString}\n\n` +
-                         `*Total Orders:* ${totalOrderCount}\n` +
-                         `*Gross Revenue:* ₹${totalRevenue.toFixed(2)}\n\n` +
+                         `*Total Orders:* ${f.totalOrderCount}\n` +
+                         `*Gross Revenue:* ₹${f.totalRevenue.toFixed(2)}\n\n` +
                          `*Breakdown:*\n` +
-                         `💵 Cash: ₹${cash.toFixed(2)}\n` +
-                         `📱 UPI: ₹${upi.toFixed(2)}\n` +
-                         `⏳ Pay Later: ₹${payLater.toFixed(2)}\n\n` +
+                         `💵 Cash: ₹${f.cash.toFixed(2)}\n` +
+                         `📱 UPI: ₹${f.upi.toFixed(2)}\n` +
+                         `⏳ Pay Later: ₹${f.payLater.toFixed(2)}\n\n` +
                          `*Expenses & Profit:*\n` +
-                         `📉 Total Expenses: ₹${totalExpenses.toFixed(2)}\n` +
-                         `💰 Net Profit: ₹${netProfit.toFixed(2)}\n\n`;
+                         `📉 Total Expenses: ₹${f.totalExpenses.toFixed(2)}\n` +
+                         `💰 Net Profit: ₹${f.netProfit.toFixed(2)}\n\n`;
 
         const datePrefix = new Date().toISOString().split('T')[0];
         let emailAppend = '';
@@ -446,7 +295,7 @@ async function runEODBackup(fastify) {
             if (ordersPath && fs.existsSync(ordersPath)) fs.unlinkSync(ordersPath);
         }
 
-        const emailSent = await sendAdminEmail(fastify, `EOD Report & Backup: ₹${netProfit.toFixed(2)} Net Profit`, null, reportText + emailAppend);
+        const emailSent = await sendAdminEmail(fastify, `EOD Report & Backup: ₹${f.netProfit.toFixed(2)} Net Profit`, null, reportText + emailAppend);
         if (emailSent) fastify.log.info('11:59 PM EOD Email sent successfully.');
 
         const waSent = await sendAdminWhatsApp(fastify, reportText + `Great work today! 🚀`);
