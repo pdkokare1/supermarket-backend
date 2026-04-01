@@ -19,7 +19,8 @@ const invalidateProductCache = async () => {
                 const [newCursor, keys] = await redisCache.scan(cursor, 'MATCH', 'products:*', 'COUNT', 100);
                 cursor = newCursor;
                 if (keys.length > 0) {
-                    await redisCache.del(...keys);
+                    // OPTIMIZED: Using Redis pipeline for faster batch deletion
+                    await redisCache.pipeline().del(...keys).exec();
                 }
             } while (cursor !== '0');
         } catch(e) {
