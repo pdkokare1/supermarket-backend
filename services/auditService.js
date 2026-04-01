@@ -15,7 +15,6 @@ exports.logEvent = async ({ action, targetType, targetId, username, details = {}
 
     try {
         if (session) {
-            // When using a transaction, Mongoose expects an array for document creation
             await AuditLog.create([logEntry], { session });
         } else {
             await AuditLog.create(logEntry);
@@ -27,4 +26,13 @@ exports.logEvent = async ({ action, targetType, targetId, username, details = {}
             console.error('AuditLog Error:', error);
         }
     }
+};
+
+// --- NEW ABSTRACTIONS FOR CRON JOBS ---
+exports.deleteOldAuditLogs = async (days) => {
+    const targetDate = new Date();
+    targetDate.setDate(targetDate.getDate() - days);
+    
+    if (!AuditLog) return { deletedCount: 0 };
+    return await AuditLog.deleteMany({ createdAt: { $lt: targetDate } });
 };
