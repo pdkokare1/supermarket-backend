@@ -155,10 +155,11 @@ async function runExpiryMonitor(fastify) {
         const sevenDaysFromNow = new Date();
         sevenDaysFromNow.setDate(sevenDaysFromNow.getDate() + 7);
 
-        const products = await Product.find({ isActive: true, "variants.expiryDate": { $ne: null } }).lean();
+        // OPTIMIZATION: Memory-safe cursor streaming instead of loading all products into RAM
+        const productCursor = Product.find({ isActive: true, "variants.expiryDate": { $ne: null } }).lean().cursor();
         let expiringItems = [];
 
-        products.forEach(p => {
+        for await (const p of productCursor) {
             p.variants.forEach(v => {
                 if (v.expiryDate && new Date(v.expiryDate) <= sevenDaysFromNow && v.stock > 0) {
                     expiringItems.push({
@@ -170,7 +171,7 @@ async function runExpiryMonitor(fastify) {
                     });
                 }
             });
-        });
+        }
 
         if (expiringItems.length > 0) {
             fastify.log.warn(`[WASTAGE WARNING] ${expiringItems.length} items expiring within 7 days.`);
@@ -360,17 +361,20 @@ async function runEODBackup(fastify) {
         const tomorrow = new Date(today);
         tomorrow.setDate(tomorrow.getDate() + 1);
 
-        const todaysOrders = await Order.find({
+        // OPTIMIZATION: Memory-safe cursor streaming instead of loading all orders into RAM
+        const orderCursor = Order.find({
             createdAt: { $gte: today, $lt: tomorrow },
             status: { $ne: 'Cancelled' }
-        }).lean();
+        }).lean().cursor();
 
         let totalRevenue = 0;
         let cash = 0;
         let upi = 0;
         let payLater = 0;
+        let totalOrderCount = 0;
 
-        todaysOrders.forEach(o => {
+        for await (const o of orderCursor) {
+            totalOrderCount++;
             totalRevenue += o.totalAmount;
             
             if (o.paymentMethod === 'Cash') {
@@ -383,19 +387,22 @@ async function runEODBackup(fastify) {
                 cash += (o.splitDetails.cash || 0);
                 upi += (o.splitDetails.upi || 0);
             }
-        });
+        }
 
         const todayStr = new Date().toDateString();
-        const todaysExpenses = await Expense.find({ dateStr: todayStr });
         
+        // OPTIMIZATION: Memory-safe cursor for expenses
+        const expenseCursor = Expense.find({ dateStr: todayStr }).lean().cursor();
         let totalExpenses = 0;
-        todaysExpenses.forEach(ex => totalExpenses += ex.amount);
+        for await (const ex of expenseCursor) {
+            totalExpenses += ex.amount;
+        }
         
         const netProfit = totalRevenue - totalExpenses;
 
         const dateString = new Date().toLocaleDateString();
         let reportText = `📈 *DailyPick EOD Report*\nDate: ${dateString}\n\n` +
-                         `*Total Orders:* ${todaysOrders.length}\n` +
+                         `*Total Orders:* ${totalOrderCount}\n` +
                          `*Gross Revenue:* ₹${totalRevenue.toFixed(2)}\n\n` +
                          `*Breakdown:*\n` +
                          `💵 Cash: ₹${cash.toFixed(2)}\n` +
