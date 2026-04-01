@@ -2,9 +2,9 @@
 
 const Product = require('../models/Product');
 const Distributor = require('../models/Distributor');
-const AuditLog = require('../models/AuditLog');
 const { withTransaction } = require('../utils/dbUtils'); 
-const AppError = require('../utils/AppError'); // NEW IMPORT
+const AppError = require('../utils/AppError'); 
+const auditService = require('./auditService'); // NEW IMPORT
 
 // ==========================================
 // --- HELPER FUNCTIONS ---
@@ -120,15 +120,15 @@ exports.processTransfer = async (payload, username, logError) => {
 
         await product.save({ session });
         
-        if (AuditLog) {
-            await AuditLog.create([{
-                action: 'STOCK_TRANSFER',
-                targetType: 'Product',
-                targetId: product._id.toString(),
-                username: username,
-                details: { variantId, fromStoreId, toStoreId, quantity }
-            }], { session }).catch(e => logError('AuditLog Error:', e));
-        }
+        await auditService.logEvent({
+            action: 'STOCK_TRANSFER',
+            targetType: 'Product',
+            targetId: product._id.toString(),
+            username: username,
+            details: { variantId, fromStoreId, toStoreId, quantity },
+            session,
+            logError
+        });
         
         return product;
     });
