@@ -4,19 +4,17 @@ const mongoose = require('mongoose');
 const Order = require('../models/Order');
 const Product = require('../models/Product');
 const Customer = require('../models/Customer');
-const sseService = require('./orderSseService');
 const { withTransaction } = require('../utils/dbUtils');
 const AppError = require('../utils/AppError');
-const auditService = require('./auditService'); // NEW IMPORT
+const auditService = require('./auditService'); 
+const cacheUtils = require('../utils/cacheUtils'); // NEW IMPORT
 
 // ==========================================
 // --- HELPER FUNCTIONS ---
 // ==========================================
 
 async function clearAnalyticsCache() {
-    if (sseService.redisCache) {
-        try { await sseService.redisCache.del('orders:analytics'); } catch(e) {}
-    }
+    await cacheUtils.deleteKey('orders:analytics');
 }
 
 function sendWhatsAppMessage(phone, msg) {
@@ -355,10 +353,8 @@ exports.processCancelOrder = async (orderId, reason, user) => {
 // ==========================================
 
 exports.getAnalyticsData = async () => {
-    if (sseService.redisCache) {
-        const cachedAnalytics = await sseService.redisCache.get('orders:analytics');
-        if (cachedAnalytics) return JSON.parse(cachedAnalytics); 
-    }
+    const cachedAnalytics = await cacheUtils.getCachedData('orders:analytics');
+    if (cachedAnalytics) return cachedAnalytics; 
     
     const today = new Date(); today.setHours(23, 59, 59, 999);
     const sevenDaysAgo = new Date(today); sevenDaysAgo.setDate(today.getDate() - 6); sevenDaysAgo.setHours(0, 0, 0, 0);
@@ -391,7 +387,7 @@ exports.getAnalyticsData = async () => {
     const topItems = topItemsAgg.map(item => ({ name: `${item._id.name} (${item._id.variant})`, qty: item.qty, revenue: item.revenue }));
 
     const responsePayload = { success: true, data: { chartLabels: ['Day 1', 'Day 2', 'Day 3', 'Day 4', 'Day 5', 'Yesterday', 'Today'], revenueData: revenueLast7Days, topItems: topItems } };
-    if (sseService.redisCache) await sseService.redisCache.set('orders:analytics', JSON.stringify(responsePayload), 'EX', 900);
+    await cacheUtils.setCachedData('orders:analytics', responsePayload, 900);
 
     return responsePayload;
 };
