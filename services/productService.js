@@ -3,7 +3,8 @@
 const Product = require('../models/Product');
 const cacheUtils = require('../utils/cacheUtils');
 
-exports.buildProductQuery = (queryObj) => {
+// OPTIMIZED: Defined as a local constant to prevent 'this' context loss
+const buildProductQuery = (queryObj) => {
     let filter = queryObj.all === 'true' 
         ? { isArchived: { $ne: true } } 
         : { isActive: true, isArchived: { $ne: true } };
@@ -40,12 +41,14 @@ exports.buildProductQuery = (queryObj) => {
     return filter;
 };
 
+exports.buildProductQuery = buildProductQuery; // Re-export for external use
+
 exports.getPaginatedProducts = async (queryParams) => {
     const cacheKey = cacheUtils.generateKey('products', queryParams);
     const cachedData = await cacheUtils.getCachedData(cacheKey);
     if (cachedData) return cachedData;
 
-    const filter = this.buildProductQuery(queryParams); 
+    const filter = buildProductQuery(queryParams); // OPTIMIZED: Removed 'this.' dependency
     const page = parseInt(queryParams.page) || 1; 
     const limit = parseInt(queryParams.limit); 
     
