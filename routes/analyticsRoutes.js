@@ -4,12 +4,18 @@ const Product = require('../models/Product');
 const Order = require('../models/Order');
 const Expense = require('../models/Expense');
 const Shift = require('../models/Shift'); // Phase 6 addition
+const cacheUtils = require('../utils/cacheUtils'); // NEW IMPORT
 
 async function analyticsRoutes(fastify, options) {
     
     // --- PHASE 5: Advanced Financials (Profit & Loss) ---
     fastify.get('/api/analytics/pnl', { preHandler: [fastify.authenticate, fastify.verifyAdmin] }, async (request, reply) => {
         try {
+            // OPTIMIZATION: Check Cache First
+            const cacheKey = cacheUtils.generateKey('analytics:pnl', request.query);
+            const cachedData = await cacheUtils.getCachedData(cacheKey);
+            if (cachedData) return cachedData;
+
             const { startDate, endDate } = request.query;
             let dateFilter = {};
             
@@ -60,7 +66,7 @@ async function analyticsRoutes(fastify, options) {
             const grossProfit = totalRevenue - totalCOGS - totalTax;
             const netProfit = grossProfit - totalExpenses;
 
-            return {
+            const responseData = {
                 success: true,
                 data: {
                     totalRevenue,
@@ -73,6 +79,11 @@ async function analyticsRoutes(fastify, options) {
                     orderCount: orders.length
                 }
             };
+
+            // OPTIMIZATION: Save to Cache (15 minutes)
+            await cacheUtils.setCachedData(cacheKey, responseData, 900);
+            return responseData;
+
         } catch (error) {
             fastify.log.error('P&L Generation Error:', error);
             reply.status(500).send({ success: false, message: 'Server Error calculating P&L' });
@@ -82,6 +93,11 @@ async function analyticsRoutes(fastify, options) {
     // --- PHASE 5: AI-Driven Demand Forecasting ---
     fastify.post('/api/analytics/forecast', { preHandler: [fastify.authenticate, fastify.verifyAdmin] }, async (request, reply) => {
         try {
+            // OPTIMIZATION: Check Cache First (30 minutes for AI tasks)
+            const cacheKey = 'analytics:forecast:latest';
+            const cachedData = await cacheUtils.getCachedData(cacheKey);
+            if (cachedData) return cachedData;
+
             if (!process.env.GEMINI_API_KEY) {
                 return reply.status(400).send({ success: false, message: 'Gemini API key not configured on server.' });
             }
@@ -110,7 +126,7 @@ async function analyticsRoutes(fastify, options) {
                 return { success: true, data: { recommendations: [], message: "Inventory levels are exceptionally healthy. No AI forecast needed." } };
             }
 
-            const prompt = `
+            const promptText = `
             You are an advanced AI Supply Chain Analyst for a retail supermarket.
             Analyze this list of low-stock items:
             ${JSON.stringify(analysisData)}
@@ -128,7 +144,7 @@ async function analyticsRoutes(fastify, options) {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    contents: [{ parts: [{ text: prompt }] }],
+                    contents: [{ parts: [{ text: promptText }] }], // Fixed variable name to map correctly
                     generationConfig: { temperature: 0.2 } 
                 })
             });
@@ -145,7 +161,11 @@ async function analyticsRoutes(fastify, options) {
             textResult = textResult.trim();
 
             const parsedForecast = JSON.parse(textResult);
-            return { success: true, data: parsedForecast };
+            const responseData = { success: true, data: parsedForecast };
+            
+            // OPTIMIZATION: Save to Cache (30 minutes)
+            await cacheUtils.setCachedData(cacheKey, responseData, 1800);
+            return responseData;
 
         } catch (error) {
             fastify.log.error('AI Forecast Error:', error);
@@ -156,6 +176,11 @@ async function analyticsRoutes(fastify, options) {
     // --- PHASE 6: Staff Leaderboard / Gamification ---
     fastify.get('/api/analytics/leaderboard', { preHandler: [fastify.authenticate, fastify.verifyAdmin] }, async (request, reply) => {
         try {
+            // OPTIMIZATION: Check Cache First
+            const cacheKey = 'analytics:leaderboard';
+            const cachedData = await cacheUtils.getCachedData(cacheKey);
+            if (cachedData) return cachedData;
+
             // Aggregate shift history to determine best cashiers
             const leaderboard = await Shift.aggregate([
                 { $match: { status: 'Closed' } },
@@ -170,7 +195,12 @@ async function analyticsRoutes(fastify, options) {
                 { $sort: { totalRevenueHandled: -1 } } // Sort by most revenue handled
             ]);
 
-            return { success: true, data: leaderboard };
+            const responseData = { success: true, data: leaderboard };
+            
+            // OPTIMIZATION: Save to Cache (5 minutes)
+            await cacheUtils.setCachedData(cacheKey, responseData, 300);
+            return responseData;
+
         } catch (error) {
             fastify.log.error('Leaderboard Error:', error);
             reply.status(500).send({ success: false, message: 'Server Error fetching leaderboard' });
