@@ -64,21 +64,26 @@ async function deductInventory(items, storeId, session) {
             if (!locStock || locStock.stock < item.qty) {
                 return { success: false, message: `Insufficient local store stock for item: ${item.name}` };
             }
-        }
-
-        bulkOperations.push({
-            updateOne: {
-                filter: { _id: item.productId, "variants._id": item.variantId },
-                update: { $inc: { "variants.$.stock": -item.qty } }
-            }
-        });
-
-        if (storeId) {
+            
+            // OPTIMIZED: Update global stock and local location stock in a single DB operation using array filters
             bulkOperations.push({
                 updateOne: {
                     filter: { _id: item.productId },
-                    update: { $inc: { "variants.$[var].locationInventory.$[loc].stock": -item.qty } },
+                    update: { 
+                        $inc: { 
+                            "variants.$[var].stock": -item.qty,
+                            "variants.$[var].locationInventory.$[loc].stock": -item.qty 
+                        } 
+                    },
                     arrayFilters: [{ "var._id": item.variantId }, { "loc.storeId": storeId }]
+                }
+            });
+        } else {
+            // Update only global stock if no storeId is provided
+            bulkOperations.push({
+                updateOne: {
+                    filter: { _id: item.productId, "variants._id": item.variantId },
+                    update: { $inc: { "variants.$.stock": -item.qty } }
                 }
             });
         }
@@ -109,6 +114,31 @@ async function processPayLaterRefund(customerPhone, amount, session) {
     }
 }
 
+// OPTIMIZED: Central helper to handle inventory deduction, order numbering, and saving to DRY up checkout logic
+async function finalizeAndSaveOrder(session, items, storeId, orderPrefix, orderData) {
+    const inventoryCheck = await deductInventory(items, storeId, session);
+    if (!inventoryCheck.success) {
+        throw new AppError(inventoryCheck.message, 400);
+    }
+
+    const seqNumber = await generateOrderSequence(session);
+    const orderNumber = `${orderPrefix}-${seqNumber}`;
+    const dateString = new Date().toISOString().split('T')[0];
+
+    const newOrder = new Order({
+        orderNumber,
+        dateString,
+        storeId: storeId || null,
+        items,
+        ...orderData
+    });
+
+    await newOrder.save({ session });
+    await clearAnalyticsCache();
+
+    return newOrder;
+}
+
 // ==========================================
 // --- TRANSACTION SERVICES ---
 // ==========================================
@@ -117,27 +147,21 @@ exports.processExternalCheckout = async (payload) => {
     return withTransaction(async (session) => {
         const { source, externalOrderId, customerName, customerPhone, deliveryAddress, items, totalAmount, paymentMethod, notes, storeId } = payload;
 
-        const inventoryCheck = await deductInventory(items, storeId, session);
-        if (!inventoryCheck.success) {
-            throw new AppError(inventoryCheck.message, 400);
-        }
-
-        const seqNumber = await generateOrderSequence(session);
-        const orderNumber = `EXT-${source.toUpperCase().substring(0, 3)}-${seqNumber}`;
-        const dateString = new Date().toISOString().split('T')[0];
+        const orderPrefix = `EXT-${source.toUpperCase().substring(0, 3)}`;
         const formattedNotes = `[${source.toUpperCase()}] Ext ID: ${externalOrderId || 'N/A'}. ${notes || ''}`;
 
-        const newOrder = new Order({
-            orderNumber, dateString, storeId: storeId || null, notes: formattedNotes,
-            customerName: customerName || `${source} Customer`, customerPhone: customerPhone || '', 
-            deliveryAddress: deliveryAddress || `${source} Pickup`, items, totalAmount,
-            paymentMethod: paymentMethod || 'Prepaid External', deliveryType: 'Instant', status: 'Order Placed'
-        });
+        const orderData = {
+            notes: formattedNotes,
+            customerName: customerName || `${source} Customer`, 
+            customerPhone: customerPhone || '', 
+            deliveryAddress: deliveryAddress || `${source} Pickup`, 
+            totalAmount,
+            paymentMethod: paymentMethod || 'Prepaid External', 
+            deliveryType: 'Instant', 
+            status: 'Order Placed'
+        };
 
-        await newOrder.save({ session });
-        await clearAnalyticsCache();
-
-        return newOrder;
+        return await finalizeAndSaveOrder(session, items, storeId, orderPrefix, orderData);
     });
 };
 
@@ -161,25 +185,20 @@ exports.processOnlineCheckout = async (payload) => {
         }
         await custProfile.save({ session });
 
-        const inventoryCheck = await deductInventory(items, storeId, session);
-        if (!inventoryCheck.success) {
-            throw new AppError(inventoryCheck.message, 400);
-        }
+        const orderData = {
+            notes: notes || '',
+            customerName, 
+            customerPhone, 
+            deliveryAddress, 
+            totalAmount,
+            paymentMethod: paymentMethod || 'Cash on Delivery', 
+            deliveryType: deliveryType || 'Instant', 
+            scheduleTime: scheduleTime || 'ASAP'
+        };
 
-        const seqNumber = await generateOrderSequence(session);
-        const orderNumber = `ORD-${seqNumber}`;
-        const dateString = new Date().toISOString().split('T')[0];
+        const newOrder = await finalizeAndSaveOrder(session, items, storeId, 'ORD', orderData);
 
-        const newOrder = new Order({
-            orderNumber, dateString, storeId: storeId || null, notes: notes || '',
-            customerName, customerPhone, deliveryAddress, items, totalAmount,
-            paymentMethod: paymentMethod || 'Cash on Delivery', deliveryType: deliveryType || 'Instant', scheduleTime: scheduleTime || 'ASAP'
-        });
-
-        await newOrder.save({ session });
-        await clearAnalyticsCache();
-
-        const msg = `DailyPick Order Received! 🛒\nOrder ID: ${newOrder.orderNumber}\nTotal: ₹${totalAmount}\nDelivery: ${scheduleTime}\nThanks for shopping!`;
+        const msg = `DailyPick Order Received! 🛒\nOrder ID: ${newOrder.orderNumber}\nTotal: ₹${totalAmount}\nDelivery: ${scheduleTime || 'ASAP'}\nThanks for shopping!`;
         sendWhatsAppMessage(customerPhone, msg);
 
         return newOrder;
@@ -215,24 +234,22 @@ exports.processPosCheckout = async (payload) => {
             }
         }
 
-        const inventoryCheck = await deductInventory(items, storeId, session);
-        if (!inventoryCheck.success) {
-            throw new AppError(inventoryCheck.message, 400);
-        }
+        const orderData = {
+            registerId: registerId || null, 
+            notes: notes || '',
+            customerName: finalCustomerName, 
+            customerPhone: customerPhone || '', 
+            deliveryAddress: 'In-Store Purchase', 
+            totalAmount, 
+            taxAmount: taxAmount || 0, 
+            discountAmount: discountAmount || 0, 
+            paymentMethod,
+            splitDetails: splitDetails || { cash: 0, upi: 0 }, 
+            deliveryType: 'Instant', 
+            status: 'Completed' 
+        };
 
-        const seqNumber = await generateOrderSequence(session);
-        const orderNumber = `ORD-${seqNumber}`;
-        const dateString = new Date().toISOString().split('T')[0];
-
-        const newOrder = new Order({
-            orderNumber, dateString, storeId: storeId || null, registerId: registerId || null, notes: notes || '',
-            customerName: finalCustomerName, customerPhone: customerPhone || '', deliveryAddress: 'In-Store Purchase', 
-            items, totalAmount, taxAmount: taxAmount || 0, discountAmount: discountAmount || 0, paymentMethod,
-            splitDetails: splitDetails || { cash: 0, upi: 0 }, deliveryType: 'Instant', status: 'Completed' 
-        });
-
-        await newOrder.save({ session });
-        await clearAnalyticsCache();
+        const newOrder = await finalizeAndSaveOrder(session, items, storeId, 'ORD', orderData);
 
         const loyaltyMsg = pointsRedeemed > 0 ? ` Points Redeemed: ${pointsRedeemed}.` : '';
         const msg = `Thank you for shopping at DailyPick! 🛒\nOrder: ${newOrder.orderNumber}\nTotal: ₹${totalAmount}\n${loyaltyMsg}\nVisit again!`;
