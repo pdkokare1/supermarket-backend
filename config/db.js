@@ -8,7 +8,10 @@ const connectDB = async (fastify) => {
     while (retries) {
         try {
             await mongoose.connect(process.env.MONGO_URI, {
-                maxPoolSize: 50
+                // OPTIMIZATION: Configurable pool size for clustered environments
+                maxPoolSize: parseInt(process.env.MONGO_MAX_POOL_SIZE, 10) || 50,
+                // OPTIMIZATION: Fail fast (5s) to trigger the retry logic instead of hanging
+                serverSelectionTimeoutMS: 5000 
             });
             if (fastify && fastify.log) {
                 fastify.log.info(`Successfully connected to MongoDB Atlas by Process ${process.pid}`);
