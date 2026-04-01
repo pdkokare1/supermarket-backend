@@ -4,6 +4,7 @@ const mongoose = require('mongoose');
 const Order = require('../models/Order');
 const Product = require('../models/Product');
 const Customer = require('../models/Customer');
+const Expense = require('../models/Expense'); // NEW IMPORT FOR EOD FINANCIALS
 const { withTransaction } = require('../utils/dbUtils');
 const AppError = require('../utils/AppError');
 const auditService = require('./auditService'); 
@@ -46,18 +47,12 @@ async function deductInventory(items, storeId, session) {
 
     for (const item of items) {
         const product = productMap[item.productId.toString()];
-        if (!product) {
-            return { success: false, message: `Product not found: ${item.name}` };
-        }
+        if (!product) return { success: false, message: `Product not found: ${item.name}` };
 
         const variant = product.variants.find(v => v._id.toString() === item.variantId.toString());
-        if (!variant) {
-            return { success: false, message: `Variant not found for item: ${item.name}` };
-        }
+        if (!variant) return { success: false, message: `Variant not found for item: ${item.name}` };
 
-        if (variant.stock < item.qty) {
-            return { success: false, message: `Insufficient global stock for item: ${item.name}` };
-        }
+        if (variant.stock < item.qty) return { success: false, message: `Insufficient global stock for item: ${item.name}` };
 
         if (storeId) {
             const locStock = variant.locationInventory ? variant.locationInventory.find(l => l.storeId.toString() === storeId.toString()) : null;
@@ -65,7 +60,6 @@ async function deductInventory(items, storeId, session) {
                 return { success: false, message: `Insufficient local store stock for item: ${item.name}` };
             }
             
-            // OPTIMIZED: Update global stock and local location stock in a single DB operation using array filters
             bulkOperations.push({
                 updateOne: {
                     filter: { _id: item.productId },
@@ -79,7 +73,6 @@ async function deductInventory(items, storeId, session) {
                 }
             });
         } else {
-            // Update only global stock if no storeId is provided
             bulkOperations.push({
                 updateOne: {
                     filter: { _id: item.productId, "variants._id": item.variantId },
@@ -89,10 +82,7 @@ async function deductInventory(items, storeId, session) {
         }
     }
 
-    if (bulkOperations.length > 0) {
-        await Product.bulkWrite(bulkOperations, { session });
-    }
-
+    if (bulkOperations.length > 0) await Product.bulkWrite(bulkOperations, { session });
     return { success: true };
 }
 
@@ -114,30 +104,69 @@ async function processPayLaterRefund(customerPhone, amount, session) {
     }
 }
 
-// OPTIMIZED: Central helper to handle inventory deduction, order numbering, and saving to DRY up checkout logic
 async function finalizeAndSaveOrder(session, items, storeId, orderPrefix, orderData) {
     const inventoryCheck = await deductInventory(items, storeId, session);
-    if (!inventoryCheck.success) {
-        throw new AppError(inventoryCheck.message, 400);
-    }
+    if (!inventoryCheck.success) throw new AppError(inventoryCheck.message, 400);
 
     const seqNumber = await generateOrderSequence(session);
     const orderNumber = `${orderPrefix}-${seqNumber}`;
     const dateString = new Date().toISOString().split('T')[0];
 
-    const newOrder = new Order({
-        orderNumber,
-        dateString,
-        storeId: storeId || null,
-        items,
-        ...orderData
-    });
-
+    const newOrder = new Order({ orderNumber, dateString, storeId: storeId || null, items, ...orderData });
     await newOrder.save({ session });
     await clearAnalyticsCache();
 
     return newOrder;
 }
+
+// ==========================================
+// --- CRON ABSTRACTIONS ---
+// ==========================================
+
+exports.deleteOldCancelledOrders = async (days) => {
+    const targetDate = new Date();
+    targetDate.setDate(targetDate.getDate() - days);
+    return await Order.deleteMany({ status: 'Cancelled', createdAt: { $lt: targetDate } });
+};
+
+exports.generateRoutineDeliveries = async () => {
+    const routineOrders = await Order.find({ deliveryType: 'Routine', status: { $ne: 'Cancelled' } }).lean();
+    if (routineOrders.length > 0) {
+        const newOrdersToInsert = routineOrders.map(ro => ({
+            customerName: ro.customerName, customerPhone: ro.customerPhone,
+            deliveryAddress: ro.deliveryAddress, items: ro.items,
+            totalAmount: ro.totalAmount, paymentMethod: ro.paymentMethod,
+            deliveryType: 'Instant', scheduleTime: 'Generated via Routine', status: 'Order Placed'
+        }));
+        await Order.insertMany(newOrdersToInsert);
+    }
+    return routineOrders.length;
+};
+
+exports.getDailyFinancialTotals = async (today, tomorrow, todayStr) => {
+    const orderCursor = Order.find({ createdAt: { $gte: today, $lt: tomorrow }, status: { $ne: 'Cancelled' } }).lean().cursor();
+    let totalRevenue = 0, cash = 0, upi = 0, payLater = 0, totalOrderCount = 0;
+
+    for await (const o of orderCursor) {
+        totalOrderCount++;
+        totalRevenue += o.totalAmount;
+        if (o.paymentMethod === 'Cash') cash += o.totalAmount;
+        else if (o.paymentMethod === 'UPI') upi += o.totalAmount;
+        else if (o.paymentMethod === 'Pay Later') payLater += o.totalAmount;
+        else if (o.paymentMethod === 'Split' && o.splitDetails) {
+            cash += (o.splitDetails.cash || 0);
+            upi += (o.splitDetails.upi || 0);
+        }
+    }
+
+    const expenseCursor = Expense.find({ dateStr: todayStr }).lean().cursor();
+    let totalExpenses = 0;
+    for await (const ex of expenseCursor) {
+        totalExpenses += ex.amount;
+    }
+    
+    return { totalOrderCount, totalRevenue, cash, upi, payLater, totalExpenses, netProfit: totalRevenue - totalExpenses };
+};
 
 // ==========================================
 // --- TRANSACTION SERVICES ---
@@ -146,21 +175,9 @@ async function finalizeAndSaveOrder(session, items, storeId, orderPrefix, orderD
 exports.processExternalCheckout = async (payload) => {
     return withTransaction(async (session) => {
         const { source, externalOrderId, customerName, customerPhone, deliveryAddress, items, totalAmount, paymentMethod, notes, storeId } = payload;
-
         const orderPrefix = `EXT-${source.toUpperCase().substring(0, 3)}`;
         const formattedNotes = `[${source.toUpperCase()}] Ext ID: ${externalOrderId || 'N/A'}. ${notes || ''}`;
-
-        const orderData = {
-            notes: formattedNotes,
-            customerName: customerName || `${source} Customer`, 
-            customerPhone: customerPhone || '', 
-            deliveryAddress: deliveryAddress || `${source} Pickup`, 
-            totalAmount,
-            paymentMethod: paymentMethod || 'Prepaid External', 
-            deliveryType: 'Instant', 
-            status: 'Order Placed'
-        };
-
+        const orderData = { notes: formattedNotes, customerName: customerName || `${source} Customer`, customerPhone: customerPhone || '', deliveryAddress: deliveryAddress || `${source} Pickup`, totalAmount, paymentMethod: paymentMethod || 'Prepaid External', deliveryType: 'Instant', status: 'Order Placed' };
         return await finalizeAndSaveOrder(session, items, storeId, orderPrefix, orderData);
     });
 };
@@ -168,34 +185,18 @@ exports.processExternalCheckout = async (payload) => {
 exports.processOnlineCheckout = async (payload) => {
     return withTransaction(async (session) => {
         const { customerName, customerPhone, deliveryAddress, items, totalAmount, deliveryType, scheduleTime, paymentMethod, notes, storeId } = payload;
-        
         let custProfile = await Customer.findOne({ phone: customerPhone }).session(session);
-        
-        if (paymentMethod === 'Pay Later') {
-            validateAndApplyPayLater(custProfile, totalAmount);
-        }
+        if (paymentMethod === 'Pay Later') validateAndApplyPayLater(custProfile, totalAmount);
 
         if (!custProfile) {
             custProfile = new Customer({ phone: customerPhone, name: customerName });
-            if (paymentMethod === 'Pay Later') {
-                throw new AppError('Pay Later is not enabled for this new account.', 400);
-            }
+            if (paymentMethod === 'Pay Later') throw new AppError('Pay Later is not enabled for this new account.', 400);
         } else if (custProfile.name !== customerName) {
             custProfile.name = customerName; 
         }
         await custProfile.save({ session });
 
-        const orderData = {
-            notes: notes || '',
-            customerName, 
-            customerPhone, 
-            deliveryAddress, 
-            totalAmount,
-            paymentMethod: paymentMethod || 'Cash on Delivery', 
-            deliveryType: deliveryType || 'Instant', 
-            scheduleTime: scheduleTime || 'ASAP'
-        };
-
+        const orderData = { notes: notes || '', customerName, customerPhone, deliveryAddress, totalAmount, paymentMethod: paymentMethod || 'Cash on Delivery', deliveryType: deliveryType || 'Instant', scheduleTime: scheduleTime || 'ASAP' };
         const newOrder = await finalizeAndSaveOrder(session, items, storeId, 'ORD', orderData);
 
         const msg = `DailyPick Order Received! 🛒\nOrder ID: ${newOrder.orderNumber}\nTotal: ₹${totalAmount}\nDelivery: ${scheduleTime || 'ASAP'}\nThanks for shopping!`;
@@ -214,19 +215,12 @@ exports.processPosCheckout = async (payload) => {
             let custProfile = await Customer.findOne({ phone: customerPhone }).session(session);
             if (custProfile) {
                 finalCustomerName = custProfile.name;
-                if (pointsRedeemed && pointsRedeemed > 0) {
-                    custProfile.loyaltyPoints = Math.max(0, (custProfile.loyaltyPoints || 0) - pointsRedeemed);
-                }
+                if (pointsRedeemed && pointsRedeemed > 0) custProfile.loyaltyPoints = Math.max(0, (custProfile.loyaltyPoints || 0) - pointsRedeemed);
                 custProfile.loyaltyPoints = (custProfile.loyaltyPoints || 0) + Math.floor(totalAmount / 100);
-                
-                if (paymentMethod === 'Pay Later') {
-                    validateAndApplyPayLater(custProfile, totalAmount);
-                }
+                if (paymentMethod === 'Pay Later') validateAndApplyPayLater(custProfile, totalAmount);
                 await custProfile.save({ session });
             } else {
-                if (paymentMethod === 'Pay Later') {
-                    throw new AppError('Pay Later is not enabled for this new account.', 400);
-                }
+                if (paymentMethod === 'Pay Later') throw new AppError('Pay Later is not enabled for this new account.', 400);
                 const earnedPoints = Math.floor(totalAmount / 100);
                 custProfile = new Customer({ phone: customerPhone, name: 'In-Store Customer', loyaltyPoints: earnedPoints });
                 await custProfile.save({ session });
@@ -234,21 +228,7 @@ exports.processPosCheckout = async (payload) => {
             }
         }
 
-        const orderData = {
-            registerId: registerId || null, 
-            notes: notes || '',
-            customerName: finalCustomerName, 
-            customerPhone: customerPhone || '', 
-            deliveryAddress: 'In-Store Purchase', 
-            totalAmount, 
-            taxAmount: taxAmount || 0, 
-            discountAmount: discountAmount || 0, 
-            paymentMethod,
-            splitDetails: splitDetails || { cash: 0, upi: 0 }, 
-            deliveryType: 'Instant', 
-            status: 'Completed' 
-        };
-
+        const orderData = { registerId: registerId || null, notes: notes || '', customerName: finalCustomerName, customerPhone: customerPhone || '', deliveryAddress: 'In-Store Purchase', totalAmount, taxAmount: taxAmount || 0, discountAmount: discountAmount || 0, paymentMethod, splitDetails: splitDetails || { cash: 0, upi: 0 }, deliveryType: 'Instant', status: 'Completed' };
         const newOrder = await finalizeAndSaveOrder(session, items, storeId, 'ORD', orderData);
 
         const loyaltyMsg = pointsRedeemed > 0 ? ` Points Redeemed: ${pointsRedeemed}.` : '';
@@ -263,22 +243,12 @@ exports.processPartialRefund = async (orderId, payload, user) => {
     return withTransaction(async (session) => {
         const { productId, variantId, qtyToRefund, newTotalAmount } = payload;
         const order = await Order.findById(orderId).session(session);
-        if (!order) {
-            throw new AppError('Order not found', 404);
-        }
+        if (!order) throw new AppError('Order not found', 404);
 
-        await Product.updateOne(
-            { _id: productId, "variants._id": variantId },
-            { $inc: { "variants.$.stock": qtyToRefund } },
-            { session }
-        );
+        await Product.updateOne({ _id: productId, "variants._id": variantId }, { $inc: { "variants.$.stock": qtyToRefund } }, { session });
 
         if (order.storeId) {
-            await Product.updateOne(
-                { _id: productId },
-                { $inc: { "variants.$[var].locationInventory.$[loc].stock": qtyToRefund } },
-                { arrayFilters: [{ "var._id": variantId }, { "loc.storeId": order.storeId }], session }
-            ).catch(() => {});
+            await Product.updateOne({ _id: productId }, { $inc: { "variants.$[var].locationInventory.$[loc].stock": qtyToRefund } }, { arrayFilters: [{ "var._id": variantId }, { "loc.storeId": order.storeId }], session }).catch(() => {});
         }
 
         let updatedItems = [];
@@ -286,32 +256,19 @@ exports.processPartialRefund = async (orderId, payload, user) => {
             if(item.productId === productId && item.variantId === variantId) {
                 item.qty = item.qty - qtyToRefund;
                 if(item.qty > 0) updatedItems.push(item);
-            } else {
-                updatedItems.push(item);
-            }
+            } else updatedItems.push(item);
         }
         order.items = updatedItems;
 
         if (order.paymentMethod === 'Pay Later') {
             const diff = order.totalAmount - newTotalAmount;
-            if (diff > 0) {
-                await processPayLaterRefund(order.customerPhone, diff, session);
-            }
+            if (diff > 0) await processPayLaterRefund(order.customerPhone, diff, session);
         }
         
         order.totalAmount = newTotalAmount;
         await order.save({ session });
 
-        await auditService.logEvent({
-            action: 'PARTIAL_REFUND',
-            targetType: 'Order',
-            targetId: order._id.toString(),
-            username: user.username,
-            userId: user.id,
-            details: { refundedItem: productId, qty: qtyToRefund },
-            session
-        });
-
+        await auditService.logEvent({ action: 'PARTIAL_REFUND', targetType: 'Order', targetId: order._id.toString(), username: user.username, userId: user.id, details: { refundedItem: productId, qty: qtyToRefund }, session });
         await clearAnalyticsCache();
         
         return order;
@@ -321,58 +278,24 @@ exports.processPartialRefund = async (orderId, payload, user) => {
 exports.processCancelOrder = async (orderId, reason, user) => {
     return withTransaction(async (session) => {
         const order = await Order.findById(orderId).session(session);
-        if (!order) {
-            throw new AppError('Order not found', 404);
-        }
+        if (!order) throw new AppError('Order not found', 404);
         
         order.status = 'Cancelled';
+        if (order.paymentMethod === 'Pay Later') await processPayLaterRefund(order.customerPhone, order.totalAmount, session);
 
-        if (order.paymentMethod === 'Pay Later') {
-            await processPayLaterRefund(order.customerPhone, order.totalAmount, session);
-        }
-
-        // OPTIMIZED: Using bulkWrite to prevent N+1 sequential DB calls during multi-item cancellations
         const bulkOperations = [];
         for (const item of order.items) {
             if (order.storeId) {
-                bulkOperations.push({
-                    updateOne: {
-                        filter: { _id: item.productId },
-                        update: { 
-                            $inc: { 
-                                "variants.$[var].stock": item.qty,
-                                "variants.$[var].locationInventory.$[loc].stock": item.qty 
-                            } 
-                        },
-                        arrayFilters: [{ "var._id": item.variantId }, { "loc.storeId": order.storeId }]
-                    }
-                });
+                bulkOperations.push({ updateOne: { filter: { _id: item.productId }, update: { $inc: { "variants.$[var].stock": item.qty, "variants.$[var].locationInventory.$[loc].stock": item.qty } }, arrayFilters: [{ "var._id": item.variantId }, { "loc.storeId": order.storeId }] } });
             } else {
-                bulkOperations.push({
-                    updateOne: {
-                        filter: { _id: item.productId, "variants._id": item.variantId },
-                        update: { $inc: { "variants.$.stock": item.qty } }
-                    }
-                });
+                bulkOperations.push({ updateOne: { filter: { _id: item.productId, "variants._id": item.variantId }, update: { $inc: { "variants.$.stock": item.qty } } } });
             }
         }
-
-        if (bulkOperations.length > 0) {
-            await Product.bulkWrite(bulkOperations, { session });
-        }
+        if (bulkOperations.length > 0) await Product.bulkWrite(bulkOperations, { session });
 
         await order.save({ session });
         
-        await auditService.logEvent({
-            action: 'CANCEL_ORDER',
-            targetType: 'Order',
-            targetId: order._id.toString(),
-            username: user ? user.username : 'System',
-            userId: user ? user.id : null,
-            details: { reason: reason || 'Not provided', amountRefunded: order.totalAmount },
-            session
-        });
-        
+        await auditService.logEvent({ action: 'CANCEL_ORDER', targetType: 'Order', targetId: order._id.toString(), username: user ? user.username : 'System', userId: user ? user.id : null, details: { reason: reason || 'Not provided', amountRefunded: order.totalAmount }, session });
         await clearAnalyticsCache();
 
         return order;
@@ -390,33 +313,15 @@ exports.getAnalyticsData = async () => {
     const today = new Date(); today.setHours(23, 59, 59, 999);
     const sevenDaysAgo = new Date(today); sevenDaysAgo.setDate(today.getDate() - 6); sevenDaysAgo.setHours(0, 0, 0, 0);
 
-    // OPTIMIZED: Execute independent analytics queries in parallel rather than sequentially
     const [revenueAgg, topItemsAgg] = await Promise.all([
-        Order.aggregate([
-            { $match: { status: { $in: ['Dispatched', 'Completed'] }, createdAt: { $gte: sevenDaysAgo, $lte: today } } },
-            { $group: { _id: "$dateString", dailyRevenue: { $sum: "$totalAmount" } } },
-            { $sort: { _id: 1 } }
-        ]),
-        Order.aggregate([
-            { $match: { status: { $in: ['Dispatched', 'Completed'] }, createdAt: { $gte: sevenDaysAgo, $lte: today } } },
-            { $unwind: "$items" },
-            { $group: { _id: { name: "$items.name", variant: "$items.selectedVariant" }, qty: { $sum: "$items.qty" }, revenue: { $sum: { $multiply: ["$items.price", "$items.qty"] } } } },
-            { $sort: { qty: -1 } },
-            { $limit: 5 }
-        ])
+        Order.aggregate([{ $match: { status: { $in: ['Dispatched', 'Completed'] }, createdAt: { $gte: sevenDaysAgo, $lte: today } } }, { $group: { _id: "$dateString", dailyRevenue: { $sum: "$totalAmount" } } }, { $sort: { _id: 1 } }]),
+        Order.aggregate([{ $match: { status: { $in: ['Dispatched', 'Completed'] }, createdAt: { $gte: sevenDaysAgo, $lte: today } } }, { $unwind: "$items" }, { $group: { _id: { name: "$items.name", variant: "$items.selectedVariant" }, qty: { $sum: "$items.qty" }, revenue: { $sum: { $multiply: ["$items.price", "$items.qty"] } } } }, { $sort: { qty: -1 } }, { $limit: 5 }])
     ]);
 
     let revenueLast7Days = [0, 0, 0, 0, 0, 0, 0];
     const datesToMap = [];
-    for(let i=0; i<7; i++){
-        const d = new Date(sevenDaysAgo); d.setDate(sevenDaysAgo.getDate() + i); datesToMap.push(d.toISOString().split('T')[0]);
-    }
-    
-    revenueAgg.forEach(item => {
-        const index = datesToMap.indexOf(item._id);
-        if (index !== -1) revenueLast7Days[index] = item.dailyRevenue;
-    });
-
+    for(let i=0; i<7; i++){ const d = new Date(sevenDaysAgo); d.setDate(sevenDaysAgo.getDate() + i); datesToMap.push(d.toISOString().split('T')[0]); }
+    revenueAgg.forEach(item => { const index = datesToMap.indexOf(item._id); if (index !== -1) revenueLast7Days[index] = item.dailyRevenue; });
     const topItems = topItemsAgg.map(item => ({ name: `${item._id.name} (${item._id.variant})`, qty: item.qty, revenue: item.revenue }));
 
     const responsePayload = { success: true, data: { chartLabels: ['Day 1', 'Day 2', 'Day 3', 'Day 4', 'Day 5', 'Yesterday', 'Today'], revenueData: revenueLast7Days, topItems: topItems } };
@@ -444,31 +349,18 @@ exports.getOrdersList = async (queryParams) => {
     let query = Order.find(filter).sort({ createdAt: -1 });
     if (limit) query = query.skip((page - 1) * limit).limit(limit);
 
-    const [orders, total, pendingOrders] = await Promise.all([
-        query.lean(), Order.countDocuments(filter), Order.find({ status: { $in: ['Order Placed', 'Packing'] } }).lean()
-    ]);
+    const [orders, total, pendingOrders] = await Promise.all([query.lean(), Order.countDocuments(filter), Order.find({ status: { $in: ['Order Placed', 'Packing'] } }).lean()]);
 
-    return { 
-        success: true, count: orders.length, total: total, data: orders,
-        stats: { pendingCount: pendingOrders.length, pendingRevenue: pendingOrders.reduce((sum, o) => sum + o.totalAmount, 0) }
-    };
+    return { success: true, count: orders.length, total: total, data: orders, stats: { pendingCount: pendingOrders.length, pendingRevenue: pendingOrders.reduce((sum, o) => sum + o.totalAmount, 0) } };
 };
 
 exports.getAllOrdersForExport = async () => {
     const orders = await Order.find().sort({ createdAt: -1 }).lean();
-    return orders.map(o => ({
-        OrderID: o.orderNumber || o._id.toString(), Date: new Date(o.createdAt).toLocaleString(),
-        CustomerName: o.customerName, Phone: o.customerPhone, TotalAmount: o.totalAmount,
-        Status: o.status, PaymentMethod: o.paymentMethod, DeliveryType: o.deliveryType
-    }));
+    return orders.map(o => ({ OrderID: o.orderNumber || o._id.toString(), Date: new Date(o.createdAt).toLocaleString(), CustomerName: o.customerName, Phone: o.customerPhone, TotalAmount: o.totalAmount, Status: o.status, PaymentMethod: o.paymentMethod, DeliveryType: o.deliveryType }));
 };
 
 exports.assignDriverToOrder = async (orderId, driverName, driverPhone) => {
-    return await Order.findByIdAndUpdate(
-        orderId, 
-        { deliveryDriverName: driverName, driverPhone: driverPhone || '' }, 
-        { new: true }
-    );
+    return await Order.findByIdAndUpdate(orderId, { deliveryDriverName: driverName, driverPhone: driverPhone || '' }, { new: true });
 };
 
 exports.updateOrderStatus = async (orderId, status) => {
