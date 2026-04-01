@@ -3,6 +3,17 @@
 const Product = require('../models/Product');
 const cacheUtils = require('../utils/cacheUtils');
 
+// ==========================================
+// --- HELPER FUNCTIONS ---
+// ==========================================
+
+const syncAndBroadcast = async (server, productId, extraPayload = {}) => {
+    await cacheUtils.invalidateByPattern('products:*');
+    if (server && server.broadcastToPOS) {
+        server.broadcastToPOS({ type: 'INVENTORY_UPDATED', productId, ...extraPayload });
+    }
+};
+
 // OPTIMIZED: Defined as a local constant to prevent 'this' context loss
 const buildProductQuery = (queryObj) => {
     let filter = queryObj.all === 'true' 
@@ -43,12 +54,16 @@ const buildProductQuery = (queryObj) => {
 
 exports.buildProductQuery = buildProductQuery; // Re-export for external use
 
+// ==========================================
+// --- SERVICE EXPORTS ---
+// ==========================================
+
 exports.getPaginatedProducts = async (queryParams) => {
     const cacheKey = cacheUtils.generateKey('products', queryParams);
     const cachedData = await cacheUtils.getCachedData(cacheKey);
     if (cachedData) return cachedData;
 
-    const filter = buildProductQuery(queryParams); // OPTIMIZED: Removed 'this.' dependency
+    const filter = buildProductQuery(queryParams); 
     const page = parseInt(queryParams.page) || 1; 
     const limit = parseInt(queryParams.limit); 
     
@@ -65,4 +80,50 @@ exports.getPaginatedProducts = async (queryParams) => {
     await cacheUtils.setCachedData(cacheKey, responseData, 3600);
     
     return responseData;
+};
+
+exports.createProduct = async (server, productData) => {
+    const newProduct = new Product(productData);
+    await newProduct.save();
+    await syncAndBroadcast(server, newProduct._id);
+    return newProduct;
+};
+
+exports.updateProduct = async (server, productId, updateData) => {
+    // Protected fields stripped here for security
+    delete updateData._id;
+    delete updateData.isArchived;
+    delete updateData.isActive;
+    
+    const updatedProduct = await Product.findByIdAndUpdate(
+        productId, 
+        { $set: updateData }, 
+        { new: true, runValidators: true }
+    );
+    
+    if (updatedProduct) await syncAndBroadcast(server, updatedProduct._id);
+    return updatedProduct;
+};
+
+exports.archiveProduct = async (server, productId) => {
+    const product = await Product.findById(productId);
+    if (!product) return null;
+    
+    product.isArchived = true; 
+    product.isActive = false; 
+    await product.save();
+    
+    await syncAndBroadcast(server, product._id);
+    return product;
+};
+
+exports.toggleProductStatus = async (server, productId) => {
+    const product = await Product.findById(productId);
+    if (!product) return null;
+    
+    product.isActive = !product.isActive; 
+    await product.save();
+    
+    await syncAndBroadcast(server, product._id);
+    return product;
 };
