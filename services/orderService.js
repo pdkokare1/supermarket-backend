@@ -4,10 +4,10 @@ const mongoose = require('mongoose');
 const Order = require('../models/Order');
 const Product = require('../models/Product');
 const Customer = require('../models/Customer');
-const AuditLog = require('../models/AuditLog');
 const sseService = require('./orderSseService');
 const { withTransaction } = require('../utils/dbUtils');
-const AppError = require('../utils/AppError'); // NEW IMPORT
+const AppError = require('../utils/AppError');
+const auditService = require('./auditService'); // NEW IMPORT
 
 // ==========================================
 // --- HELPER FUNCTIONS ---
@@ -287,10 +287,15 @@ exports.processPartialRefund = async (orderId, payload, user) => {
         order.totalAmount = newTotalAmount;
         await order.save({ session });
 
-        await AuditLog.create([{
-            userId: user.id, username: user.username, action: 'PARTIAL_REFUND',
-            targetType: 'Order', targetId: order._id.toString(), details: { refundedItem: productId, qty: qtyToRefund }
-        }], { session });
+        await auditService.logEvent({
+            action: 'PARTIAL_REFUND',
+            targetType: 'Order',
+            targetId: order._id.toString(),
+            username: user.username,
+            userId: user.id,
+            details: { refundedItem: productId, qty: qtyToRefund },
+            session
+        });
 
         await clearAnalyticsCache();
         
@@ -329,11 +334,15 @@ exports.processCancelOrder = async (orderId, reason, user) => {
 
         await order.save({ session });
         
-        await AuditLog.create([{
-            userId: user ? user.id : null, username: user ? user.username : 'System',
-            action: 'CANCEL_ORDER', targetType: 'Order', targetId: order._id.toString(),
-            details: { reason: reason || 'Not provided', amountRefunded: order.totalAmount }
-        }], { session });
+        await auditService.logEvent({
+            action: 'CANCEL_ORDER',
+            targetType: 'Order',
+            targetId: order._id.toString(),
+            username: user ? user.username : 'System',
+            userId: user ? user.id : null,
+            details: { reason: reason || 'Not provided', amountRefunded: order.totalAmount },
+            session
+        });
         
         await clearAnalyticsCache();
 
