@@ -1,10 +1,9 @@
 /* controllers/orderController.js */
 
-const Order = require('../models/Order');
 const sseService = require('../services/orderSseService');
 const orderService = require('../services/orderService'); 
-const { handleControllerError } = require('../utils/errorUtils'); // NEW IMPORT
-const { sendCsvResponse } = require('../utils/csvUtils'); // NEW IMPORT
+const { handleControllerError } = require('../utils/errorUtils'); 
+const { sendCsvResponse } = require('../utils/csvUtils'); 
 
 // ==========================================
 // --- HELPER FUNCTIONS ---
@@ -112,11 +111,7 @@ exports.posCheckout = async (request, reply) => {
 exports.assignDriver = async (request, reply) => {
     try {
         const { driverName, driverPhone } = request.body;
-        const order = await Order.findByIdAndUpdate(
-            request.params.id, 
-            { deliveryDriverName: driverName, driverPhone: driverPhone || '' }, 
-            { new: true }
-        );
+        const order = await orderService.assignDriverToOrder(request.params.id, driverName, driverPhone);
         
         if (!order) return reply.status(404).send({ success: false, message: 'Order not found' });
         return { success: true, data: order, message: 'Driver assigned successfully' };
@@ -128,7 +123,7 @@ exports.assignDriver = async (request, reply) => {
 exports.updateStatus = async (request, reply) => {
     try {
         const { status } = request.body;
-        const order = await Order.findByIdAndUpdate(request.params.id, { status: status }, { new: true });
+        const order = await orderService.updateOrderStatus(request.params.id, status);
         
         if (!order) return reply.status(404).send({ success: false, message: 'Order not found' });
 
@@ -141,7 +136,7 @@ exports.updateStatus = async (request, reply) => {
 
 exports.dispatchOrder = async (request, reply) => {
     try {
-        const order = await Order.findByIdAndUpdate(request.params.id, { status: 'Dispatched' }, { new: true });
+        const order = await orderService.dispatchOrder(request.params.id);
         if (!order) return reply.status(404).send({ success: false, message: 'Order not found' });
 
         notifyStatusUpdate(request, order._id, 'Dispatched', order.storeId);
@@ -198,7 +193,7 @@ exports.exportOrders = async (request, reply) => {
 
 exports.getOrderById = async (request, reply) => {
     try {
-        const order = await Order.findById(request.params.id).lean();
+        const order = await orderService.getOrderById(request.params.id);
         if (!order) return reply.status(404).send({ success: false, message: 'Order not found' });
         return { success: true, data: order };
     } catch (error) {
