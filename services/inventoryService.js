@@ -4,7 +4,7 @@ const Product = require('../models/Product');
 const Distributor = require('../models/Distributor');
 const { withTransaction } = require('../utils/dbUtils'); 
 const AppError = require('../utils/AppError'); 
-const auditService = require('./auditService'); // NEW IMPORT
+const auditService = require('./auditService'); 
 
 // ==========================================
 // --- HELPER FUNCTIONS ---
@@ -31,39 +31,51 @@ exports.processRestock = async (productId, payload) => {
     return withTransaction(async (session) => {
         const { variantId, invoiceNumber, addedQuantity, purchasingPrice, newSellingPrice, paymentStatus, storeId } = payload;
         
+        // Fetch to validate existence and structure
         const { product, variant } = await getProductAndVariant(productId, variantId, session);
         
-        variant.purchaseHistory.push({ 
+        const purchaseHistoryEntry = { 
             invoiceNumber, 
             addedQuantity: Number(addedQuantity), 
             purchasingPrice: Number(purchasingPrice), 
             sellingPrice: Number(newSellingPrice),
             storeId: storeId 
-        });
+        };
+
+        // OPTIMIZED: Building an atomic update query to prevent save race conditions
+        const updateQuery = {
+            $push: { "variants.$[var].purchaseHistory": purchaseHistoryEntry },
+            $inc: { "variants.$[var].stock": Number(addedQuantity) },
+            $set: { "variants.$[var].price": Number(newSellingPrice) }
+        };
         
-        variant.stock += Number(addedQuantity); 
-        variant.price = Number(newSellingPrice);
+        const arrayFilters = [{ "var._id": variantId }];
 
         if (storeId) {
-            let locStock = variant.locationInventory.find(l => l.storeId && l.storeId.toString() === storeId);
-            if (locStock) {
-                locStock.stock += Number(addedQuantity);
+            const hasStore = variant.locationInventory.some(l => l.storeId && l.storeId.toString() === storeId);
+            if (hasStore) {
+                updateQuery.$inc["variants.$[var].locationInventory.$[loc].stock"] = Number(addedQuantity);
+                arrayFilters.push({ "loc.storeId": storeId });
             } else {
-                variant.locationInventory.push({ storeId: storeId, stock: Number(addedQuantity) });
+                updateQuery.$push["variants.$[var].locationInventory"] = { storeId: storeId, stock: Number(addedQuantity) };
             }
         }
+
+        const updatedProduct = await Product.findOneAndUpdate(
+            { _id: productId },
+            updateQuery,
+            { new: true, arrayFilters, session }
+        );
         
-        await product.save({ session });
-        
-        if (paymentStatus === 'Credit' && product.distributorName) {
+        if (paymentStatus === 'Credit' && updatedProduct.distributorName) {
             const totalCost = Number(addedQuantity) * Number(purchasingPrice);
             await Distributor.findOneAndUpdate(
-                { name: product.distributorName },
+                { name: updatedProduct.distributorName },
                 { $inc: { totalPendingAmount: totalCost } },
                 { upsert: true, session }
             );
         }
-        return product;
+        return updatedProduct;
     });
 };
 
@@ -77,19 +89,30 @@ exports.processRTV = async (productId, payload) => {
             throw new AppError('Not enough stock to return', 400);
         }
 
-        variant.returnHistory.push({ distributorName, returnedQuantity: Number(returnedQuantity), refundAmount: Number(refundAmount), reason, storeId });
+        const returnHistoryEntry = { distributorName, returnedQuantity: Number(returnedQuantity), refundAmount: Number(refundAmount), reason, storeId };
+
+        const updateQuery = {
+            $push: { "variants.$[var].returnHistory": returnHistoryEntry },
+            $inc: { "variants.$[var].stock": -Number(returnedQuantity) }
+        };
         
-        variant.stock -= Number(returnedQuantity); 
+        const arrayFilters = [{ "var._id": variantId }];
 
         if (storeId) {
             let locStock = variant.locationInventory.find(l => l.storeId && l.storeId.toString() === storeId);
             if (locStock && locStock.stock >= returnedQuantity) {
-                locStock.stock -= Number(returnedQuantity);
+                updateQuery.$inc["variants.$[var].locationInventory.$[loc].stock"] = -Number(returnedQuantity);
+                arrayFilters.push({ "loc.storeId": storeId });
             }
         }
         
-        await product.save({ session });
-        return product;
+        const updatedProduct = await Product.findOneAndUpdate(
+            { _id: productId },
+            updateQuery,
+            { new: true, arrayFilters, session }
+        );
+
+        return updatedProduct;
     });
 };
 
@@ -104,32 +127,46 @@ exports.processTransfer = async (payload, username, logError) => {
         const { product, variant } = await getProductAndVariant(productId, variantId, session);
 
         let fromLoc = variant.locationInventory.find(l => l.storeId.toString() === fromStoreId);
-        let toLoc = variant.locationInventory.find(l => l.storeId.toString() === toStoreId);
-
         if (!fromLoc || fromLoc.stock < quantity) {
             throw new AppError('Insufficient stock at source location.', 400);
         }
 
-        fromLoc.stock -= quantity;
+        const updateQuery = {
+            $inc: { "variants.$[var].locationInventory.$[fromLoc].stock": -Number(quantity) }
+        };
         
+        const arrayFilters = [
+            { "var._id": variantId },
+            { "fromLoc.storeId": fromStoreId }
+        ];
+
+        let toLoc = variant.locationInventory.find(l => l.storeId.toString() === toStoreId);
         if (toLoc) {
-            toLoc.stock += quantity;
+            updateQuery.$inc["variants.$[var].locationInventory.$[toLoc].stock"] = Number(quantity);
+            arrayFilters.push({ "toLoc.storeId": toStoreId });
         } else {
-            variant.locationInventory.push({ storeId: toStoreId, stock: quantity });
+            // Need to initialize the location field dynamically if it isn't mapped yet
+            updateQuery.$push = {
+                "variants.$[var].locationInventory": { storeId: toStoreId, stock: Number(quantity) }
+            };
         }
 
-        await product.save({ session });
+        const updatedProduct = await Product.findOneAndUpdate(
+            { _id: productId },
+            updateQuery,
+            { new: true, arrayFilters, session }
+        );
         
         await auditService.logEvent({
             action: 'STOCK_TRANSFER',
             targetType: 'Product',
-            targetId: product._id.toString(),
+            targetId: updatedProduct._id.toString(),
             username: username,
             details: { variantId, fromStoreId, toStoreId, quantity },
             session,
             logError
         });
         
-        return product;
+        return updatedProduct;
     });
 };
