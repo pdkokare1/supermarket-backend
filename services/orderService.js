@@ -331,20 +331,34 @@ exports.processCancelOrder = async (orderId, reason, user) => {
             await processPayLaterRefund(order.customerPhone, order.totalAmount, session);
         }
 
+        // OPTIMIZED: Using bulkWrite to prevent N+1 sequential DB calls during multi-item cancellations
+        const bulkOperations = [];
         for (const item of order.items) {
-            await Product.updateOne(
-                { _id: item.productId, "variants._id": item.variantId },
-                { $inc: { "variants.$.stock": item.qty } },
-                { session }
-            );
-
             if (order.storeId) {
-                await Product.updateOne(
-                    { _id: item.productId },
-                    { $inc: { "variants.$[var].locationInventory.$[loc].stock": item.qty } },
-                    { arrayFilters: [{ "var._id": item.variantId }, { "loc.storeId": order.storeId }], session }
-                ).catch(() => {});
+                bulkOperations.push({
+                    updateOne: {
+                        filter: { _id: item.productId },
+                        update: { 
+                            $inc: { 
+                                "variants.$[var].stock": item.qty,
+                                "variants.$[var].locationInventory.$[loc].stock": item.qty 
+                            } 
+                        },
+                        arrayFilters: [{ "var._id": item.variantId }, { "loc.storeId": order.storeId }]
+                    }
+                });
+            } else {
+                bulkOperations.push({
+                    updateOne: {
+                        filter: { _id: item.productId, "variants._id": item.variantId },
+                        update: { $inc: { "variants.$.stock": item.qty } }
+                    }
+                });
             }
+        }
+
+        if (bulkOperations.length > 0) {
+            await Product.bulkWrite(bulkOperations, { session });
         }
 
         await order.save({ session });
@@ -376,10 +390,20 @@ exports.getAnalyticsData = async () => {
     const today = new Date(); today.setHours(23, 59, 59, 999);
     const sevenDaysAgo = new Date(today); sevenDaysAgo.setDate(today.getDate() - 6); sevenDaysAgo.setHours(0, 0, 0, 0);
 
-    const revenueAgg = await Order.aggregate([
-        { $match: { status: { $in: ['Dispatched', 'Completed'] }, createdAt: { $gte: sevenDaysAgo, $lte: today } } },
-        { $group: { _id: "$dateString", dailyRevenue: { $sum: "$totalAmount" } } },
-        { $sort: { _id: 1 } }
+    // OPTIMIZED: Execute independent analytics queries in parallel rather than sequentially
+    const [revenueAgg, topItemsAgg] = await Promise.all([
+        Order.aggregate([
+            { $match: { status: { $in: ['Dispatched', 'Completed'] }, createdAt: { $gte: sevenDaysAgo, $lte: today } } },
+            { $group: { _id: "$dateString", dailyRevenue: { $sum: "$totalAmount" } } },
+            { $sort: { _id: 1 } }
+        ]),
+        Order.aggregate([
+            { $match: { status: { $in: ['Dispatched', 'Completed'] }, createdAt: { $gte: sevenDaysAgo, $lte: today } } },
+            { $unwind: "$items" },
+            { $group: { _id: { name: "$items.name", variant: "$items.selectedVariant" }, qty: { $sum: "$items.qty" }, revenue: { $sum: { $multiply: ["$items.price", "$items.qty"] } } } },
+            { $sort: { qty: -1 } },
+            { $limit: 5 }
+        ])
     ]);
 
     let revenueLast7Days = [0, 0, 0, 0, 0, 0, 0];
@@ -392,14 +416,6 @@ exports.getAnalyticsData = async () => {
         const index = datesToMap.indexOf(item._id);
         if (index !== -1) revenueLast7Days[index] = item.dailyRevenue;
     });
-
-    const topItemsAgg = await Order.aggregate([
-        { $match: { status: { $in: ['Dispatched', 'Completed'] }, createdAt: { $gte: sevenDaysAgo, $lte: today } } },
-        { $unwind: "$items" },
-        { $group: { _id: { name: "$items.name", variant: "$items.selectedVariant" }, qty: { $sum: "$items.qty" }, revenue: { $sum: { $multiply: ["$items.price", "$items.qty"] } } } },
-        { $sort: { qty: -1 } },
-        { $limit: 5 }
-    ]);
 
     const topItems = topItemsAgg.map(item => ({ name: `${item._id.name} (${item._id.variant})`, qty: item.qty, revenue: item.revenue }));
 
