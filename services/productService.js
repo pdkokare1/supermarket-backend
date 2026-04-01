@@ -1,5 +1,8 @@
 /* services/productService.js */
 
+const Product = require('../models/Product');
+const cacheUtils = require('../utils/cacheUtils');
+
 exports.buildProductQuery = (queryObj) => {
     let filter = queryObj.all === 'true' 
         ? { isArchived: { $ne: true } } 
@@ -35,4 +38,28 @@ exports.buildProductQuery = (queryObj) => {
         };
     }
     return filter;
+};
+
+exports.getPaginatedProducts = async (queryParams) => {
+    const cacheKey = cacheUtils.generateKey('products', queryParams);
+    const cachedData = await cacheUtils.getCachedData(cacheKey);
+    if (cachedData) return cachedData;
+
+    const filter = this.buildProductQuery(queryParams); 
+    const page = parseInt(queryParams.page) || 1; 
+    const limit = parseInt(queryParams.limit); 
+    
+    let sortQuery = { createdAt: -1 };
+    if (queryParams.sort === 'name_asc') sortQuery = { name: 1 };
+    if (queryParams.sort === 'stock_low') sortQuery = { "variants.stock": 1 }; 
+    
+    let query = Product.find(filter).sort(sortQuery);
+    if (limit) query = query.skip((page - 1) * limit).limit(limit); 
+    
+    const [products, total] = await Promise.all([query.lean(), Product.countDocuments(filter)]);
+    
+    const responseData = { success: true, count: products.length, total: total, data: products };
+    await cacheUtils.setCachedData(cacheKey, responseData, 3600);
+    
+    return responseData;
 };
