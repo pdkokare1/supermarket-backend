@@ -6,48 +6,11 @@ const { handleControllerError } = require('../utils/errorUtils');
 const { sendCsvResponse } = require('../utils/csvUtils'); 
 
 // ==========================================
-// --- HELPER FUNCTIONS ---
-// ==========================================
-
-const setSSEHeaders = (request, reply) => {
-    reply.hijack(); 
-    reply.raw.writeHead(200, {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        'Access-Control-Allow-Origin': request.headers.origin || '*',  
-        'Access-Control-Allow-Credentials': 'true',
-        'X-Accel-Buffering': 'no'            
-    });
-};
-
-const notifyNewOrder = (request, order, storeId, source = null) => {
-    const payloadObj = { type: 'NEW_ORDER', order };
-    if (source) payloadObj.source = source;
-    
-    sseService.publishEvent('admin', JSON.stringify(payloadObj), { storeId });
-
-    if (request.server.broadcastToPOS) {
-        const posPayload = { type: 'NEW_ORDER', orderId: order._id, storeId };
-        if (source) posPayload.source = source;
-        request.server.broadcastToPOS(posPayload);
-    }
-};
-
-const notifyStatusUpdate = (request, orderId, status, storeId) => {
-    const payload = JSON.stringify({ type: 'STATUS_UPDATE', status });
-    sseService.publishEvent('customer', payload, { orderId });
-
-    if (request.server.broadcastToPOS) {
-        request.server.broadcastToPOS({ type: 'ORDER_STATUS_UPDATED', orderId, status, storeId });
-    }
-};
-
-// ==========================================
 // --- CONTROLLER EXPORTS ---
 // ==========================================
 
 exports.streamAdmin = async (request, reply) => {
-    setSSEHeaders(request, reply);
+    sseService.setSSEHeaders(request, reply);
     reply.raw.write('data: {"message": "Admin Stream Connected"}\n\n');
     
     sseService.addAdminConnection(reply.raw);
@@ -59,7 +22,7 @@ exports.streamAdmin = async (request, reply) => {
 
 exports.streamCustomer = async (request, reply) => {
     const orderId = request.params.id;
-    setSSEHeaders(request, reply);
+    sseService.setSSEHeaders(request, reply);
     reply.raw.write('data: {"message": "Tracking Stream Connected"}\n\n');
     
     sseService.addCustomerConnection(orderId, reply.raw);
@@ -77,7 +40,7 @@ exports.externalCheckout = async (request, reply) => {
 
     try {
         const newOrder = await orderService.processExternalCheckout(request.body);
-        notifyNewOrder(request, newOrder, request.body.storeId, request.body.source);
+        sseService.notifyNewOrder(request, newOrder, request.body.storeId, request.body.source);
         return { success: true, message: `External Order Accepted from ${request.body.source}`, orderId: newOrder._id, orderNumber: newOrder.orderNumber };
     } catch (error) {
         handleControllerError(request, reply, error, 'processing external checkout');
@@ -87,7 +50,7 @@ exports.externalCheckout = async (request, reply) => {
 exports.onlineCheckout = async (request, reply) => {
     try {
         const newOrder = await orderService.processOnlineCheckout(request.body);
-        notifyNewOrder(request, newOrder, request.body.storeId);
+        sseService.notifyNewOrder(request, newOrder, request.body.storeId);
         return { success: true, message: 'Order Placed Successfully', orderId: newOrder._id };
     } catch (error) {
         handleControllerError(request, reply, error, 'processing checkout');
@@ -127,7 +90,7 @@ exports.updateStatus = async (request, reply) => {
         
         if (!order) return reply.status(404).send({ success: false, message: 'Order not found' });
 
-        notifyStatusUpdate(request, order._id, status, order.storeId);
+        sseService.notifyStatusUpdate(request, order._id, status, order.storeId);
         return { success: true, data: order };
     } catch (error) {
         handleControllerError(request, reply, error, 'updating status');
@@ -139,7 +102,7 @@ exports.dispatchOrder = async (request, reply) => {
         const order = await orderService.dispatchOrder(request.params.id);
         if (!order) return reply.status(404).send({ success: false, message: 'Order not found' });
 
-        notifyStatusUpdate(request, order._id, 'Dispatched', order.storeId);
+        sseService.notifyStatusUpdate(request, order._id, 'Dispatched', order.storeId);
         return { success: true, data: order };
     } catch (error) {
         handleControllerError(request, reply, error, 'dispatching order');
@@ -159,7 +122,7 @@ exports.cancelOrder = async (request, reply) => {
     try {
         const order = await orderService.processCancelOrder(request.params.id, request.body.reason, request.user);
         
-        notifyStatusUpdate(request, order._id, 'Cancelled', order.storeId);
+        sseService.notifyStatusUpdate(request, order._id, 'Cancelled', order.storeId);
         return { success: true, message: 'Order Cancelled and Stock Refunded', data: order };
     } catch (error) {
         handleControllerError(request, reply, error, 'cancelling order');
