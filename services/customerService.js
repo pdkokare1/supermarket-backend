@@ -2,6 +2,7 @@
 
 const Customer = require('../models/Customer');
 const Order = require('../models/Order');
+const AppError = require('../utils/AppError'); // NEW IMPORT
 
 exports.getAggregatedCustomers = async () => {
     return await Order.aggregate([
@@ -43,7 +44,7 @@ exports.updateCustomerLimit = async (phone, name, isCreditEnabled, creditLimit) 
 
 exports.recordPayment = async (phone, amount) => {
     let cust = await Customer.findOne({ phone });
-    if (!cust) throw new Error('Customer not found.');
+    if (!cust) throw new AppError('Customer not found.', 404); // UPDATED
     
     // Optimized: Replaced manual negative check with Math.max
     cust.creditUsed = Math.max(0, cust.creditUsed - Number(amount));
