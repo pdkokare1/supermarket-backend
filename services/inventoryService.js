@@ -2,6 +2,7 @@
 
 const Product = require('../models/Product');
 const Distributor = require('../models/Distributor');
+const Order = require('../models/Order'); // NEW IMPORT FOR VELOCITY
 const { withTransaction } = require('../utils/dbUtils'); 
 const AppError = require('../utils/AppError'); 
 const auditService = require('./auditService'); 
@@ -24,6 +25,89 @@ const getProductAndVariant = async (productId, variantId, session = null) => {
 };
 
 // ==========================================
+// --- CRON ABSTRACTIONS ---
+// ==========================================
+
+exports.getExpiringProducts = async (days = 7) => {
+    const targetDate = new Date();
+    targetDate.setDate(targetDate.getDate() + days);
+
+    const productCursor = Product.find({ isActive: true, "variants.expiryDate": { $ne: null } }).lean().cursor();
+    let expiringItems = [];
+
+    for await (const p of productCursor) {
+        p.variants.forEach(v => {
+            if (v.expiryDate && new Date(v.expiryDate) <= targetDate && v.stock > 0) {
+                expiringItems.push({
+                    productId: p._id, name: p.name, variant: v.weightOrVolume, 
+                    stock: v.stock, expiryDate: v.expiryDate
+                });
+            }
+        });
+    }
+    return expiringItems;
+};
+
+exports.calculateSalesVelocityAndStock = async (velocityDays, lowStockThreshold, deadStockQty, deadStockDays) => {
+    const dateAgo = new Date();
+    dateAgo.setDate(dateAgo.getDate() - velocityDays);
+
+    const velocityAgg = await Order.aggregate([
+        { $match: { createdAt: { $gte: dateAgo }, status: { $in: ['Completed', 'Dispatched'] } } },
+        { $unwind: "$items" },
+        { $group: { _id: "$items.variantId", totalSold: { $sum: "$items.qty" } } }
+    ]);
+
+    let variantSales = {};
+    velocityAgg.forEach(v => {
+        if (v._id) variantSales[v._id.toString()] = v.totalSold;
+    });
+
+    const productCursor = Product.find({ isActive: true }).cursor();
+    let lowStockItems = [];
+    let deadStockItems = [];
+    let bulkOps = []; 
+    
+    for await (let p of productCursor) {
+        let isModified = false;
+        
+        if (p.variants) {
+            p.variants.forEach(v => {
+                const totalSold = variantSales[v._id.toString()] || 0;
+                const dailyAvg = totalSold / velocityDays;
+                v.averageDailySales = Number(dailyAvg.toFixed(2));
+
+                v.daysOfStock = dailyAvg > 0 ? Number((v.stock / dailyAvg).toFixed(1)) : 999;
+                isModified = true;
+
+                if (v.stock <= (v.lowStockThreshold || lowStockThreshold) || (v.daysOfStock < 3 && v.stock > 0)) {
+                    lowStockItems.push({ name: p.name, variant: v.weightOrVolume, stock: v.stock, daysLeft: v.daysOfStock });
+                }
+                
+                if (v.stock > deadStockQty && v.daysOfStock > deadStockDays) {
+                    deadStockItems.push({ name: p.name, variant: v.weightOrVolume, stock: v.stock, daysLeft: v.daysOfStock });
+                }
+            });
+        }
+        
+        if (isModified) {
+            bulkOps.push({
+                updateOne: {
+                    filter: { _id: p._id },
+                    update: { $set: { variants: p.variants } }
+                }
+            });
+        }
+    }
+
+    if (bulkOps.length > 0) {
+        await Product.bulkWrite(bulkOps);
+    }
+
+    return { lowStockItems, deadStockItems };
+};
+
+// ==========================================
 // --- SERVICE EXPORTS ---
 // ==========================================
 
@@ -31,7 +115,6 @@ exports.processRestock = async (productId, payload) => {
     return withTransaction(async (session) => {
         const { variantId, invoiceNumber, addedQuantity, purchasingPrice, newSellingPrice, paymentStatus, storeId } = payload;
         
-        // Fetch to validate existence and structure
         const { product, variant } = await getProductAndVariant(productId, variantId, session);
         
         const purchaseHistoryEntry = { 
@@ -42,7 +125,6 @@ exports.processRestock = async (productId, payload) => {
             storeId: storeId 
         };
 
-        // OPTIMIZED: Building an atomic update query to prevent save race conditions
         const updateQuery = {
             $push: { "variants.$[var].purchaseHistory": purchaseHistoryEntry },
             $inc: { "variants.$[var].stock": Number(addedQuantity) },
@@ -145,7 +227,6 @@ exports.processTransfer = async (payload, username, logError) => {
             updateQuery.$inc["variants.$[var].locationInventory.$[toLoc].stock"] = Number(quantity);
             arrayFilters.push({ "toLoc.storeId": toStoreId });
         } else {
-            // Need to initialize the location field dynamically if it isn't mapped yet
             updateQuery.$push = {
                 "variants.$[var].locationInventory": { storeId: toStoreId, stock: Number(quantity) }
             };
