@@ -1,7 +1,8 @@
 /* controllers/authController.js */
 
 const authService = require('../services/authService');
-const { handleControllerError } = require('../utils/errorUtils'); // NEW IMPORT
+const auditService = require('../services/auditService'); // NEW IMPORT
+const { handleControllerError } = require('../utils/errorUtils'); 
 
 // ==========================================
 // --- HELPER FUNCTIONS ---
@@ -48,16 +49,33 @@ exports.login = async (request, reply) => {
             sameSite: 'strict', maxAge: 7 * 24 * 60 * 60 
         });
         
-        await authService.logEvent('SUCCESSFUL_LOGIN', user._id.toString(), user.username, { role: user.role, ip: request.ip }, user._id, request.server.log.error.bind(request.server.log));
+        await auditService.logEvent({
+            action: 'SUCCESSFUL_LOGIN',
+            targetType: 'Auth',
+            targetId: user._id.toString(),
+            username: user.username,
+            userId: user._id,
+            details: { role: user.role, ip: request.ip },
+            logError: request.server.log.error.bind(request.server.log)
+        });
 
         return { success: true, message: 'Login successful', data: user, token: token };
         
     } catch (error) {
-        if (error.status) {
+        if (error.status || error.statusCode) {
             const targetId = error.user ? error.user._id.toString() : 'Login';
             const uname = error.user ? error.user.username : (error.safeUsername || 'Unknown');
-            await authService.logEvent('FAILED_LOGIN_ATTEMPT', targetId, uname, { ip: request.ip, reason: error.reason }, null, request.server.log.error.bind(request.server.log));
-            return reply.status(error.status).send({ success: false, message: error.message });
+            
+            await auditService.logEvent({
+                action: 'FAILED_LOGIN_ATTEMPT',
+                targetType: 'Auth',
+                targetId: targetId,
+                username: uname,
+                details: { ip: request.ip, reason: error.reason },
+                logError: request.server.log.error.bind(request.server.log)
+            });
+            
+            return reply.status(error.status || error.statusCode).send({ success: false, message: error.message });
         }
         request.server.log.error(error);
         reply.status(500).send({ success: false, message: 'Server Error during login' });
@@ -85,7 +103,14 @@ exports.logout = async (request, reply) => {
     try {
         const user = await authService.revokeSession(request.user.id);
         if (user) {
-            await authService.logEvent('LOGOUT', user._id.toString(), user.username, {}, user._id, request.server.log.error.bind(request.server.log));
+            await auditService.logEvent({
+                action: 'LOGOUT',
+                targetType: 'Auth',
+                targetId: user._id.toString(),
+                username: user.username,
+                userId: user._id,
+                logError: request.server.log.error.bind(request.server.log)
+            });
         }
 
         reply.clearCookie('refreshToken', { path: '/' });
