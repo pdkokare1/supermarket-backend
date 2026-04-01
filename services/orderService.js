@@ -7,7 +7,7 @@ const Customer = require('../models/Customer');
 const { withTransaction } = require('../utils/dbUtils');
 const AppError = require('../utils/AppError');
 const auditService = require('./auditService'); 
-const cacheUtils = require('../utils/cacheUtils'); // NEW IMPORT
+const cacheUtils = require('../utils/cacheUtils');
 
 // ==========================================
 // --- HELPER FUNCTIONS ---
@@ -349,7 +349,7 @@ exports.processCancelOrder = async (orderId, reason, user) => {
 };
 
 // ==========================================
-// --- DATA RETRIEVAL SERVICES (NEW) ---
+// --- DATA RETRIEVAL & UPDATE SERVICES ---
 // ==========================================
 
 exports.getAnalyticsData = async () => {
@@ -428,4 +428,24 @@ exports.getAllOrdersForExport = async () => {
         CustomerName: o.customerName, Phone: o.customerPhone, TotalAmount: o.totalAmount,
         Status: o.status, PaymentMethod: o.paymentMethod, DeliveryType: o.deliveryType
     }));
+};
+
+exports.assignDriverToOrder = async (orderId, driverName, driverPhone) => {
+    return await Order.findByIdAndUpdate(
+        orderId, 
+        { deliveryDriverName: driverName, driverPhone: driverPhone || '' }, 
+        { new: true }
+    );
+};
+
+exports.updateOrderStatus = async (orderId, status) => {
+    return await Order.findByIdAndUpdate(orderId, { status: status }, { new: true });
+};
+
+exports.dispatchOrder = async (orderId) => {
+    return await Order.findByIdAndUpdate(orderId, { status: 'Dispatched' }, { new: true });
+};
+
+exports.getOrderById = async (orderId) => {
+    return await Order.findById(orderId).lean();
 };
