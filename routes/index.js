@@ -9,8 +9,9 @@ async function apiRoutes(fastify, options) {
     const files = await fs.promises.readdir(routesDir);
 
     for (const file of files) {
-        // Skip this index.js file and ensure it's a javascript file
-        if (file !== 'index.js' && file.endsWith('.js')) {
+        // OPTIMIZED: Strict check ensuring it only registers legitimate route files.
+        // Prevents boot errors if a map file or utility JS file is accidentally placed here.
+        if (file !== 'index.js' && file.endsWith('Routes.js')) {
             fastify.register(require(path.join(routesDir, file)));
         }
     }
