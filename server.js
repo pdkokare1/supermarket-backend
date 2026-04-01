@@ -15,14 +15,19 @@ const fastify = Fastify({
 const PORT = process.env.PORT || 3000;
 
 let redisClient = null;
-try {
-    const Redis = require('ioredis');
-    if (process.env.REDIS_URL) {
-        redisClient = new Redis(process.env.REDIS_URL);
+
+const initRedis = () => {
+    try {
+        const Redis = require('ioredis');
+        if (process.env.REDIS_URL) {
+            redisClient = new Redis(process.env.REDIS_URL);
+        }
+    } catch(e) {
+        console.warn('[SERVER] Redis initialization failed:', e.message);
     }
-} catch(e) {
-    console.warn('[SERVER] Redis initialization failed:', e.message);
-}
+};
+
+initRedis();
 
 // --- Modularized Setups ---
 require('./plugins/middlewareSetup')(fastify, redisClient); 
@@ -42,17 +47,19 @@ fastify.register(require('./routes'));
 // --- INITIALIZATION HELPERS ---
 // ==========================================
 
-const initScheduler = () => {
-    require('./jobs/cronScheduler')(fastify, async (newReport) => {
-        // OPTIMIZATION: Write report directly to Redis to ensure all workers share the exact same state.
-        if (redisClient) {
-            try {
-                await redisClient.set('cache:inventory:report', JSON.stringify(newReport), 'EX', 86400); // 24h cache
-            } catch(e) {
-                fastify.log.error('Failed to update inventory report in Redis:', e);
-            }
+const handleInventoryReport = async (newReport) => {
+    // OPTIMIZATION: Write report directly to Redis to ensure all workers share the exact same state.
+    if (redisClient) {
+        try {
+            await redisClient.set('cache:inventory:report', JSON.stringify(newReport), 'EX', 86400); // 24h cache
+        } catch(e) {
+            fastify.log.error('Failed to update inventory report in Redis:', e);
         }
-    });
+    }
+};
+
+const initScheduler = () => {
+    require('./jobs/cronScheduler')(fastify, handleInventoryReport);
 };
 
 const startServer = async () => {
