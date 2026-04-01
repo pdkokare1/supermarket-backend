@@ -1,22 +1,8 @@
 /* controllers/customerController.js */
 
 const customerService = require('../services/customerService');
-const { handleControllerError } = require('../utils/errorUtils'); // NEW IMPORT
-const { sendCsvResponse } = require('../utils/csvUtils'); // NEW IMPORT
-
-// ==========================================
-// --- HELPER FUNCTIONS ---
-// ==========================================
-
-const formatCustomerForExport = (c) => ({
-    Name: c.name,
-    Phone: c.phone,
-    LoyaltyPoints: c.loyaltyPoints || 0,
-    CreditEnabled: c.isCreditEnabled ? 'Yes' : 'No',
-    CreditLimit: c.creditLimit || 0,
-    CreditUsed: c.creditUsed || 0,
-    JoinedDate: new Date(c.createdAt).toLocaleDateString()
-});
+const { handleControllerError } = require('../utils/errorUtils'); 
+const { sendCsvResponse } = require('../utils/csvUtils'); 
 
 // ==========================================
 // --- CONTROLLER EXPORTS ---
@@ -33,9 +19,7 @@ exports.getCustomersFromOrders = async (request, reply) => {
 
 exports.exportCustomers = async (request, reply) => {
     try {
-        const customers = await customerService.getAllCustomers();
-        const exportData = customers.map(formatCustomerForExport);
-
+        const exportData = await customerService.getCustomersForExport();
         return sendCsvResponse(reply, exportData, 'customers');
     } catch (error) {
         handleControllerError(request, reply, error, 'Customer - Exporting');
