@@ -46,9 +46,12 @@ exports.createProduct = async (request, reply) => {
 
 exports.updateProduct = async (request, reply) => {
     try {
-        const { name, category, brand, distributorName, imageUrl, searchTags, variants, hsnCode, taxRate, taxType } = request.body;
-        const updateData = { name, category, brand, distributorName, searchTags, variants, hsnCode, taxRate, taxType };
-        if (imageUrl !== undefined && imageUrl !== null) updateData.imageUrl = imageUrl;
+        // OPTIMIZED: Dynamically spread the body, then strip protected fields. 
+        // Makes the route immune to future schema additions.
+        const updateData = { ...request.body };
+        delete updateData._id;
+        delete updateData.isArchived;
+        delete updateData.isActive;
         
         const updatedProduct = await Product.findByIdAndUpdate(
             request.params.id, 
