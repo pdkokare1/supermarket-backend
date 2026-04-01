@@ -4,32 +4,22 @@ const os = require('os');
 const mongoose = require('mongoose');
 
 module.exports = async function (fastify, options) {
-    const { redisClient, getLatestInventoryReport } = options;
-    let isInventoryUpdating = false;
+    const { redisClient } = options;
 
     fastify.get('/api/inventory/report', async (request, reply) => {
-        const latestInventoryReport = getLatestInventoryReport();
-        
         if (redisClient) {
             try {
                 const cachedReport = await redisClient.get('cache:inventory:report');
                 if (cachedReport) {
                     return { success: true, data: JSON.parse(cachedReport), cached: true };
-                } else if (!isInventoryUpdating) {
-                    isInventoryUpdating = true;
-                    setTimeout(async () => {
-                        try {
-                            await redisClient.set('cache:inventory:report', JSON.stringify(latestInventoryReport), 'EX', 60);
-                        } catch(e) {}
-                        isInventoryUpdating = false;
-                    }, 0);
                 }
             } catch (e) {
                 fastify.log.error('Redis Cache Read Error:', e);
             }
         }
 
-        return { success: true, data: latestInventoryReport, cached: false };
+        // Fallback structure if Redis is empty or down
+        return { success: true, data: { lowStock: [], deadStock: [], lastGenerated: null }, cached: false };
     });
 
     fastify.get('/api/health', async (request, reply) => {
