@@ -2,7 +2,6 @@
 
 let redisPub = null;
 let redisSub = null;
-let redisCache = null;
 
 let adminConnections = [];
 let customerConnections = {};
@@ -12,7 +11,6 @@ try {
     if (process.env.REDIS_URL) {
         redisPub = new Redis(process.env.REDIS_URL);
         redisSub = new Redis(process.env.REDIS_URL);
-        redisCache = new Redis(process.env.REDIS_URL);
         
         redisSub.subscribe('ORDER_STREAM_EVENT');
         redisSub.on('message', (channel, message) => {
@@ -102,7 +100,6 @@ const closeAllConnections = () => {
 module.exports = {
     redisPub,
     redisSub,
-    redisCache,
     addAdminConnection,
     removeAdminConnection,
     addCustomerConnection,
