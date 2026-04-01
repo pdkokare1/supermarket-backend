@@ -4,6 +4,24 @@ const User = require('../models/User');
 const bcrypt = require('bcrypt'); 
 const crypto = require('crypto');
 const AppError = require('../utils/AppError'); 
+const auditService = require('./auditService'); // MOVED FROM CONTROLLER
+
+// --- MOVED FROM CONTROLLER ---
+const generateTokens = (server, user) => {
+    const tokenVersion = user.tokenVersion || 0;
+    
+    const refreshToken = server.jwt.sign(
+        { id: user._id, tokenVersion }, 
+        { expiresIn: '7d' }
+    );
+
+    const token = server.jwt.sign(
+        { id: user._id, role: user.role, username: user.username, tokenVersion }, 
+        { expiresIn: '7d' }
+    );
+
+    return { token, refreshToken };
+};
 
 exports.setupDefaultAdmin = async (envSetupKey, queryKey, isProduction) => {
     if (isProduction) throw new AppError('Forbidden: Setup route disabled in production.', 403);
@@ -34,14 +52,26 @@ exports.setupDefaultAdmin = async (envSetupKey, queryKey, isProduction) => {
     }
 };
 
-exports.authenticateUser = async (username, pin, ip) => {
+exports.authenticateUser = async (username, pin, ip, server) => {
     const safeUsername = username.trim(); 
     const user = await User.findOne({ $or: [{ username: safeUsername }, { name: safeUsername }] })
                            .collation({ locale: 'en', strength: 2 }); 
     
-    if (!user) throw new AppError('Invalid Username or PIN.', 401, { safeUsername, reason: 'User not found' });
+    if (!user) {
+        await auditService.logEvent({
+            action: 'FAILED_LOGIN_ATTEMPT', targetType: 'Auth', targetId: 'Login',
+            username: safeUsername || 'Unknown', details: { ip, reason: 'User not found' },
+            logError: server.log.error.bind(server.log)
+        });
+        throw new AppError('Invalid Username or PIN.', 401, { safeUsername, reason: 'User not found' });
+    }
 
     if (user.isLocked) {
+        await auditService.logEvent({
+            action: 'FAILED_LOGIN_ATTEMPT', targetType: 'Auth', targetId: user._id.toString(),
+            username: user.username, details: { ip, reason: 'Account locked' },
+            logError: server.log.error.bind(server.log)
+        });
         throw new AppError('Account locked due to too many failed attempts. Try again in 15 minutes.', 403, { user, reason: 'Account locked' });
     }
     
@@ -61,28 +91,51 @@ exports.authenticateUser = async (username, pin, ip) => {
         user.failedLoginAttempts = (user.failedLoginAttempts || 0) + 1;
         if (user.failedLoginAttempts >= 5) user.lockUntil = Date.now() + 15 * 60 * 1000; 
         await user.save();
+        
+        await auditService.logEvent({
+            action: 'FAILED_LOGIN_ATTEMPT', targetType: 'Auth', targetId: user._id.toString(),
+            username: user.username, details: { ip, reason: 'Invalid PIN' },
+            logError: server.log.error.bind(server.log)
+        });
+
         throw new AppError('Invalid Username or PIN.', 401, { user, reason: 'Invalid PIN' });
     }
     
     user.failedLoginAttempts = 0;
     user.lockUntil = undefined;
     await user.save();
-    return user;
+
+    await auditService.logEvent({
+        action: 'SUCCESSFUL_LOGIN', targetType: 'Auth', targetId: user._id.toString(),
+        username: user.username, userId: user._id, details: { role: user.role, ip },
+        logError: server.log.error.bind(server.log)
+    });
+
+    const tokens = generateTokens(server, user);
+    return { user, ...tokens };
 };
 
-exports.validateRefreshToken = async (decodedId, decodedVersion) => {
+// Renamed from validateRefreshToken to handle both validation and generation
+exports.refreshSession = async (decodedId, decodedVersion, server) => {
     const user = await User.findById(decodedId);
     if (!user || !user.isActive || user.tokenVersion !== decodedVersion) {
         throw new AppError('Invalid or revoked session', 401);
     }
-    return user;
+    const tokens = generateTokens(server, user);
+    return { user, token: tokens.token };
 };
 
-exports.revokeSession = async (userId) => {
+exports.revokeSession = async (userId, server) => {
     const user = await User.findById(userId);
     if (user) {
         user.tokenVersion = (user.tokenVersion || 0) + 1;
         await user.save();
+        
+        await auditService.logEvent({
+            action: 'LOGOUT', targetType: 'Auth', targetId: user._id.toString(),
+            username: user.username, userId: user._id,
+            logError: server.log.error.bind(server.log)
+        });
     }
     return user;
 };
