@@ -3,15 +3,7 @@
 const User = require('../models/User');
 const bcrypt = require('bcrypt'); 
 const crypto = require('crypto');
-const AuditLog = require('../models/AuditLog'); 
-const AppError = require('../utils/AppError'); // NEW IMPORT
-
-exports.logEvent = async (action, targetId, username, details = {}, userId = null, logError) => {
-    const logEntry = { action, targetType: 'Auth', targetId, username: username || 'Unknown' };
-    if (Object.keys(details).length > 0) logEntry.details = details;
-    if (userId) logEntry.userId = userId;
-    await AuditLog.create(logEntry).catch(e => logError ? logError('AuditLog Error:', e) : console.error(e));
-};
+const AppError = require('../utils/AppError'); 
 
 exports.setupDefaultAdmin = async (envSetupKey, queryKey, isProduction) => {
     if (isProduction) throw new AppError('Forbidden: Setup route disabled in production.', 403);
