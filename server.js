@@ -6,7 +6,7 @@ require('dotenv').config();
 
 const cluster = require('cluster');
 const connectDB = require('./config/db');
-const { setupGracefulShutdown, setupCluster } = require('./utils/serverProcessUtils'); // NEW IMPORT
+const { setupGracefulShutdown, setupCluster } = require('./utils/serverProcessUtils');
 
 const fastify = Fastify({
     logger: process.env.NODE_ENV === 'production' ? { level: 'error' } : true 
@@ -30,17 +30,9 @@ require('./plugins/authSetup')(fastify);
 require('./plugins/wsSetup')(fastify);
 require('./plugins/errorHandler')(fastify);
 
-// --- Global State ---
-let latestInventoryReport = {
-    lowStock: [],
-    deadStock: [],
-    lastGenerated: null
-};
-
 // --- Modularized System Routes ---
 fastify.register(require('./routes/systemRoutes'), {
-    redisClient,
-    getLatestInventoryReport: () => latestInventoryReport
+    redisClient
 });
 
 // --- Feature Routes ---
@@ -51,8 +43,15 @@ fastify.register(require('./routes'));
 // ==========================================
 
 const initScheduler = () => {
-    require('./jobs/cronScheduler')(fastify, (newReport) => {
-        latestInventoryReport = newReport;
+    require('./jobs/cronScheduler')(fastify, async (newReport) => {
+        // OPTIMIZATION: Write report directly to Redis to ensure all workers share the exact same state.
+        if (redisClient) {
+            try {
+                await redisClient.set('cache:inventory:report', JSON.stringify(newReport), 'EX', 86400); // 24h cache
+            } catch(e) {
+                fastify.log.error('Failed to update inventory report in Redis:', e);
+            }
+        }
     });
 };
 
