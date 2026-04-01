@@ -4,6 +4,15 @@ const mongoose = require('mongoose');
 const cluster = require('cluster');
 const os = require('os');
 
+// NEW OPTIMIZATION: Global error catchers to prevent silent worker deaths
+process.on('uncaughtException', (err) => {
+    console.error('[PROCESS] Uncaught Exception:', err);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('[PROCESS] Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
 exports.setupGracefulShutdown = (fastify, redisClient) => {
     const listeners = ['SIGINT', 'SIGTERM'];
     listeners.forEach((signal) => {
@@ -36,10 +45,12 @@ exports.setupGracefulShutdown = (fastify, redisClient) => {
 exports.setupCluster = (fastify, connectDB, initScheduler) => {
     connectDB(fastify).then(() => {
         initScheduler();
-        const numCPUs = os.cpus().length;
-        console.log(`[CLUSTER] Primary Process ${process.pid} running. Distributing traffic across ${numCPUs} CPUs...`);
         
-        for (let i = 0; i < numCPUs; i++) cluster.fork(); 
+        // OPTIMIZATION: Cap workers to prevent Out-Of-Memory (OOM) errors in containerized environments (Docker/Railway)
+        const numWorkers = process.env.MAX_WORKERS ? parseInt(process.env.MAX_WORKERS, 10) : Math.min(os.cpus().length, 4);
+        console.log(`[CLUSTER] Primary Process ${process.pid} running. Distributing traffic across ${numWorkers} workers...`);
+        
+        for (let i = 0; i < numWorkers; i++) cluster.fork(); 
 
         cluster.on('exit', (worker, code, signal) => {
             console.log(`[CLUSTER] Worker ${worker.process.pid} died or crashed. Auto-restarting...`);
