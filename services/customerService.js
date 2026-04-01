@@ -2,7 +2,18 @@
 
 const Customer = require('../models/Customer');
 const Order = require('../models/Order');
-const AppError = require('../utils/AppError'); // NEW IMPORT
+const AppError = require('../utils/AppError'); 
+
+// --- MOVED FROM CONTROLLER ---
+const formatCustomerForExport = (c) => ({
+    Name: c.name,
+    Phone: c.phone,
+    LoyaltyPoints: c.loyaltyPoints || 0,
+    CreditEnabled: c.isCreditEnabled ? 'Yes' : 'No',
+    CreditLimit: c.creditLimit || 0,
+    CreditUsed: c.creditUsed || 0,
+    JoinedDate: new Date(c.createdAt).toLocaleDateString()
+});
 
 exports.getAggregatedCustomers = async () => {
     return await Order.aggregate([
@@ -27,6 +38,12 @@ exports.getAllCustomers = async () => {
     return await Customer.find({}).lean();
 };
 
+// --- NEW ABSTRACTION FOR EXPORT ---
+exports.getCustomersForExport = async () => {
+    const customers = await Customer.find({}).lean();
+    return customers.map(formatCustomerForExport);
+};
+
 exports.getCustomerByPhone = async (phone) => {
     return await Customer.findOne({ phone }).lean();
 };
@@ -44,9 +61,8 @@ exports.updateCustomerLimit = async (phone, name, isCreditEnabled, creditLimit) 
 
 exports.recordPayment = async (phone, amount) => {
     let cust = await Customer.findOne({ phone });
-    if (!cust) throw new AppError('Customer not found.', 404); // UPDATED
+    if (!cust) throw new AppError('Customer not found.', 404); 
     
-    // Optimized: Replaced manual negative check with Math.max
     cust.creditUsed = Math.max(0, cust.creditUsed - Number(amount));
     
     await cust.save();
