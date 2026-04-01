@@ -32,7 +32,7 @@ try {
     console.error("Redis Initialization Error in SSE Service:", e);
 }
 
-// Global Heartbeat to keep SSE connections alive
+// Global Heartbeat
 setInterval(() => {
     adminConnections = adminConnections.filter(conn => {
         if (conn.destroyed || !conn.writable) return false;
@@ -77,7 +77,6 @@ const publishEvent = (target, payload, additionalData = {}) => {
     if (redisPub) {
         redisPub.publish('ORDER_STREAM_EVENT', JSON.stringify({ target, payload, ...additionalData }));
     } else {
-        // Fallback for local memory
         if (target === 'admin') {
             adminConnections.forEach(conn => {
                 if (!conn.destroyed) conn.write(`data: ${payload}\n\n`);
@@ -87,6 +86,40 @@ const publishEvent = (target, payload, additionalData = {}) => {
                 if (!conn.destroyed) conn.write(`data: ${payload}\n\n`);
             });
         }
+    }
+};
+
+// --- MOVED FROM CONTROLLER ---
+const setSSEHeaders = (request, reply) => {
+    reply.hijack(); 
+    reply.raw.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Access-Control-Allow-Origin': request.headers.origin || '*',  
+        'Access-Control-Allow-Credentials': 'true',
+        'X-Accel-Buffering': 'no'            
+    });
+};
+
+const notifyNewOrder = (request, order, storeId, source = null) => {
+    const payloadObj = { type: 'NEW_ORDER', order };
+    if (source) payloadObj.source = source;
+    
+    publishEvent('admin', JSON.stringify(payloadObj), { storeId });
+
+    if (request.server.broadcastToPOS) {
+        const posPayload = { type: 'NEW_ORDER', orderId: order._id, storeId };
+        if (source) posPayload.source = source;
+        request.server.broadcastToPOS(posPayload);
+    }
+};
+
+const notifyStatusUpdate = (request, orderId, status, storeId) => {
+    const payload = JSON.stringify({ type: 'STATUS_UPDATE', status });
+    publishEvent('customer', payload, { orderId });
+
+    if (request.server.broadcastToPOS) {
+        request.server.broadcastToPOS({ type: 'ORDER_STATUS_UPDATED', orderId, status, storeId });
     }
 };
 
@@ -105,5 +138,8 @@ module.exports = {
     addCustomerConnection,
     removeCustomerConnection,
     publishEvent,
+    setSSEHeaders,
+    notifyNewOrder,
+    notifyStatusUpdate,
     closeAllConnections
 };
