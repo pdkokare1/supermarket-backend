@@ -1,6 +1,6 @@
 /* utils/errorUtils.js */
 
-const AppError = require('./AppError'); // NEW IMPORT
+const AppError = require('./AppError'); 
 
 exports.handleControllerError = (request, reply, error, contextMessage) => {
     // 1. Handle our new standardized AppError
@@ -14,9 +14,6 @@ exports.handleControllerError = (request, reply, error, contextMessage) => {
     }
     if (error.statusCode) {
         return reply.status(error.statusCode).send({ success: false, message: error.message });
-    }
-    if (error.message === 'Customer not found.' || error.message.includes('not found')) {
-        return reply.status(404).send({ success: false, message: error.message });
     }
 
     // 3. Default 500 Server Error
