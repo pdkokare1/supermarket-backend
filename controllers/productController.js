@@ -4,7 +4,7 @@ const Product = require('../models/Product');
 const inventoryService = require('../services/inventoryService');
 const productService = require('../services/productService');
 const { handleControllerError } = require('../utils/errorUtils'); 
-const cacheUtils = require('../utils/cacheUtils'); // NEW IMPORT
+const cacheUtils = require('../utils/cacheUtils');
 
 // ==========================================
 // --- HELPER FUNCTIONS ---
@@ -23,26 +23,9 @@ const syncAndBroadcast = async (request, productId, extraPayload = {}) => {
 
 exports.getProducts = async (request, reply) => {
     try {
-        const cacheKey = cacheUtils.generateKey('products', request.query);
-        const cachedData = await cacheUtils.getCachedData(cacheKey);
-        if (cachedData) return cachedData;
-
-        const filter = productService.buildProductQuery(request.query); 
-        const page = parseInt(request.query.page) || 1; 
-        const limit = parseInt(request.query.limit); 
-        
-        let sortQuery = { createdAt: -1 };
-        if (request.query.sort === 'name_asc') sortQuery = { name: 1 };
-        if (request.query.sort === 'stock_low') sortQuery = { "variants.stock": 1 }; 
-        
-        let query = Product.find(filter).sort(sortQuery);
-        if (limit) query = query.skip((page - 1) * limit).limit(limit); 
-        
-        const [products, total] = await Promise.all([query.lean(), Product.countDocuments(filter)]);
-        
-        const responseData = { success: true, count: products.length, total: total, data: products };
-        await cacheUtils.setCachedData(cacheKey, responseData, 3600);
-        
+        // OPTIMIZED: The controller now purely handles the request, 
+        // delegating all DB/Cache heavy lifting to the Service layer.
+        const responseData = await productService.getPaginatedProducts(request.query);
         return responseData;
     } catch (error) { 
         handleControllerError(request, reply, error, 'fetching products');
