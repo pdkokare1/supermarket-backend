@@ -1,33 +1,19 @@
 /* controllers/productController.js */
 
 const Product = require('../models/Product');
-const crypto = require('crypto');
-const cacheService = require('../services/productCacheService');
 const inventoryService = require('../services/inventoryService');
 const productService = require('../services/productService');
-const { handleControllerError } = require('../utils/errorUtils'); // NEW IMPORT
+const { handleControllerError } = require('../utils/errorUtils'); 
+const cacheUtils = require('../utils/cacheUtils'); // NEW IMPORT
 
 // ==========================================
 // --- HELPER FUNCTIONS ---
 // ==========================================
 
 const syncAndBroadcast = async (request, productId, extraPayload = {}) => {
-    await cacheService.invalidateProductCache();
+    await cacheUtils.invalidateByPattern('products:*');
     if (request.server.broadcastToPOS) {
         request.server.broadcastToPOS({ type: 'INVENTORY_UPDATED', productId, ...extraPayload });
-    }
-};
-
-const getCachedData = async (query) => {
-    if (!cacheService.redisCache) return { cacheKey: null, data: null };
-    const cacheKey = `products:${crypto.createHash('md5').update(JSON.stringify(query)).digest('hex')}`;
-    const cachedResponse = await cacheService.redisCache.get(cacheKey);
-    return { cacheKey, data: cachedResponse ? JSON.parse(cachedResponse) : null };
-};
-
-const setCachedData = async (cacheKey, responseData) => {
-    if (cacheService.redisCache && cacheKey) {
-        await cacheService.redisCache.set(cacheKey, JSON.stringify(responseData), 'EX', 3600); 
     }
 };
 
@@ -37,8 +23,9 @@ const setCachedData = async (cacheKey, responseData) => {
 
 exports.getProducts = async (request, reply) => {
     try {
-        const { cacheKey, data } = await getCachedData(request.query);
-        if (data) return data;
+        const cacheKey = cacheUtils.generateKey('products', request.query);
+        const cachedData = await cacheUtils.getCachedData(cacheKey);
+        if (cachedData) return cachedData;
 
         const filter = productService.buildProductQuery(request.query); 
         const page = parseInt(request.query.page) || 1; 
@@ -54,7 +41,7 @@ exports.getProducts = async (request, reply) => {
         const [products, total] = await Promise.all([query.lean(), Product.countDocuments(filter)]);
         
         const responseData = { success: true, count: products.length, total: total, data: products };
-        await setCachedData(cacheKey, responseData);
+        await cacheUtils.setCachedData(cacheKey, responseData, 3600);
         
         return responseData;
     } catch (error) { 
