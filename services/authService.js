@@ -1,27 +1,10 @@
 /* services/authService.js */
 
 const User = require('../models/User');
-const bcrypt = require('bcrypt'); 
 const crypto = require('crypto');
 const AppError = require('../utils/AppError'); 
-const auditService = require('./auditService'); // MOVED FROM CONTROLLER
-
-// --- MOVED FROM CONTROLLER ---
-const generateTokens = (server, user) => {
-    const tokenVersion = user.tokenVersion || 0;
-    
-    const refreshToken = server.jwt.sign(
-        { id: user._id, tokenVersion }, 
-        { expiresIn: '7d' }
-    );
-
-    const token = server.jwt.sign(
-        { id: user._id, role: user.role, username: user.username, tokenVersion }, 
-        { expiresIn: '7d' }
-    );
-
-    return { token, refreshToken };
-};
+const auditService = require('./auditService'); 
+const securityService = require('./securityService'); 
 
 exports.setupDefaultAdmin = async (envSetupKey, queryKey, isProduction) => {
     if (isProduction) throw new AppError('Forbidden: Setup route disabled in production.', 403);
@@ -35,7 +18,7 @@ exports.setupDefaultAdmin = async (envSetupKey, queryKey, isProduction) => {
     }
 
     const defaultPin = process.env.DEFAULT_ADMIN_PIN || '1234';
-    const hashedPin = await bcrypt.hash(defaultPin, 10);
+    const hashedPin = await securityService.hashPassword(defaultPin);
     let admin = await User.findOne({ role: 'Admin' });
     
     if (!admin) {
@@ -79,11 +62,11 @@ exports.authenticateUser = async (username, pin, ip, server) => {
     let isValid = false;
 
     if (isHashed) {
-        isValid = await bcrypt.compare(pin, user.pin);
+        isValid = await securityService.comparePassword(pin, user.pin);
     } else {
         if (user.pin === pin) {
             isValid = true;
-            user.pin = await bcrypt.hash(pin, 10);
+            user.pin = await securityService.hashPassword(pin);
         }
     }
 
@@ -111,17 +94,16 @@ exports.authenticateUser = async (username, pin, ip, server) => {
         logError: server.log.error.bind(server.log)
     });
 
-    const tokens = generateTokens(server, user);
+    const tokens = securityService.generateTokens(server, user);
     return { user, ...tokens };
 };
 
-// Renamed from validateRefreshToken to handle both validation and generation
 exports.refreshSession = async (decodedId, decodedVersion, server) => {
     const user = await User.findById(decodedId);
     if (!user || !user.isActive || user.tokenVersion !== decodedVersion) {
         throw new AppError('Invalid or revoked session', 401);
     }
-    const tokens = generateTokens(server, user);
+    const tokens = securityService.generateTokens(server, user);
     return { user, token: tokens.token };
 };
 
