@@ -2,7 +2,7 @@
 
 const Product = require('../models/Product');
 const Distributor = require('../models/Distributor');
-const Order = require('../models/Order'); // NEW IMPORT FOR VELOCITY
+const Order = require('../models/Order'); 
 const { withTransaction } = require('../utils/dbUtils'); 
 const AppError = require('../utils/AppError'); 
 const auditService = require('./auditService'); 
@@ -22,6 +22,60 @@ const getProductAndVariant = async (productId, variantId, session = null) => {
     if (!variant) throw new AppError('Variant not found', 404);
     
     return { product, variant };
+};
+
+// ==========================================
+// --- INVENTORY OPERATIONS ---
+// ==========================================
+
+exports.deductInventory = async (items, storeId, session) => {
+    const productIds = items.map(item => item.productId);
+    const products = await Product.find({ _id: { $in: productIds } }).session(session).lean();
+    
+    const productMap = {};
+    products.forEach(p => productMap[p._id.toString()] = p);
+
+    const bulkOperations = [];
+
+    for (const item of items) {
+        const product = productMap[item.productId.toString()];
+        if (!product) return { success: false, message: `Product not found: ${item.name}` };
+
+        const variant = product.variants.find(v => v._id.toString() === item.variantId.toString());
+        if (!variant) return { success: false, message: `Variant not found for item: ${item.name}` };
+
+        if (variant.stock < item.qty) return { success: false, message: `Insufficient global stock for item: ${item.name}` };
+
+        if (storeId) {
+            const locStock = variant.locationInventory ? variant.locationInventory.find(l => l.storeId.toString() === storeId.toString()) : null;
+            if (!locStock || locStock.stock < item.qty) {
+                return { success: false, message: `Insufficient local store stock for item: ${item.name}` };
+            }
+            
+            bulkOperations.push({
+                updateOne: {
+                    filter: { _id: item.productId },
+                    update: { 
+                        $inc: { 
+                            "variants.$[var].stock": -item.qty,
+                            "variants.$[var].locationInventory.$[loc].stock": -item.qty 
+                        } 
+                    },
+                    arrayFilters: [{ "var._id": item.variantId }, { "loc.storeId": storeId }]
+                }
+            });
+        } else {
+            bulkOperations.push({
+                updateOne: {
+                    filter: { _id: item.productId, "variants._id": item.variantId },
+                    update: { $inc: { "variants.$.stock": -item.qty } }
+                }
+            });
+        }
+    }
+
+    if (bulkOperations.length > 0) await Product.bulkWrite(bulkOperations, { session });
+    return { success: true };
 };
 
 // ==========================================
