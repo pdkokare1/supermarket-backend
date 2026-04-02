@@ -1,10 +1,9 @@
 /* jobs/cronTasks.js */
 
 const mongoose = require('mongoose');
-const Product = require('../models/Product'); // Retained for backup stream
-const Order = require('../models/Order');     // Retained for backup stream
-const Customer = require('../models/Customer'); // Retained for backup stream
-const nodemailer = require('nodemailer');    
+const Product = require('../models/Product'); 
+const Order = require('../models/Order');     
+const Customer = require('../models/Customer'); 
 const cloudinary = require('cloudinary').v2; 
 
 const fs = require('fs');
@@ -16,59 +15,14 @@ const zlib = require('zlib');
 const inventoryService = require('../services/inventoryService');
 const orderService = require('../services/orderService');
 const auditService = require('../services/auditService');
+const analyticsService = require('../services/analyticsService'); // Fixed import
+const notificationService = require('../services/notificationService'); // New centralized notifications
 
 cloudinary.config({
     cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
     api_key: process.env.CLOUDINARY_API_KEY,
     api_secret: process.env.CLOUDINARY_API_SECRET
 });
-
-// ==========================================
-// --- NEW HELPER FUNCTIONS (OPTIMIZATION) ---
-// ==========================================
-
-async function sendAdminEmail(fastify, subject, htmlContent, textContent) {
-    if (process.env.EMAIL_USER && process.env.EMAIL_PASS && process.env.TARGET_EMAIL) {
-        try {
-            const transporter = nodemailer.createTransport({
-                service: 'gmail',
-                auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS }
-            });
-            
-            const mailOptions = {
-                from: `"DailyPick Server" <${process.env.EMAIL_USER}>`,
-                to: process.env.TARGET_EMAIL,
-                subject: subject
-            };
-            
-            if (htmlContent) mailOptions.html = htmlContent;
-            if (textContent) mailOptions.text = textContent;
-
-            await transporter.sendMail(mailOptions);
-            return true;
-        } catch (emailErr) {
-            if (fastify) fastify.log.error('Failed to send Admin Email:', emailErr);
-            return false;
-        }
-    }
-    return false;
-}
-
-async function sendAdminWhatsApp(fastify, messageText) {
-    if (process.env.WA_PHONE_NUMBER && process.env.CALLMEBOT_API_KEY) {
-        try {
-            const encodedText = encodeURIComponent(messageText);
-            const waUrl = `https://api.callmebot.com/whatsapp.php?phone=${process.env.WA_PHONE_NUMBER}&text=${encodedText}&apikey=${process.env.CALLMEBOT_API_KEY}`;
-            
-            await fetch(waUrl);
-            return true;
-        } catch (waErr) {
-            if (fastify) fastify.log.error('Failed to send Admin WhatsApp:', waErr);
-            return false;
-        }
-    }
-    return false;
-}
 
 // ==========================================
 // --- CRON JOB EXPORTS ---
@@ -155,7 +109,6 @@ const uploadFileToCloudinary = async (filePath, filename, retries = 3) => {
 async function runExpiryMonitor(fastify) {
     fastify.log.info('Running 12:00 AM Expiry & Wastage Monitor CRON Job...');
     try {
-        // OPTIMIZED: Logic moved to inventoryService
         const expiringItems = await inventoryService.getExpiringProducts(7);
 
         if (expiringItems.length > 0) {
@@ -176,7 +129,6 @@ async function runExpiryMonitor(fastify) {
 async function runDataRetentionCleanup(fastify) {
     fastify.log.info('Running 3:00 AM Data Retention Cleanup (90 Days)...');
     try {
-        // OPTIMIZED: Delegated explicitly to services
         const deletedOrders = await orderService.deleteOldCancelledOrders(90);
         const deletedLogs = await auditService.deleteOldAuditLogs(90);
 
@@ -228,7 +180,7 @@ async function runDailyInventory(fastify, updateInventoryReport) {
                 <p>Log in to the DailyPick Admin Panel to process Supplier Purchase Orders.</p>
             `;
 
-            const emailSent = await sendAdminEmail(fastify, `⚠️ Action Required: ${lowStockItems.length} items need restock`, htmlContent);
+            const emailSent = await notificationService.sendAdminEmail(fastify, `⚠️ Action Required: ${lowStockItems.length} items need restock`, htmlContent);
             if (emailSent) fastify.log.info('9:00 AM Low Stock Email Alert sent successfully.');
         }
 
@@ -247,7 +199,8 @@ async function runEODBackup(fastify) {
         tomorrow.setDate(tomorrow.getDate() + 1);
         const todayStr = new Date().toDateString();
 
-        const f = await orderService.getDailyFinancialTotals(today, tomorrow, todayStr);
+        // Using correctly routed Analytics Service
+        const f = await analyticsService.getDailyFinancialTotals(today, tomorrow, todayStr);
 
         const dateString = new Date().toLocaleDateString();
         let reportText = `📈 *DailyPick EOD Report*\nDate: ${dateString}\n\n` +
@@ -288,17 +241,17 @@ async function runEODBackup(fastify) {
             fastify.log.error('Cloudinary Backup Failed:', cloudinaryErr);
             emailAppend = `\n\n(Warning: Secure Cloudinary Backups failed. Check API Keys.)`;
             
-            await sendAdminWhatsApp(fastify, `CRITICAL: Cloudinary Backup Failed for ${dateString}.`);
+            await notificationService.sendAdminWhatsApp(fastify, `CRITICAL: Cloudinary Backup Failed for ${dateString}.`);
         } finally {
             if (productsPath && fs.existsSync(productsPath)) fs.unlinkSync(productsPath);
             if (customersPath && fs.existsSync(customersPath)) fs.unlinkSync(customersPath);
             if (ordersPath && fs.existsSync(ordersPath)) fs.unlinkSync(ordersPath);
         }
 
-        const emailSent = await sendAdminEmail(fastify, `EOD Report & Backup: ₹${f.netProfit.toFixed(2)} Net Profit`, null, reportText + emailAppend);
+        const emailSent = await notificationService.sendAdminEmail(fastify, `EOD Report & Backup: ₹${f.netProfit.toFixed(2)} Net Profit`, null, reportText + emailAppend);
         if (emailSent) fastify.log.info('11:59 PM EOD Email sent successfully.');
 
-        const waSent = await sendAdminWhatsApp(fastify, reportText + `Great work today! 🚀`);
+        const waSent = await notificationService.sendAdminWhatsApp(fastify, reportText + `Great work today! 🚀`);
         if (waSent) fastify.log.info('EOD WhatsApp sent successfully.');
 
     } catch (err) {
