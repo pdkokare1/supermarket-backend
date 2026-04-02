@@ -2,7 +2,9 @@
 
 const sseService = require('../services/orderSseService');
 const orderService = require('../services/orderService'); 
-const { handleControllerError } = require('../utils/errorUtils'); 
+const checkoutService = require('../services/checkoutService'); 
+const analyticsService = require('../services/analyticsService'); 
+const catchAsync = require('../utils/catchAsync');
 const { sendCsvResponse } = require('../utils/csvUtils'); 
 
 // ==========================================
@@ -12,7 +14,6 @@ const { sendCsvResponse } = require('../utils/csvUtils');
 exports.streamAdmin = async (request, reply) => {
     sseService.setSSEHeaders(request, reply);
     reply.raw.write('data: {"message": "Admin Stream Connected"}\n\n');
-    
     sseService.addAdminConnection(reply.raw);
 
     request.raw.on('close', () => {
@@ -24,7 +25,6 @@ exports.streamCustomer = async (request, reply) => {
     const orderId = request.params.id;
     sseService.setSSEHeaders(request, reply);
     reply.raw.write('data: {"message": "Tracking Stream Connected"}\n\n');
-    
     sseService.addCustomerConnection(orderId, reply.raw);
 
     request.raw.on('close', () => {
@@ -32,134 +32,78 @@ exports.streamCustomer = async (request, reply) => {
     });
 };
 
-exports.externalCheckout = async (request, reply) => {
+exports.externalCheckout = catchAsync(async (request, reply) => {
     const apiKey = request.headers['x-api-key'];
     if (!apiKey || apiKey !== process.env.EXTERNAL_API_KEY) {
         return reply.status(401).send({ success: false, message: 'Unauthorized webhook access.' });
     }
+    const newOrder = await checkoutService.processExternalCheckout(request.body);
+    sseService.notifyNewOrder(request, newOrder, request.body.storeId, request.body.source);
+    return { success: true, message: `External Order Accepted from ${request.body.source}`, orderId: newOrder._id, orderNumber: newOrder.orderNumber };
+}, 'processing external checkout');
 
-    try {
-        const newOrder = await orderService.processExternalCheckout(request.body);
-        sseService.notifyNewOrder(request, newOrder, request.body.storeId, request.body.source);
-        return { success: true, message: `External Order Accepted from ${request.body.source}`, orderId: newOrder._id, orderNumber: newOrder.orderNumber };
-    } catch (error) {
-        handleControllerError(request, reply, error, 'processing external checkout');
+exports.onlineCheckout = catchAsync(async (request, reply) => {
+    const newOrder = await checkoutService.processOnlineCheckout(request.body);
+    sseService.notifyNewOrder(request, newOrder, request.body.storeId);
+    return { success: true, message: 'Order Placed Successfully', orderId: newOrder._id };
+}, 'processing checkout');
+
+exports.posCheckout = catchAsync(async (request, reply) => {
+    const newOrder = await checkoutService.processPosCheckout(request.body);
+    if (request.server.broadcastToPOS) {
+        request.server.broadcastToPOS({ type: 'NEW_ORDER', orderId: newOrder._id, source: 'POS', storeId: request.body.storeId });
     }
-};
+    return { success: true, message: 'POS Transaction Complete', orderId: newOrder._id, orderData: newOrder };
+}, 'processing POS transaction');
 
-exports.onlineCheckout = async (request, reply) => {
-    try {
-        const newOrder = await orderService.processOnlineCheckout(request.body);
-        sseService.notifyNewOrder(request, newOrder, request.body.storeId);
-        return { success: true, message: 'Order Placed Successfully', orderId: newOrder._id };
-    } catch (error) {
-        handleControllerError(request, reply, error, 'processing checkout');
-    }
-};
+exports.assignDriver = catchAsync(async (request, reply) => {
+    const { driverName, driverPhone } = request.body;
+    const order = await orderService.assignDriverToOrder(request.params.id, driverName, driverPhone);
+    if (!order) return reply.status(404).send({ success: false, message: 'Order not found' });
+    return { success: true, data: order, message: 'Driver assigned successfully' };
+}, 'assigning driver');
 
-exports.posCheckout = async (request, reply) => {
-    try {
-        const newOrder = await orderService.processPosCheckout(request.body);
-        
-        if (request.server.broadcastToPOS) {
-            request.server.broadcastToPOS({ type: 'NEW_ORDER', orderId: newOrder._id, source: 'POS', storeId: request.body.storeId });
-        }
+exports.updateStatus = catchAsync(async (request, reply) => {
+    const { status } = request.body;
+    const order = await orderService.updateOrderStatus(request.params.id, status);
+    if (!order) return reply.status(404).send({ success: false, message: 'Order not found' });
+    sseService.notifyStatusUpdate(request, order._id, status, order.storeId);
+    return { success: true, data: order };
+}, 'updating status');
 
-        return { success: true, message: 'POS Transaction Complete', orderId: newOrder._id, orderData: newOrder };
-    } catch (error) {
-        handleControllerError(request, reply, error, 'processing POS transaction');
-    }
-};
+exports.dispatchOrder = catchAsync(async (request, reply) => {
+    const order = await orderService.dispatchOrder(request.params.id);
+    if (!order) return reply.status(404).send({ success: false, message: 'Order not found' });
+    sseService.notifyStatusUpdate(request, order._id, 'Dispatched', order.storeId);
+    return { success: true, data: order };
+}, 'dispatching order');
 
-exports.assignDriver = async (request, reply) => {
-    try {
-        const { driverName, driverPhone } = request.body;
-        const order = await orderService.assignDriverToOrder(request.params.id, driverName, driverPhone);
-        
-        if (!order) return reply.status(404).send({ success: false, message: 'Order not found' });
-        return { success: true, data: order, message: 'Driver assigned successfully' };
-    } catch (error) {
-        handleControllerError(request, reply, error, 'assigning driver');
-    }
-};
+exports.partialRefund = catchAsync(async (request, reply) => {
+    const order = await orderService.processPartialRefund(request.params.id, request.body, request.user);
+    return { success: true, message: 'Item Partially Refunded', data: order };
+}, 'processing refund');
 
-exports.updateStatus = async (request, reply) => {
-    try {
-        const { status } = request.body;
-        const order = await orderService.updateOrderStatus(request.params.id, status);
-        
-        if (!order) return reply.status(404).send({ success: false, message: 'Order not found' });
+exports.cancelOrder = catchAsync(async (request, reply) => {
+    const order = await orderService.processCancelOrder(request.params.id, request.body.reason, request.user);
+    sseService.notifyStatusUpdate(request, order._id, 'Cancelled', order.storeId);
+    return { success: true, message: 'Order Cancelled and Stock Refunded', data: order };
+}, 'cancelling order');
 
-        sseService.notifyStatusUpdate(request, order._id, status, order.storeId);
-        return { success: true, data: order };
-    } catch (error) {
-        handleControllerError(request, reply, error, 'updating status');
-    }
-};
+exports.getAnalytics = catchAsync(async (request, reply) => {
+    return await analyticsService.getAnalyticsData();
+}, 'fetching analytics');
 
-exports.dispatchOrder = async (request, reply) => {
-    try {
-        const order = await orderService.dispatchOrder(request.params.id);
-        if (!order) return reply.status(404).send({ success: false, message: 'Order not found' });
+exports.getOrders = catchAsync(async (request, reply) => {
+    return await orderService.getOrdersList(request.query);
+}, 'fetching orders');
 
-        sseService.notifyStatusUpdate(request, order._id, 'Dispatched', order.storeId);
-        return { success: true, data: order };
-    } catch (error) {
-        handleControllerError(request, reply, error, 'dispatching order');
-    }
-};
+exports.exportOrders = catchAsync(async (request, reply) => {
+    const exportData = await orderService.getAllOrdersForExport();
+    return sendCsvResponse(reply, exportData, 'orders');
+}, 'exporting orders');
 
-exports.partialRefund = async (request, reply) => {
-    try {
-        const order = await orderService.processPartialRefund(request.params.id, request.body, request.user);
-        return { success: true, message: 'Item Partially Refunded', data: order };
-    } catch (error) {
-        handleControllerError(request, reply, error, 'processing refund');
-    }
-};
-
-exports.cancelOrder = async (request, reply) => {
-    try {
-        const order = await orderService.processCancelOrder(request.params.id, request.body.reason, request.user);
-        
-        sseService.notifyStatusUpdate(request, order._id, 'Cancelled', order.storeId);
-        return { success: true, message: 'Order Cancelled and Stock Refunded', data: order };
-    } catch (error) {
-        handleControllerError(request, reply, error, 'cancelling order');
-    }
-};
-
-exports.getAnalytics = async (request, reply) => {
-    try {
-        return await orderService.getAnalyticsData();
-    } catch (error) {
-        handleControllerError(request, reply, error, 'fetching analytics');
-    }
-};
-
-exports.getOrders = async (request, reply) => {
-    try {
-        return await orderService.getOrdersList(request.query);
-    } catch (error) {
-        handleControllerError(request, reply, error, 'fetching orders');
-    }
-};
-
-exports.exportOrders = async (request, reply) => {
-    try {
-        const exportData = await orderService.getAllOrdersForExport();
-        return sendCsvResponse(reply, exportData, 'orders');
-    } catch (error) {
-        handleControllerError(request, reply, error, 'exporting orders');
-    }
-};
-
-exports.getOrderById = async (request, reply) => {
-    try {
-        const order = await orderService.getOrderById(request.params.id);
-        if (!order) return reply.status(404).send({ success: false, message: 'Order not found' });
-        return { success: true, data: order };
-    } catch (error) {
-        handleControllerError(request, reply, error, 'fetching order status');
-    }
-};
+exports.getOrderById = catchAsync(async (request, reply) => {
+    const order = await orderService.getOrderById(request.params.id);
+    if (!order) return reply.status(404).send({ success: false, message: 'Order not found' });
+    return { success: true, data: order };
+}, 'fetching order status');
