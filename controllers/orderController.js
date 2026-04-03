@@ -12,24 +12,11 @@ const { sendCsvResponse } = require('../utils/csvUtils');
 // ==========================================
 
 exports.streamAdmin = async (request, reply) => {
-    sseService.setSSEHeaders(request, reply);
-    reply.raw.write('data: {"message": "Admin Stream Connected"}\n\n');
-    sseService.addAdminConnection(reply.raw);
-
-    request.raw.on('close', () => {
-        sseService.removeAdminConnection(reply.raw);
-    });
+    sseService.initializeAdminStream(request, reply);
 };
 
 exports.streamCustomer = async (request, reply) => {
-    const orderId = request.params.id;
-    sseService.setSSEHeaders(request, reply);
-    reply.raw.write('data: {"message": "Tracking Stream Connected"}\n\n');
-    sseService.addCustomerConnection(orderId, reply.raw);
-
-    request.raw.on('close', () => {
-        sseService.removeCustomerConnection(orderId, reply.raw);
-    });
+    sseService.initializeCustomerStream(request, reply, request.params.id);
 };
 
 exports.externalCheckout = catchAsync(async (request, reply) => {
