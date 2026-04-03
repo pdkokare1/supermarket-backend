@@ -9,7 +9,6 @@ try {
     if (process.env.REDIS_URL) {
         redisCache = new Redis(process.env.REDIS_URL);
         
-        // NEW OPTIMIZATION: Event listeners for better debugging
         redisCache.on('error', (err) => {
             console.error("[CACHE UTILS] Redis Error:", err.message);
         });
@@ -25,14 +24,13 @@ try {
 exports.redisCache = redisCache;
 
 exports.generateKey = (prefix, queryObj) => {
-    // OPTIMIZATION: Sort object keys to ensure identical query objects produce the same hash
     const sortedObj = {};
     if (queryObj && typeof queryObj === 'object') {
         Object.keys(queryObj).sort().forEach(key => {
             sortedObj[key] = queryObj[key];
         });
     } else {
-        sortedObj.value = queryObj; // Fallback for primitives
+        sortedObj.value = queryObj; 
     }
     
     const hash = crypto.createHash('md5').update(JSON.stringify(sortedObj)).digest('hex');
@@ -76,7 +74,8 @@ exports.invalidateByPattern = async (pattern) => {
             const [newCursor, keys] = await redisCache.scan(cursor, 'MATCH', pattern, 'COUNT', 100);
             cursor = newCursor;
             if (keys.length > 0) {
-                await redisCache.del(...keys);
+                // OPTIMIZATION: Implemented Redis Pipeline to batch deletes
+                await redisCache.pipeline().del(...keys).exec();
             }
         } while (cursor !== '0');
     } catch(e) {
