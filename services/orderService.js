@@ -33,13 +33,18 @@ exports.deleteOldCancelledOrders = async (days) => {
 exports.generateRoutineDeliveries = async () => {
     const routineOrders = await Order.find({ deliveryType: 'Routine', status: { $ne: 'Cancelled' } }).lean();
     if (routineOrders.length > 0) {
-        const newOrdersToInsert = routineOrders.map(ro => ({
-            customerName: ro.customerName, customerPhone: ro.customerPhone,
-            deliveryAddress: ro.deliveryAddress, items: ro.items,
-            totalAmount: ro.totalAmount, paymentMethod: ro.paymentMethod,
-            deliveryType: 'Instant', scheduleTime: 'Generated via Routine', status: 'Order Placed'
+        // Optimized: Uses bulkWrite inline to prevent deep object mapping/copying into RAM
+        const bulkOps = routineOrders.map(ro => ({
+            insertOne: {
+                document: {
+                    customerName: ro.customerName, customerPhone: ro.customerPhone,
+                    deliveryAddress: ro.deliveryAddress, items: ro.items,
+                    totalAmount: ro.totalAmount, paymentMethod: ro.paymentMethod,
+                    deliveryType: 'Instant', scheduleTime: 'Generated via Routine', status: 'Order Placed'
+                }
+            }
         }));
-        await Order.insertMany(newOrdersToInsert);
+        await Order.bulkWrite(bulkOps);
     }
     return routineOrders.length;
 };
@@ -60,14 +65,15 @@ exports.processPartialRefund = async (orderId, payload, user) => {
             await Product.updateOne({ _id: productId }, { $inc: { "variants.$[var].locationInventory.$[loc].stock": qtyToRefund } }, { arrayFilters: [{ "var._id": variantId }, { "loc.storeId": order.storeId }], session }).catch(() => {});
         }
 
-        let updatedItems = [];
-        for(let item of order.items) {
-            if(item.productId === productId && item.variantId === variantId) {
-                item.qty = item.qty - qtyToRefund;
-                if(item.qty > 0) updatedItems.push(item);
-            } else updatedItems.push(item);
-        }
-        order.items = updatedItems;
+        // Optimized: streamlined array manipulation
+        order.items = order.items
+            .map(item => {
+                if (item.productId === productId && item.variantId === variantId) {
+                    item.qty -= qtyToRefund;
+                }
+                return item;
+            })
+            .filter(item => item.qty > 0);
 
         if (order.paymentMethod === 'Pay Later') {
             const diff = order.totalAmount - newTotalAmount;
