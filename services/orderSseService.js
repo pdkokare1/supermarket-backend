@@ -89,7 +89,6 @@ const publishEvent = (target, payload, additionalData = {}) => {
     }
 };
 
-// --- MOVED FROM CONTROLLER ---
 const setSSEHeaders = (request, reply) => {
     reply.hijack(); 
     reply.raw.writeHead(200, {
@@ -98,6 +97,27 @@ const setSSEHeaders = (request, reply) => {
         'Access-Control-Allow-Origin': request.headers.origin || '*',  
         'Access-Control-Allow-Credentials': 'true',
         'X-Accel-Buffering': 'no'            
+    });
+};
+
+// --- ABSTRACTION HELPERS ---
+const initializeAdminStream = (request, reply) => {
+    setSSEHeaders(request, reply);
+    reply.raw.write('data: {"message": "Admin Stream Connected"}\n\n');
+    addAdminConnection(reply.raw);
+
+    request.raw.on('close', () => {
+        removeAdminConnection(reply.raw);
+    });
+};
+
+const initializeCustomerStream = (request, reply, orderId) => {
+    setSSEHeaders(request, reply);
+    reply.raw.write('data: {"message": "Tracking Stream Connected"}\n\n');
+    addCustomerConnection(orderId, reply.raw);
+
+    request.raw.on('close', () => {
+        removeCustomerConnection(orderId, reply.raw);
     });
 };
 
@@ -139,6 +159,8 @@ module.exports = {
     removeCustomerConnection,
     publishEvent,
     setSSEHeaders,
+    initializeAdminStream,
+    initializeCustomerStream,
     notifyNewOrder,
     notifyStatusUpdate,
     closeAllConnections
