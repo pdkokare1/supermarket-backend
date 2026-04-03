@@ -62,8 +62,10 @@ exports.processExternalCheckout = async (payload) => {
 };
 
 exports.processOnlineCheckout = async (payload) => {
-    return withTransaction(async (session) => {
-        const { customerName, customerPhone, deliveryAddress, items, totalAmount, deliveryType, scheduleTime, paymentMethod, notes, storeId } = payload;
+    const { customerName, customerPhone, deliveryAddress, items, totalAmount, deliveryType, scheduleTime, paymentMethod, notes, storeId } = payload;
+    
+    // OPTIMIZATION: Isolate DB lock strictly to database operations
+    const newOrder = await withTransaction(async (session) => {
         let custProfile = await Customer.findOne({ phone: customerPhone }).session(session);
         if (paymentMethod === 'Pay Later') validateAndApplyPayLater(custProfile, totalAmount);
 
@@ -76,18 +78,21 @@ exports.processOnlineCheckout = async (payload) => {
         await custProfile.save({ session });
 
         const orderData = { notes: notes || '', customerName, customerPhone, deliveryAddress, totalAmount, paymentMethod: paymentMethod || 'Cash on Delivery', deliveryType: deliveryType || 'Instant', scheduleTime: scheduleTime || 'ASAP' };
-        const newOrder = await finalizeAndSaveOrder(session, items, storeId, 'ORD', orderData);
-
-        const msg = `DailyPick Order Received! 🛒\nOrder ID: ${newOrder.orderNumber}\nTotal: ₹${totalAmount}\nDelivery: ${scheduleTime || 'ASAP'}\nThanks for shopping!`;
-        sendWhatsAppMessage(customerPhone, msg);
-
-        return newOrder;
+        return await finalizeAndSaveOrder(session, items, storeId, 'ORD', orderData);
     });
+
+    // OPTIMIZATION: Execute side-effect out of transaction to prevent false-fires
+    const msg = `DailyPick Order Received! 🛒\nOrder ID: ${newOrder.orderNumber}\nTotal: ₹${totalAmount}\nDelivery: ${scheduleTime || 'ASAP'}\nThanks for shopping!`;
+    sendWhatsAppMessage(customerPhone, msg);
+
+    return newOrder;
 };
 
 exports.processPosCheckout = async (payload) => {
-    return withTransaction(async (session) => {
-        const { customerPhone, items, totalAmount, taxAmount, discountAmount, paymentMethod, splitDetails, pointsRedeemed, notes, storeId, registerId } = payload;
+    const { customerPhone, items, totalAmount, taxAmount, discountAmount, paymentMethod, splitDetails, pointsRedeemed, notes, storeId, registerId } = payload;
+    
+    // OPTIMIZATION: Isolate DB lock strictly to database operations
+    const newOrder = await withTransaction(async (session) => {
         let finalCustomerName = 'Walk-in Guest';
 
         if (customerPhone) {
@@ -108,12 +113,13 @@ exports.processPosCheckout = async (payload) => {
         }
 
         const orderData = { registerId: registerId || null, notes: notes || '', customerName: finalCustomerName, customerPhone: customerPhone || '', deliveryAddress: 'In-Store Purchase', totalAmount, taxAmount: taxAmount || 0, discountAmount: discountAmount || 0, paymentMethod, splitDetails: splitDetails || { cash: 0, upi: 0 }, deliveryType: 'Instant', status: 'Completed' };
-        const newOrder = await finalizeAndSaveOrder(session, items, storeId, 'ORD', orderData);
-
-        const loyaltyMsg = pointsRedeemed > 0 ? ` Points Redeemed: ${pointsRedeemed}.` : '';
-        const msg = `Thank you for shopping at DailyPick! 🛒\nOrder: ${newOrder.orderNumber}\nTotal: ₹${totalAmount}\n${loyaltyMsg}\nVisit again!`;
-        sendWhatsAppMessage(customerPhone, msg);
-
-        return newOrder;
+        return await finalizeAndSaveOrder(session, items, storeId, 'ORD', orderData);
     });
+
+    // OPTIMIZATION: Execute side-effect out of transaction to prevent false-fires
+    const loyaltyMsg = pointsRedeemed > 0 ? ` Points Redeemed: ${pointsRedeemed}.` : '';
+    const msg = `Thank you for shopping at DailyPick! 🛒\nOrder: ${newOrder.orderNumber}\nTotal: ₹${totalAmount}\n${loyaltyMsg}\nVisit again!`;
+    sendWhatsAppMessage(customerPhone, msg);
+
+    return newOrder;
 };
