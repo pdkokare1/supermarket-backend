@@ -2,6 +2,7 @@
 
 const Product = require('../models/Product');
 const cacheUtils = require('../utils/cacheUtils');
+const { buildProductQuery } = require('../utils/queryBuilderUtils');
 
 // ==========================================
 // --- HELPER FUNCTIONS ---
@@ -13,46 +14,6 @@ const syncAndBroadcast = async (server, productId, extraPayload = {}) => {
         server.broadcastToPOS({ type: 'INVENTORY_UPDATED', productId, ...extraPayload });
     }
 };
-
-// OPTIMIZED: Defined as a local constant to prevent 'this' context loss
-const buildProductQuery = (queryObj) => {
-    let filter = queryObj.all === 'true' 
-        ? { isArchived: { $ne: true } } 
-        : { isActive: true, isArchived: { $ne: true } };
-    
-    if (queryObj.search) { 
-        filter.$or = [ 
-            { name: { $regex: queryObj.search, $options: 'i' } }, 
-            { searchTags: { $regex: queryObj.search, $options: 'i' } } 
-        ]; 
-    }
-    
-    if (queryObj.category && queryObj.category !== 'All') filter.category = queryObj.category; 
-    if (queryObj.brand && queryObj.brand !== 'All') filter.brand = queryObj.brand;
-    if (queryObj.distributor && queryObj.distributor !== 'All') filter.distributorName = queryObj.distributor;
-
-    if (queryObj.stockStatus === 'out') {
-        filter['variants.stock'] = { $lte: 0 };
-    } else if (queryObj.stockStatus === 'dead') {
-        filter['variants.stock'] = { $gt: 15 };
-    } else if (queryObj.stockStatus === 'low') {
-        filter.$expr = {
-            $anyElementTrue: {
-                $map: {
-                    input: "$variants", as: "v", in: {
-                        $and: [
-                            { $gt: ["$$v.stock", 0] },
-                            { $lte: ["$$v.stock", { $ifNull: ["$$v.lowStockThreshold", 5] }] }
-                        ]
-                    }
-                }
-            }
-        };
-    }
-    return filter;
-};
-
-exports.buildProductQuery = buildProductQuery; // Re-export for external use
 
 // ==========================================
 // --- SERVICE EXPORTS ---
@@ -90,14 +51,12 @@ exports.createProduct = async (server, productData) => {
 };
 
 exports.updateProduct = async (server, productId, updateData) => {
-    // Protected fields stripped here for security
-    delete updateData._id;
-    delete updateData.isArchived;
-    delete updateData.isActive;
+    // V8 Engine Optimization: Destructuring instead of 'delete' operator
+    const { _id, isArchived, isActive, ...safeUpdateData } = updateData;
     
     const updatedProduct = await Product.findByIdAndUpdate(
         productId, 
-        { $set: updateData }, 
+        { $set: safeUpdateData }, 
         { new: true, runValidators: true }
     );
     
