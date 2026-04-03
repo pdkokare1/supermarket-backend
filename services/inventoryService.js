@@ -44,6 +44,7 @@ exports.deductInventory = async (items, storeId, session) => {
         const variant = product.variants.find(v => v._id.toString() === item.variantId.toString());
         if (!variant) return { success: false, message: `Variant not found for item: ${item.name}` };
 
+        // Fast-fail memory check
         if (variant.stock < item.qty) return { success: false, message: `Insufficient global stock for item: ${item.name}` };
 
         if (storeId) {
@@ -61,20 +62,32 @@ exports.deductInventory = async (items, storeId, session) => {
                             "variants.$[var].locationInventory.$[loc].stock": -item.qty 
                         } 
                     },
-                    arrayFilters: [{ "var._id": item.variantId }, { "loc.storeId": storeId }]
+                    // OPTIMIZATION: DB-level atomic constraint prevents concurrent overselling
+                    arrayFilters: [
+                        { "var._id": item.variantId, "var.stock": { $gte: item.qty } }, 
+                        { "loc.storeId": storeId, "loc.stock": { $gte: item.qty } }
+                    ]
                 }
             });
         } else {
             bulkOperations.push({
                 updateOne: {
-                    filter: { _id: item.productId, "variants._id": item.variantId },
-                    update: { $inc: { "variants.$.stock": -item.qty } }
+                    filter: { _id: item.productId },
+                    update: { $inc: { "variants.$[var].stock": -item.qty } },
+                    // OPTIMIZATION: DB-level atomic constraint
+                    arrayFilters: [{ "var._id": item.variantId, "var.stock": { $gte: item.qty } }]
                 }
             });
         }
     }
 
-    if (bulkOperations.length > 0) await Product.bulkWrite(bulkOperations, { session });
+    if (bulkOperations.length > 0) {
+        const bulkResult = await Product.bulkWrite(bulkOperations, { session });
+        // OPTIMIZATION: Identify if another transaction snatched the stock right before this locked
+        if (bulkResult.modifiedCount !== items.length) {
+            return { success: false, message: 'Stock level changed during checkout. Please review cart.' };
+        }
+    }
     return { success: true };
 };
 
