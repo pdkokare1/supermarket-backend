@@ -5,6 +5,7 @@ const mongoose = require('mongoose');
 const nodemailer = require('nodemailer');
 const fs = require('fs');
 const path = require('path');
+const zlib = require('zlib'); // Added native Node zlib compression
 
 module.exports = function(fastify) {
     cron.schedule('0 3 * * 0', async () => {
@@ -15,34 +16,39 @@ module.exports = function(fastify) {
 
         fastify.log.info('[SECURITY] Starting automated Cloud Database Backup...');
         
-        const fileName = `DailyPick_Backup_${new Date().toISOString().split('T')[0]}.json`;
+        // OPTIMIZATION: Gzip extension to heavily compress JSON strings
+        const fileName = `DailyPick_Backup_${new Date().toISOString().split('T')[0]}.json.gz`;
         const filePath = path.join(__dirname, `../${fileName}`);
         
         try {
             const fileStream = fs.createWriteStream(filePath);
-            fileStream.write('{\n');
+            const gzipStream = zlib.createGzip();
+            
+            // Pipe output to zipper, then to file
+            gzipStream.pipe(fileStream);
+            gzipStream.write('{\n');
             
             const collections = await mongoose.connection.db.listCollections().toArray();
             
             for (let i = 0; i < collections.length; i++) {
                 const colName = collections[i].name;
-                fileStream.write(`  "${colName}": [\n`);
+                gzipStream.write(`  "${colName}": [\n`);
                 
                 const cursor = mongoose.connection.db.collection(colName).find({});
                 let isFirstDoc = true;
                 
                 for await (const doc of cursor) {
-                    if (!isFirstDoc) fileStream.write(',\n');
-                    fileStream.write(`    ${JSON.stringify(doc)}`);
+                    if (!isFirstDoc) gzipStream.write(',\n');
+                    gzipStream.write(`    ${JSON.stringify(doc)}`);
                     isFirstDoc = false;
                 }
                 
-                fileStream.write('\n  ]');
-                if (i < collections.length - 1) fileStream.write(',');
-                fileStream.write('\n');
+                gzipStream.write('\n  ]');
+                if (i < collections.length - 1) gzipStream.write(',');
+                gzipStream.write('\n');
             }
-            fileStream.write('}\n');
-            fileStream.end();
+            gzipStream.write('}\n');
+            gzipStream.end();
 
             await new Promise(resolve => fileStream.on('finish', resolve));
 
@@ -58,16 +64,15 @@ module.exports = function(fastify) {
                 from: `"DailyPick Security Watchdog" <${process.env.SMTP_USER}>`,
                 to: process.env.BACKUP_EMAIL,
                 subject: `🔒 Automated Database Backup - ${new Date().toLocaleDateString()}`,
-                text: 'Attached is the automated weekly secure backup of your entire MongoDB database. Keep this file safe.',
+                text: 'Attached is the automated weekly secure backup of your entire MongoDB database. It has been securely compressed using GZIP. Keep this file safe.',
                 attachments: [{ filename: fileName, path: filePath }]
             });
 
-            fastify.log.info('[SECURITY] Automated backup completed and emailed securely.');
+            fastify.log.info('[SECURITY] Automated compressed backup completed and emailed securely.');
 
         } catch (error) {
             fastify.log.error('[SECURITY] Backup Cron Error:', error);
         } finally {
-            // OPTIMIZATION: Guaranteed cleanup prevents server disk space exhaustion
             if (fs.existsSync(filePath)) {
                 fs.unlinkSync(filePath); 
             }
