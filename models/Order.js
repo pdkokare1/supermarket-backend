@@ -1,3 +1,5 @@
+/* models/Order.js */
+
 const mongoose = require('mongoose');
 
 // --- NEW: Atomic Counter for Sequential Order Numbers (Phase 2) ---
@@ -90,7 +92,6 @@ const orderSchema = new mongoose.Schema({
 // --- OPTIMIZED INDEXES FOR HIGH-SPEED QUERIES ---
 orderSchema.index({ status: 1, createdAt: -1 }); 
 orderSchema.index({ deliveryType: 1, status: 1 }); 
-orderSchema.index({ orderNumber: 1 });
 orderSchema.index({ storeId: 1, createdAt: -1 });
 orderSchema.index({ registerId: 1, createdAt: -1 });
 
