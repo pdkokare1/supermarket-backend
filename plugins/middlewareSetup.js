@@ -1,16 +1,15 @@
 /* plugins/middlewareSetup.js */
 
 module.exports = function(fastify, redisClient) {
-    // --- CORS SETUP ---
-    // Registered absolutely first to intercept preflights before Helmet or Rate Limiter
+    // --- MOVED TO TOP ---
+    // CORS must be registered first so that preflight (OPTIONS) requests 
+    // are answered before rate limiters or helmet block them.
     fastify.register(require('@fastify/cors'), { 
-        // Setting to true automatically reflects the incoming Origin header.
-        // This guarantees the frontend passes the check regardless of the exact URL string.
-        origin: true, 
+        origin: true, // Automatically reflects the incoming Origin header
         methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
         credentials: true,
         allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'Origin', 'X-Requested-With'],
-        optionsSuccessStatus: 204 // Force successful preflight response
+        optionsSuccessStatus: 204
     });
 
     fastify.register(require('@fastify/helmet'));
