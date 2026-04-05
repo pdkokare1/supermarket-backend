@@ -1,18 +1,26 @@
 /* plugins/middlewareSetup.js */
 
 module.exports = function(fastify, redisClient) {
-    // --- MOVED TO TOP ---
-    // CORS must be registered first so that preflight (OPTIONS) requests 
-    // are answered before rate limiters or helmet block them.
+    // --- CORS SETUP ---
     fastify.register(require('@fastify/cors'), { 
-        origin: true, // Automatically reflects the incoming Origin header
+        // Forcefully approve all origins via callback to bypass strict validation
+        origin: function (origin, cb) {
+            cb(null, true);
+        },
         methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
         credentials: true,
-        allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'Origin', 'X-Requested-With']
+        allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'Origin', 'X-Requested-With'],
+        optionsSuccessStatus: 204 
     });
 
-    // --- OTHER MIDDLEWARES ---
-    fastify.register(require('@fastify/helmet'));
+    // --- HELMET SETUP ---
+    // We must explicitly tell Helmet to allow cross-origin resource sharing,
+    // otherwise it silently overrides our CORS setup and blocks API reads.
+    fastify.register(require('@fastify/helmet'), {
+        crossOriginResourcePolicy: { policy: "cross-origin" },
+        crossOriginOpenerPolicy: { policy: "unsafe-none" },
+        contentSecurityPolicy: false // Disable CSP for API to prevent Vercel blockages
+    });
 
     fastify.register(require('@fastify/rate-limit'), {
         max: 100,
@@ -26,12 +34,9 @@ module.exports = function(fastify, redisClient) {
         limits: { fileSize: 5 * 1024 * 1024 }
     });
 
-    // --- PREVENT HARD CRASH ---
-    // Instead of shutting down the server (which causes Railway to throw a 502 and trigger a CORS error),
-    // we use a secure fallback but log a critical warning to alert you.
     let cookieSecret = process.env.COOKIE_SECRET;
     if (process.env.NODE_ENV === 'production' && !cookieSecret) {
-        fastify.log.error("CRITICAL SECURITY ALERT: Missing COOKIE_SECRET in production. Using fallback secret, but please configure this in Railway!");
+        fastify.log.warn("CRITICAL SECURITY ALERT: Missing COOKIE_SECRET in production. Using fallback secret, but please configure this in Railway!");
         cookieSecret = 'production-fallback-secret-1234567890'; 
     } else if (!cookieSecret) {
         cookieSecret = 'dev-fallback-secret-123';
