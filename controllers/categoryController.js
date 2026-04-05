@@ -15,4 +15,4 @@ exports.createCategory = catchAsync(async (request, reply) => {
     }
 
     return { success: true, message: 'Category added', data: newCategory };
-}, 'creating category');v
+}, 'creating category');
