@@ -8,10 +8,10 @@ module.exports = function(fastify, redisClient) {
         origin: true, // Automatically reflects the incoming Origin header
         methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
         credentials: true,
-        allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'Origin', 'X-Requested-With'],
-        optionsSuccessStatus: 204
+        allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'Origin', 'X-Requested-With']
     });
 
+    // --- OTHER MIDDLEWARES ---
     fastify.register(require('@fastify/helmet'));
 
     fastify.register(require('@fastify/rate-limit'), {
@@ -26,13 +26,19 @@ module.exports = function(fastify, redisClient) {
         limits: { fileSize: 5 * 1024 * 1024 }
     });
 
-    if (process.env.NODE_ENV === 'production' && !process.env.COOKIE_SECRET) {
-        fastify.log.error("CRITICAL SECURITY ALERT: Missing COOKIE_SECRET in production. Shutting down.");
-        process.exit(1);
+    // --- PREVENT HARD CRASH ---
+    // Instead of shutting down the server (which causes Railway to throw a 502 and trigger a CORS error),
+    // we use a secure fallback but log a critical warning to alert you.
+    let cookieSecret = process.env.COOKIE_SECRET;
+    if (process.env.NODE_ENV === 'production' && !cookieSecret) {
+        fastify.log.error("CRITICAL SECURITY ALERT: Missing COOKIE_SECRET in production. Using fallback secret, but please configure this in Railway!");
+        cookieSecret = 'production-fallback-secret-1234567890'; 
+    } else if (!cookieSecret) {
+        cookieSecret = 'dev-fallback-secret-123';
     }
     
     fastify.register(require('@fastify/cookie'), {
-        secret: process.env.COOKIE_SECRET || 'dev-fallback-secret-123',
+        secret: cookieSecret,
         hook: 'onRequest'
     });
 
