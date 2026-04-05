@@ -10,8 +10,9 @@ async function apiRoutes(fastify, options) {
 
     for (const file of files) {
         // OPTIMIZED: Strict check ensuring it only registers legitimate route files.
-        // Prevents boot errors if a map file or utility JS file is accidentally placed here.
-        if (file !== 'index.js' && file.endsWith('Routes.js')) {
+        // Prevent boot errors if a map file or utility JS file is accidentally placed here.
+        // NEW: Explicitly ignore systemRoutes.js since it is manually registered in server.js to receive the redisClient.
+        if (file !== 'index.js' && file !== 'systemRoutes.js' && file.endsWith('Routes.js')) {
             fastify.register(require(path.join(routesDir, file)));
         }
     }
