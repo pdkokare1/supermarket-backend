@@ -6,17 +6,19 @@ require('dotenv').config();
 
 const cluster = require('cluster');
 const connectDB = require('./config/db');
-const initRedis = require('./config/redis'); // Added modular import
-const { handleInventoryReport } = require('./jobs/inventoryHandler'); // Added modular import
+const initRedis = require('./config/redis'); 
+const { handleInventoryReport } = require('./jobs/inventoryHandler'); 
 const { setupGracefulShutdown, setupCluster } = require('./utils/serverProcessUtils');
 
+// Added trustProxy so Fastify can read headers passing through Railway's proxy.
+// Changed production log level to 'info' so traffic is visible in the Railway dashboard.
 const fastify = Fastify({
-    logger: process.env.NODE_ENV === 'production' ? { level: 'error' } : true 
+    logger: process.env.NODE_ENV === 'production' ? { level: 'info' } : true,
+    trustProxy: true 
 });
 
 const PORT = process.env.PORT || 3000;
 
-// Initialize Redis via module
 const redisClient = initRedis();
 
 // --- Modularized Setups ---
@@ -47,6 +49,7 @@ const startServer = async () => {
     
     try {
         await fastify.listen({ port: PORT, host: '0.0.0.0' });
+        fastify.log.info(`Server successfully bound to port ${PORT}`);
     } catch (err) {
         fastify.log.error(err);
         process.exit(1);
@@ -65,5 +68,5 @@ if (process.env.ENABLE_CLUSTERING === 'true' && cluster.isPrimary) {
     initScheduler();
     startServer(); 
 } else {
-    startServer(); // Worker processes
+    startServer(); 
 }
