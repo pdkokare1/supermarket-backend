@@ -99,20 +99,21 @@ exports.getExpiringProducts = async (days = 7) => {
     const targetDate = new Date();
     targetDate.setDate(targetDate.getDate() + days);
 
-    const productCursor = Product.find({ isActive: true, "variants.expiryDate": { $ne: null } }).lean().cursor();
-    let expiringItems = [];
-
-    for await (const p of productCursor) {
-        p.variants.forEach(v => {
-            if (v.expiryDate && new Date(v.expiryDate) <= targetDate && v.stock > 0) {
-                expiringItems.push({
-                    productId: p._id, name: p.name, variant: v.weightOrVolume, 
-                    stock: v.stock, expiryDate: v.expiryDate
-                });
-            }
-        });
-    }
-    return expiringItems;
+    // OPTIMIZED: Replaced RAM-heavy javascript looping with an efficient MongoDB aggregation pipeline.
+    // This offloads the filtering directly to the database engine.
+    return await Product.aggregate([
+        { $match: { isActive: true, "variants.expiryDate": { $ne: null } } },
+        { $unwind: "$variants" },
+        { $match: { "variants.expiryDate": { $lte: targetDate }, "variants.stock": { $gt: 0 } } },
+        { $project: {
+            _id: 0,
+            productId: "$_id",
+            name: 1,
+            variant: "$variants.weightOrVolume",
+            stock: "$variants.stock",
+            expiryDate: "$variants.expiryDate"
+        }}
+    ]);
 };
 
 exports.calculateSalesVelocityAndStock = async (velocityDays, lowStockThreshold, deadStockQty, deadStockDays) => {
@@ -130,7 +131,9 @@ exports.calculateSalesVelocityAndStock = async (velocityDays, lowStockThreshold,
         if (v._id) variantSales[v._id.toString()] = v.totalSold;
     });
 
-    const productCursor = Product.find({ isActive: true }).cursor();
+    // OPTIMIZED: Added .select() to prevent loading entire product bodies (images, descriptions) into RAM during bulk processing.
+    const productCursor = Product.find({ isActive: true }).select('name variants').cursor();
+    
     let lowStockItems = [];
     let deadStockItems = [];
     let bulkOps = []; 
