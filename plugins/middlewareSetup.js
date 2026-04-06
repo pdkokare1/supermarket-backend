@@ -1,6 +1,7 @@
 /* plugins/middlewareSetup.js */
 
-module.exports = function(fastify, redisClient) {
+// OPTIMIZED: Removed redisClient parameter. Relying on global fastify.redis.
+module.exports = function(fastify) {
     // --- CORS SETUP ---
     fastify.register(require('@fastify/cors'), { 
         // Forcefully approve all origins via callback to bypass strict validation
@@ -25,7 +26,8 @@ module.exports = function(fastify, redisClient) {
     fastify.register(require('@fastify/rate-limit'), {
         max: 100,
         timeWindow: '1 minute',
-        ...(redisClient && { redis: redisClient })
+        // OPTIMIZED: Grabbing Redis directly from the Fastify instance
+        ...(fastify.redis && { redis: fastify.redis })
     });
 
     fastify.register(require('@fastify/compress'), { global: true });
