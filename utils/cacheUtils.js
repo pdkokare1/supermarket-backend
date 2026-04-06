@@ -24,16 +24,20 @@ try {
 exports.redisCache = redisCache;
 
 exports.generateKey = (prefix, queryObj) => {
-    const sortedObj = {};
+    let stringifiedData;
+    
+    // OPTIMIZATION: CPU Cycle saving. Bypasses JSON.stringify entirely for primitive types.
     if (queryObj && typeof queryObj === 'object') {
+        const sortedObj = {};
         Object.keys(queryObj).sort().forEach(key => {
             sortedObj[key] = queryObj[key];
         });
+        stringifiedData = JSON.stringify(sortedObj);
     } else {
-        sortedObj.value = queryObj; 
+        stringifiedData = String(queryObj); 
     }
     
-    const hash = crypto.createHash('md5').update(JSON.stringify(sortedObj)).digest('hex');
+    const hash = crypto.createHash('md5').update(stringifiedData).digest('hex');
     return `${prefix}:${hash}`;
 };
 
