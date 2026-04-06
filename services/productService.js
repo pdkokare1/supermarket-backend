@@ -1,4 +1,5 @@
 /* services/productService.js */
+'use strict';
 
 const Product = require('../models/Product');
 const cacheUtils = require('../utils/cacheUtils');
@@ -8,11 +9,10 @@ const { buildProductQuery } = require('../utils/queryBuilderUtils');
 // --- HELPER FUNCTIONS ---
 // ==========================================
 
-const syncAndBroadcast = async (server, productId, extraPayload = {}) => {
+// OPTIMIZED: Removed Fastify server dependency. 
+// The service now strictly handles data and caching.
+const invalidateProductCache = async () => {
     await cacheUtils.invalidateByPattern('products:*');
-    if (server && server.broadcastToPOS) {
-        server.broadcastToPOS({ type: 'INVENTORY_UPDATED', productId, ...extraPayload });
-    }
 };
 
 // ==========================================
@@ -43,15 +43,16 @@ exports.getPaginatedProducts = async (queryParams) => {
     return responseData;
 };
 
-exports.createProduct = async (server, productData) => {
+// OPTIMIZED: Removed 'server' parameter.
+exports.createProduct = async (productData) => {
     const newProduct = new Product(productData);
     await newProduct.save();
-    await syncAndBroadcast(server, newProduct._id);
+    await invalidateProductCache();
     return newProduct;
 };
 
-exports.updateProduct = async (server, productId, updateData) => {
-    // V8 Engine Optimization: Destructuring instead of 'delete' operator
+// OPTIMIZED: Removed 'server' parameter.
+exports.updateProduct = async (productId, updateData) => {
     const { _id, isArchived, isActive, ...safeUpdateData } = updateData;
     
     const updatedProduct = await Product.findByIdAndUpdate(
@@ -60,11 +61,12 @@ exports.updateProduct = async (server, productId, updateData) => {
         { new: true, runValidators: true }
     );
     
-    if (updatedProduct) await syncAndBroadcast(server, updatedProduct._id);
+    if (updatedProduct) await invalidateProductCache();
     return updatedProduct;
 };
 
-exports.archiveProduct = async (server, productId) => {
+// OPTIMIZED: Removed 'server' parameter.
+exports.archiveProduct = async (productId) => {
     const product = await Product.findById(productId);
     if (!product) return null;
     
@@ -72,17 +74,18 @@ exports.archiveProduct = async (server, productId) => {
     product.isActive = false; 
     await product.save();
     
-    await syncAndBroadcast(server, product._id);
+    await invalidateProductCache();
     return product;
 };
 
-exports.toggleProductStatus = async (server, productId) => {
+// OPTIMIZED: Removed 'server' parameter.
+exports.toggleProductStatus = async (productId) => {
     const product = await Product.findById(productId);
     if (!product) return null;
     
     product.isActive = !product.isActive; 
     await product.save();
     
-    await syncAndBroadcast(server, product._id);
+    await invalidateProductCache();
     return product;
 };
