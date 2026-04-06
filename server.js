@@ -21,13 +21,19 @@ const PORT = process.env.PORT || 3000;
 
 const redisClient = initRedis();
 
+// OPTIMIZED: Decorate Fastify with the Redis client. 
+// This allows any future controller or service to access Redis natively via request.server.redis.
+fastify.decorate('redis', redisClient);
+
 // --- Modularized Setups ---
+// Note: Kept redisClient parameter injection intact for now to ensure middlewareSetup does not break.
 require('./plugins/middlewareSetup')(fastify, redisClient); 
 require('./plugins/authSetup')(fastify);
 require('./plugins/wsSetup')(fastify);
 require('./plugins/errorHandler')(fastify);
 
 // --- Modularized System Routes ---
+// Note: Kept redisClient parameter intact to ensure systemRoutes does not break.
 fastify.register(require('./routes/systemRoutes'), {
     redisClient
 });
