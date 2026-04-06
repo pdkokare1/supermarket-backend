@@ -66,7 +66,11 @@ exports.processOnlineCheckout = async (payload) => {
     
     // OPTIMIZATION: Isolate DB lock strictly to database operations
     const newOrder = await withTransaction(async (session) => {
-        let custProfile = await Customer.findOne({ phone: customerPhone }).session(session);
+        // OPTIMIZED: Target only required fields to prevent memory bloat during transaction locks
+        let custProfile = await Customer.findOne({ phone: customerPhone })
+            .select('name phone loyaltyPoints creditUsed creditLimit isCreditEnabled')
+            .session(session);
+
         if (paymentMethod === 'Pay Later') validateAndApplyPayLater(custProfile, totalAmount);
 
         if (!custProfile) {
@@ -96,7 +100,11 @@ exports.processPosCheckout = async (payload) => {
         let finalCustomerName = 'Walk-in Guest';
 
         if (customerPhone) {
-            let custProfile = await Customer.findOne({ phone: customerPhone }).session(session);
+            // OPTIMIZED: Target only required fields to prevent memory bloat during transaction locks
+            let custProfile = await Customer.findOne({ phone: customerPhone })
+                .select('name phone loyaltyPoints creditUsed creditLimit isCreditEnabled')
+                .session(session);
+                
             if (custProfile) {
                 finalCustomerName = custProfile.name;
                 if (pointsRedeemed && pointsRedeemed > 0) custProfile.loyaltyPoints = Math.max(0, (custProfile.loyaltyPoints || 0) - pointsRedeemed);
