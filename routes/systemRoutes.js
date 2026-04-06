@@ -4,7 +4,8 @@ const os = require('os');
 const mongoose = require('mongoose');
 
 module.exports = async function (fastify, options) {
-    const { redisClient } = options;
+    // OPTIMIZED: Sourcing redisClient directly from Fastify context instead of options parameter.
+    const redisClient = fastify.redis;
 
     fastify.get('/api/inventory/report', async (request, reply) => {
         if (redisClient) {
