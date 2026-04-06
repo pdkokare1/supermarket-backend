@@ -32,7 +32,11 @@ exports.getPaginatedProducts = async (queryParams) => {
     if (queryParams.sort === 'name_asc') sortQuery = { name: 1 };
     if (queryParams.sort === 'stock_low') sortQuery = { "variants.stock": 1 }; 
     
-    let query = Product.find(filter).sort(sortQuery);
+    // OPTIMIZED: Projection added to exclude heavy audit arrays from frontend payloads
+    let query = Product.find(filter)
+        .select('-variants.purchaseHistory -variants.returnHistory')
+        .sort(sortQuery);
+
     if (limit) query = query.skip((page - 1) * limit).limit(limit); 
     
     const [products, total] = await Promise.all([query.lean(), Product.countDocuments(filter)]);
