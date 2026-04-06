@@ -20,6 +20,32 @@ async function processPayLaterRefund(customerPhone, amount, session) {
     }
 }
 
+// OPTIMIZED: Unified inventory restoration helper for both Refunds and Cancellations
+async function restoreInventory(items, storeId, session) {
+    const bulkOperations = [];
+    for (const item of items) {
+        if (storeId) {
+            bulkOperations.push({ 
+                updateOne: { 
+                    filter: { _id: item.productId }, 
+                    update: { $inc: { "variants.$[var].stock": item.qty, "variants.$[var].locationInventory.$[loc].stock": item.qty } }, 
+                    arrayFilters: [{ "var._id": item.variantId }, { "loc.storeId": storeId }] 
+                } 
+            });
+        } else {
+            bulkOperations.push({ 
+                updateOne: { 
+                    filter: { _id: item.productId, "variants._id": item.variantId }, 
+                    update: { $inc: { "variants.$.stock": item.qty } } 
+                } 
+            });
+        }
+    }
+    if (bulkOperations.length > 0) {
+        await Product.bulkWrite(bulkOperations, { session });
+    }
+}
+
 // ==========================================
 // --- CRON ABSTRACTIONS ---
 // ==========================================
@@ -59,11 +85,8 @@ exports.processPartialRefund = async (orderId, payload, user) => {
         const order = await Order.findById(orderId).session(session);
         if (!order) throw new AppError('Order not found', 404);
 
-        await Product.updateOne({ _id: productId, "variants._id": variantId }, { $inc: { "variants.$.stock": qtyToRefund } }, { session });
-
-        if (order.storeId) {
-            await Product.updateOne({ _id: productId }, { $inc: { "variants.$[var].locationInventory.$[loc].stock": qtyToRefund } }, { arrayFilters: [{ "var._id": variantId }, { "loc.storeId": order.storeId }], session }).catch(() => {});
-        }
+        // OPTIMIZED: Call unified helper instead of repeating update queries
+        await restoreInventory([{ productId, variantId, qty: qtyToRefund }], order.storeId, session);
 
         // Optimized: streamlined array manipulation
         order.items = order.items
@@ -98,15 +121,8 @@ exports.processCancelOrder = async (orderId, reason, user) => {
         order.status = 'Cancelled';
         if (order.paymentMethod === 'Pay Later') await processPayLaterRefund(order.customerPhone, order.totalAmount, session);
 
-        const bulkOperations = [];
-        for (const item of order.items) {
-            if (order.storeId) {
-                bulkOperations.push({ updateOne: { filter: { _id: item.productId }, update: { $inc: { "variants.$[var].stock": item.qty, "variants.$[var].locationInventory.$[loc].stock": item.qty } }, arrayFilters: [{ "var._id": item.variantId }, { "loc.storeId": order.storeId }] } });
-            } else {
-                bulkOperations.push({ updateOne: { filter: { _id: item.productId, "variants._id": item.variantId }, update: { $inc: { "variants.$.stock": item.qty } } } });
-            }
-        }
-        if (bulkOperations.length > 0) await Product.bulkWrite(bulkOperations, { session });
+        // OPTIMIZED: Call unified helper to handle database stock restoration
+        await restoreInventory(order.items, order.storeId, session);
 
         await order.save({ session });
         
@@ -136,14 +152,46 @@ exports.getOrdersList = async (queryParams) => {
     let query = Order.find(filter).sort({ createdAt: -1 });
     if (limit) query = query.skip((page - 1) * limit).limit(limit);
 
-    const [orders, total, pendingOrders] = await Promise.all([query.lean(), Order.countDocuments(filter), Order.find({ status: { $in: ['Order Placed', 'Packing'] } }).lean()]);
+    // OPTIMIZED: Database-level aggregation for pending stats instead of pulling massive arrays into RAM
+    const statsPromise = Order.aggregate([
+        { $match: { status: { $in: ['Order Placed', 'Packing'] } } },
+        { $group: { _id: null, pendingCount: { $sum: 1 }, pendingRevenue: { $sum: "$totalAmount" } } }
+    ]);
 
-    return { success: true, count: orders.length, total: total, data: orders, stats: { pendingCount: pendingOrders.length, pendingRevenue: pendingOrders.reduce((sum, o) => sum + o.totalAmount, 0) } };
+    const [orders, total, pendingStatsArray] = await Promise.all([query.lean(), Order.countDocuments(filter), statsPromise]);
+    
+    // Safely extract stats or default to 0
+    const pendingStats = pendingStatsArray[0] || { pendingCount: 0, pendingRevenue: 0 };
+
+    return { 
+        success: true, 
+        count: orders.length, 
+        total: total, 
+        data: orders, 
+        stats: { 
+            pendingCount: pendingStats.pendingCount, 
+            pendingRevenue: pendingStats.pendingRevenue 
+        } 
+    };
 };
 
 exports.getAllOrdersForExport = async () => {
-    const orders = await Order.find().sort({ createdAt: -1 }).lean();
-    return orders.map(o => ({ OrderID: o.orderNumber || o._id.toString(), Date: new Date(o.createdAt).toLocaleString(), CustomerName: o.customerName, Phone: o.customerPhone, TotalAmount: o.totalAmount, Status: o.status, PaymentMethod: o.paymentMethod, DeliveryType: o.deliveryType }));
+    // OPTIMIZED: Added .select() to vastly reduce network payload and RAM usage during exports
+    const orders = await Order.find()
+        .select('orderNumber createdAt customerName customerPhone totalAmount status paymentMethod deliveryType')
+        .sort({ createdAt: -1 })
+        .lean();
+        
+    return orders.map(o => ({ 
+        OrderID: o.orderNumber || o._id.toString(), 
+        Date: new Date(o.createdAt).toLocaleString(), 
+        CustomerName: o.customerName, 
+        Phone: o.customerPhone, 
+        TotalAmount: o.totalAmount, 
+        Status: o.status, 
+        PaymentMethod: o.paymentMethod, 
+        DeliveryType: o.deliveryType 
+    }));
 };
 
 exports.assignDriverToOrder = async (orderId, driverName, driverPhone) => {
