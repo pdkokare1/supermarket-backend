@@ -6,9 +6,9 @@ const path = require('path');
 async function apiRoutes(fastify, options) {
     const routesDir = __dirname;
     
-    // OPTIMIZED: Synchronous directory reading ensures all routes are 
-    // firmly registered in memory before the server accepts traffic.
-    const files = fs.readdirSync(routesDir);
+    // OPTIMIZED: Asynchronous directory reading ensures the Node.js event loop
+    // is not blocked while the server registers routes.
+    const files = await fs.promises.readdir(routesDir);
 
     for (const file of files) {
         // Strict check ensuring it only registers legitimate route files.
