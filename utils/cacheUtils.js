@@ -26,7 +26,7 @@ exports.redisCache = redisCache;
 exports.generateKey = (prefix, queryObj) => {
     let stringifiedData;
     
-    // OPTIMIZATION: CPU Cycle saving. Bypasses JSON.stringify entirely for primitive types.
+    // CPU Cycle saving. Bypasses JSON.stringify entirely for primitive types.
     if (queryObj && typeof queryObj === 'object') {
         const sortedObj = {};
         Object.keys(queryObj).sort().forEach(key => {
@@ -78,7 +78,7 @@ exports.invalidateByPattern = async (pattern) => {
             const [newCursor, keys] = await redisCache.scan(cursor, 'MATCH', pattern, 'COUNT', 100);
             cursor = newCursor;
             if (keys.length > 0) {
-                // OPTIMIZATION: Implemented Redis Pipeline to batch deletes
+                // Implemented Redis Pipeline to batch deletes safely without crashing event loops
                 await redisCache.pipeline().del(...keys).exec();
             }
         } while (cursor !== '0');
