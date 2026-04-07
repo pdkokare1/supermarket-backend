@@ -47,20 +47,24 @@ exports.closeShift = async (payload, user, logError) => {
 
     const endTime = new Date();
     
-    const shiftOrders = await Order.find({
-        createdAt: { $gte: shift.startTime, $lte: endTime },
-        status: { $ne: 'Cancelled' }
-    });
+    // OPTIMIZED: Replaced RAM-heavy .find().forEach() with a highly efficient MongoDB aggregation.
+    // This prevents Out-Of-Memory errors by letting the DB calculate the cash totals, including complex split logic.
+    const orderStats = await Order.aggregate([
+        { $match: { createdAt: { $gte: shift.startTime, $lte: endTime }, status: { $ne: 'Cancelled' } } },
+        { $group: {
+            _id: null,
+            cashSales: { 
+                $sum: { 
+                    $cond: [
+                        { $eq: ["$paymentMethod", "Cash"] }, "$totalAmount", 
+                        { $cond: [{ $eq: ["$paymentMethod", "Split"] }, { $ifNull: ["$splitDetails.cash", 0] }, 0] }
+                    ] 
+                } 
+            }
+        }}
+    ]);
 
-    let cashSales = 0;
-    shiftOrders.forEach(o => {
-        if (o.paymentMethod === 'Cash') {
-            cashSales += o.totalAmount;
-        } else if (o.paymentMethod === 'Split' && o.splitDetails) {
-            cashSales += (o.splitDetails.cash || 0);
-        }
-    });
-
+    const cashSales = orderStats[0] ? orderStats[0].cashSales : 0;
     const expectedCash = shift.startingFloat + cashSales;
 
     shift.endTime = endTime;
