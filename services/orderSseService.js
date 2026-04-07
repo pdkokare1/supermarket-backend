@@ -32,25 +32,33 @@ try {
     console.error("Redis Initialization Error in SSE Service:", e);
 }
 
-// Global Heartbeat
+// OPTIMIZED: Strict Garbage Collection heartbeat for SSE to prevent Zombie Connections from leaking server memory.
 setInterval(() => {
     adminConnections = adminConnections.filter(conn => {
-        if (conn.destroyed || !conn.writable) return false;
+        if (conn.destroyed || !conn.writable) {
+            conn.destroy(); // Force release OS resource
+            return false;
+        }
         try {
             conn.write(':\n\n');
             return true;
         } catch (e) {
+            conn.destroy();
             return false; 
         }
     });
 
     for (const orderId in customerConnections) {
         customerConnections[orderId] = customerConnections[orderId].filter(conn => {
-            if (conn.destroyed || !conn.writable) return false;
+            if (conn.destroyed || !conn.writable) {
+                conn.destroy();
+                return false;
+            }
             try {
                 conn.write(':\n\n');
                 return true;
             } catch (e) {
+                conn.destroy();
                 return false;
             }
         });
@@ -91,6 +99,9 @@ const publishEvent = (target, payload, additionalData = {}) => {
 
 const setSSEHeaders = (request, reply) => {
     reply.hijack(); 
+    // OPTIMIZED: Disable implicit Node.js socket timeouts for SSE Streams to prevent 2-minute disconnect drops
+    if (reply.raw.socket) reply.raw.socket.setTimeout(0); 
+    
     reply.raw.writeHead(200, {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
