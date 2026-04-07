@@ -2,6 +2,35 @@
 
 const AuditLog = require('../models/AuditLog');
 
+// OPTIMIZED: Added structured pagination and strict memory projection specifically to handle fetching large audit logs
+exports.getAuditLogs = async (queryParams) => {
+    const page = parseInt(queryParams.page) || 1;
+    const limit = parseInt(queryParams.limit) || 50;
+    const skip = (page - 1) * limit;
+    
+    let filter = {};
+    if (queryParams.targetType) filter.targetType = queryParams.targetType;
+    if (queryParams.username) filter.username = queryParams.username;
+    if (queryParams.action) filter.action = queryParams.action;
+
+    // By enforcing .select() and .lean(), we drastically drop the backend RAM needed to process thousands of audit logs
+    const logs = await AuditLog.find(filter)
+        .select('action targetType targetId username createdAt details')
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean();
+
+    const total = await AuditLog.countDocuments(filter);
+
+    return {
+        success: true,
+        count: logs.length,
+        total,
+        data: logs
+    };
+};
+
 exports.logEvent = async ({ action, targetType, targetId, username, details = {}, userId = null, session = null, logError = null }) => {
     const logEntry = { 
         action, 
