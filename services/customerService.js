@@ -35,12 +35,18 @@ exports.getAggregatedCustomers = async () => {
 };
 
 exports.getAllCustomers = async () => {
-    return await Customer.find({}).lean();
+    // OPTIMIZED: Projecting only required CRM fields to prevent RAM bloat
+    return await Customer.find({})
+        .select('name phone loyaltyPoints isCreditEnabled creditLimit creditUsed createdAt')
+        .lean();
 };
 
 // --- NEW ABSTRACTION FOR EXPORT ---
 exports.getCustomersForExport = async () => {
-    const customers = await Customer.find({}).lean();
+    // OPTIMIZED: Memory-safe fetching for large exports
+    const customers = await Customer.find({})
+        .select('name phone loyaltyPoints isCreditEnabled creditLimit creditUsed createdAt')
+        .lean();
     return customers.map(formatCustomerForExport);
 };
 
