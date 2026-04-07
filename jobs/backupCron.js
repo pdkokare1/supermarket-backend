@@ -5,7 +5,7 @@ const mongoose = require('mongoose');
 const nodemailer = require('nodemailer');
 const fs = require('fs');
 const path = require('path');
-const zlib = require('zlib'); // Added native Node zlib compression
+const zlib = require('zlib'); 
 
 module.exports = function(fastify) {
     cron.schedule('0 3 * * 0', async () => {
@@ -16,7 +16,6 @@ module.exports = function(fastify) {
 
         fastify.log.info('[SECURITY] Starting automated Cloud Database Backup...');
         
-        // OPTIMIZATION: Gzip extension to heavily compress JSON strings
         const fileName = `DailyPick_Backup_${new Date().toISOString().split('T')[0]}.json.gz`;
         const filePath = path.join(__dirname, `../${fileName}`);
         
@@ -24,7 +23,6 @@ module.exports = function(fastify) {
             const fileStream = fs.createWriteStream(filePath);
             const gzipStream = zlib.createGzip();
             
-            // Pipe output to zipper, then to file
             gzipStream.pipe(fileStream);
             gzipStream.write('{\n');
             
@@ -38,8 +36,18 @@ module.exports = function(fastify) {
                 let isFirstDoc = true;
                 
                 for await (const doc of cursor) {
-                    if (!isFirstDoc) gzipStream.write(',\n');
-                    gzipStream.write(`    ${JSON.stringify(doc)}`);
+                    if (!isFirstDoc) {
+                        // OPTIMIZED: Implemented Stream Backpressure handling.
+                        // Prevents Out-Of-Memory (OOM) crashes by pausing the database read 
+                        // if the zlib compression buffer fills up faster than it can write to disk.
+                        if (!gzipStream.write(',\n')) {
+                            await new Promise(resolve => gzipStream.once('drain', resolve));
+                        }
+                    }
+                    
+                    if (!gzipStream.write(`    ${JSON.stringify(doc)}`)) {
+                        await new Promise(resolve => gzipStream.once('drain', resolve));
+                    }
                     isFirstDoc = false;
                 }
                 
