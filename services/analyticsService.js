@@ -8,19 +8,38 @@ const cacheUtils = require('../utils/cacheUtils');
 
 // --- (From Phase 1) ---
 exports.getDailyFinancialTotals = async (today, tomorrow, todayStr) => {
-    const orderCursor = Order.find({ createdAt: { $gte: today, $lt: tomorrow }, status: { $ne: 'Cancelled' } }).lean().cursor();
-    let totalRevenue = 0, cash = 0, upi = 0, payLater = 0, totalOrderCount = 0;
-    for await (const o of orderCursor) {
-        totalOrderCount++; totalRevenue += o.totalAmount;
-        if (o.paymentMethod === 'Cash') cash += o.totalAmount;
-        else if (o.paymentMethod === 'UPI') upi += o.totalAmount;
-        else if (o.paymentMethod === 'Pay Later') payLater += o.totalAmount;
-        else if (o.paymentMethod === 'Split' && o.splitDetails) { cash += (o.splitDetails.cash || 0); upi += (o.splitDetails.upi || 0); }
-    }
-    const expenseCursor = Expense.find({ dateStr: todayStr }).lean().cursor();
-    let totalExpenses = 0;
-    for await (const ex of expenseCursor) totalExpenses += ex.amount;
-    return { totalOrderCount, totalRevenue, cash, upi, payLater, totalExpenses, netProfit: totalRevenue - totalExpenses };
+    // OPTIMIZED: Replaced RAM-heavy cursors and loops with parallel MongoDB aggregation pipelines.
+    // The database engine now handles the complex mathematical summing (including split logic), returning O(1) memory footprint.
+    const [orderStats, expenseStats] = await Promise.all([
+        Order.aggregate([
+            { $match: { createdAt: { $gte: today, $lt: tomorrow }, status: { $ne: 'Cancelled' } } },
+            { $group: {
+                _id: null,
+                totalOrderCount: { $sum: 1 },
+                totalRevenue: { $sum: "$totalAmount" },
+                cash: { $sum: { $cond: [{ $eq: ["$paymentMethod", "Cash"] }, "$totalAmount", { $cond: [{ $eq: ["$paymentMethod", "Split"] }, { $ifNull: ["$splitDetails.cash", 0] }, 0] }] } },
+                upi: { $sum: { $cond: [{ $eq: ["$paymentMethod", "UPI"] }, "$totalAmount", { $cond: [{ $eq: ["$paymentMethod", "Split"] }, { $ifNull: ["$splitDetails.upi", 0] }, 0] }] } },
+                payLater: { $sum: { $cond: [{ $eq: ["$paymentMethod", "Pay Later"] }, "$totalAmount", 0] } }
+            }}
+        ]),
+        Expense.aggregate([
+            { $match: { dateStr: todayStr } },
+            { $group: { _id: null, totalExpenses: { $sum: "$amount" } } }
+        ])
+    ]);
+
+    const oStats = orderStats[0] || { totalOrderCount: 0, totalRevenue: 0, cash: 0, upi: 0, payLater: 0 };
+    const eStats = expenseStats[0] || { totalExpenses: 0 };
+
+    return { 
+        totalOrderCount: oStats.totalOrderCount, 
+        totalRevenue: oStats.totalRevenue, 
+        cash: oStats.cash, 
+        upi: oStats.upi, 
+        payLater: oStats.payLater, 
+        totalExpenses: eStats.totalExpenses, 
+        netProfit: oStats.totalRevenue - eStats.totalExpenses 
+    };
 };
 
 exports.getAnalyticsData = async () => {
@@ -34,10 +53,18 @@ exports.getPnl = async (startDate, endDate) => {
         dateFilter.createdAt = { $gte: new Date(startDate), $lte: new Date(endDate) };
     }
 
-    const orders = await Order.find({ ...dateFilter, status: { $nin: ['Cancelled'] } }).lean();
+    // OPTIMIZED: Added strict .select() to prevent OOM errors when processing long date ranges.
+    const orders = await Order.find({ ...dateFilter, status: { $nin: ['Cancelled'] } })
+        .select('totalAmount discountAmount taxAmount items')
+        .lean();
+        
     let totalRevenue = 0, totalCOGS = 0, totalDiscounts = 0, totalTax = 0;
 
-    const products = await Product.find({ isActive: true }).select('name variants').lean();
+    // OPTIMIZED: Reduced projection to only the exact variant fields needed for COGS calculation.
+    const products = await Product.find({ isActive: true })
+        .select('variants.price variants.purchaseHistory')
+        .lean();
+        
     const costMap = {};
     products.forEach(p => {
         p.variants.forEach(v => {
@@ -60,7 +87,11 @@ exports.getPnl = async (startDate, endDate) => {
         });
     });
 
-    const expenses = await Expense.find(dateFilter).lean();
+    // OPTIMIZED: Only pull the amount field to minimize memory overhead.
+    const expenses = await Expense.find(dateFilter)
+        .select('amount')
+        .lean();
+        
     const totalExpenses = expenses.reduce((sum, exp) => sum + (exp.amount || 0), 0);
 
     return {
@@ -74,7 +105,11 @@ exports.getPnl = async (startDate, endDate) => {
 exports.generateForecast = async (geminiKey) => {
     if (!geminiKey) throw new Error('Gemini API key not configured on server.');
 
-    const products = await Product.find({ isActive: true, isArchived: { $ne: true } }).lean();
+    // OPTIMIZED: Added .select() to drastically reduce memory footprint before passing data to the AI.
+    const products = await Product.find({ isActive: true, isArchived: { $ne: true } })
+        .select('name variants.weightOrVolume variants.stock variants.price variants.lowStockThreshold')
+        .lean();
+        
     const inventorySnapshot = [];
     products.forEach(p => {
         if (p.variants) {
