@@ -26,17 +26,15 @@ const redisClient = initRedis();
 fastify.decorate('redis', redisClient);
 
 // --- Modularized Setups ---
-// Note: Kept redisClient parameter injection intact for now to ensure middlewareSetup does not break.
-require('./plugins/middlewareSetup')(fastify, redisClient); 
+// OPTIMIZED: Removed redisClient injection. Relying on fastify.redis.
+require('./plugins/middlewareSetup')(fastify); 
 require('./plugins/authSetup')(fastify);
 require('./plugins/wsSetup')(fastify);
 require('./plugins/errorHandler')(fastify);
 
 // --- Modularized System Routes ---
-// Note: Kept redisClient parameter intact to ensure systemRoutes does not break.
-fastify.register(require('./routes/systemRoutes'), {
-    redisClient
-});
+// OPTIMIZED: Removed redisClient options injection. Relying on fastify.redis.
+fastify.register(require('./routes/systemRoutes'));
 
 // --- Feature Routes ---
 fastify.register(require('./routes')); 
