@@ -27,5 +27,7 @@ exports.createExpense = async (payload) => {
 exports.getExpenses = async (dateStr) => {
     let filter = {};
     if (dateStr) filter.dateStr = dateStr;
-    return await Expense.find(filter).sort({ createdAt: -1 });
+    
+    // OPTIMIZED: Added .lean() for faster read access
+    return await Expense.find(filter).sort({ createdAt: -1 }).lean();
 };
