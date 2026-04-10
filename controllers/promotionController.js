@@ -1,3 +1,5 @@
+/* controllers/promotionController.js */
+
 const promotionService = require('../services/promotionService');
 const catchAsync = require('../utils/catchAsync');
 
@@ -8,12 +10,12 @@ exports.getPromotions = catchAsync(async (request, reply) => {
 
 exports.createPromotion = catchAsync(async (request, reply) => {
     const newPromo = await promotionService.createPromotion(request.body);
-    if (request.server.broadcastToPOS) request.server.broadcastToPOS({ type: 'PROMOTION_ADDED', promotionId: newPromo._id });
+    // REMOVED: request.server.broadcastToPOS (Now handled by Service events)
     return { success: true, message: 'Promotion created', data: newPromo };
 }, 'creating promotion');
 
 exports.togglePromotion = catchAsync(async (request, reply) => {
     const promo = await promotionService.togglePromotion(request.params.id);
-    if (request.server.broadcastToPOS) request.server.broadcastToPOS({ type: 'PROMOTION_TOGGLED', promotionId: promo._id, isActive: promo.isActive });
+    // REMOVED: request.server.broadcastToPOS (Now handled by Service events)
     return { success: true, message: 'Promotion toggled', data: promo };
 }, 'toggling promotion');
