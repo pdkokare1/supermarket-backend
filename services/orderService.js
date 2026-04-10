@@ -8,6 +8,7 @@ const AppError = require('../utils/AppError');
 const auditService = require('./auditService'); 
 const cacheUtils = require('../utils/cacheUtils');
 const { getPaginationOptions } = require('../utils/paginationUtils');
+const appEvents = require('../utils/eventEmitter'); // Added for event-driven notifications
 
 // ==========================================
 // --- HELPER FUNCTIONS ---
@@ -21,7 +22,6 @@ async function processPayLaterRefund(customerPhone, amount, session) {
     }
 }
 
-// OPTIMIZED: Unified inventory restoration helper for both Refunds and Cancellations
 async function restoreInventory(items, storeId, session) {
     const bulkOperations = [];
     for (const item of items) {
@@ -60,7 +60,6 @@ exports.deleteOldCancelledOrders = async (days) => {
 exports.generateRoutineDeliveries = async () => {
     const routineOrders = await Order.find({ deliveryType: 'Routine', status: { $ne: 'Cancelled' } }).lean();
     if (routineOrders.length > 0) {
-        // Optimized: Uses bulkWrite inline to prevent deep object mapping/copying into RAM
         const bulkOps = routineOrders.map(ro => ({
             insertOne: {
                 document: {
@@ -86,10 +85,8 @@ exports.processPartialRefund = async (orderId, payload, user) => {
         const order = await Order.findById(orderId).session(session);
         if (!order) throw new AppError('Order not found', 404);
 
-        // OPTIMIZED: Call unified helper instead of repeating update queries
         await restoreInventory([{ productId, variantId, qty: qtyToRefund }], order.storeId, session);
 
-        // Optimized: streamlined array manipulation
         order.items = order.items
             .map(item => {
                 if (item.productId === productId && item.variantId === variantId) {
@@ -109,6 +106,9 @@ exports.processPartialRefund = async (orderId, payload, user) => {
 
         await auditService.logEvent({ action: 'PARTIAL_REFUND', targetType: 'Order', targetId: order._id.toString(), username: user.username, userId: user.id, details: { refundedItem: productId, qty: qtyToRefund }, session });
         await cacheUtils.deleteKey('orders:analytics');
+
+        // EVENT: Notify system of refund
+        appEvents.emit('ORDER_REFUNDED', { orderId: order._id, storeId: order.storeId });
         
         return order;
     });
@@ -122,13 +122,14 @@ exports.processCancelOrder = async (orderId, reason, user) => {
         order.status = 'Cancelled';
         if (order.paymentMethod === 'Pay Later') await processPayLaterRefund(order.customerPhone, order.totalAmount, session);
 
-        // OPTIMIZED: Call unified helper to handle database stock restoration
         await restoreInventory(order.items, order.storeId, session);
-
         await order.save({ session });
         
         await auditService.logEvent({ action: 'CANCEL_ORDER', targetType: 'Order', targetId: order._id.toString(), username: user ? user.username : 'System', userId: user ? user.id : null, details: { reason: reason || 'Not provided', amountRefunded: order.totalAmount }, session });
         await cacheUtils.deleteKey('orders:analytics');
+
+        // EVENT: Notify system of cancellation
+        appEvents.emit('ORDER_STATUS_UPDATED', { orderId: order._id, status: 'Cancelled', storeId: order.storeId });
 
         return order;
     });
@@ -147,13 +148,11 @@ exports.getOrdersList = async (queryParams) => {
     else if (queryParams.dateFilter === 'Yesterday') filter.createdAt = { $gte: yesterday, $lt: today };
     else if (queryParams.dateFilter === '7Days') filter.createdAt = { $gte: sevenDaysAgo };
 
-    // OPTIMIZED: Centralized pagination utility
     const { limit, skip } = getPaginationOptions(queryParams);
 
     let query = Order.find(filter).sort({ createdAt: -1 });
     if (limit > 0) query = query.skip(skip).limit(limit);
 
-    // OPTIMIZED: Database-level aggregation for pending stats instead of pulling massive arrays into RAM
     const statsPromise = Order.aggregate([
         { $match: { status: { $in: ['Order Placed', 'Packing'] } } },
         { $group: { _id: null, pendingCount: { $sum: 1 }, pendingRevenue: { $sum: "$totalAmount" } } }
@@ -165,7 +164,6 @@ exports.getOrdersList = async (queryParams) => {
         statsPromise
     ]);
     
-    // Safely extract stats or default to 0
     const pendingStats = pendingStatsArray[0] || { pendingCount: 0, pendingRevenue: 0 };
 
     return { 
@@ -181,7 +179,6 @@ exports.getOrdersList = async (queryParams) => {
 };
 
 exports.getAllOrdersForExport = async () => {
-    // OPTIMIZED: Added .select() to vastly reduce network payload and RAM usage during exports
     const orders = await Order.find()
         .select('orderNumber createdAt customerName customerPhone totalAmount status paymentMethod deliveryType')
         .sort({ createdAt: -1 })
@@ -200,15 +197,27 @@ exports.getAllOrdersForExport = async () => {
 };
 
 exports.assignDriverToOrder = async (orderId, driverName, driverPhone) => {
-    return await Order.findByIdAndUpdate(orderId, { deliveryDriverName: driverName, driverPhone: driverPhone || '' }, { new: true });
+    const order = await Order.findByIdAndUpdate(orderId, { deliveryDriverName: driverName, driverPhone: driverPhone || '' }, { new: true });
+    if (order) {
+        appEvents.emit('ORDER_UPDATED', { orderId: order._id, storeId: order.storeId });
+    }
+    return order;
 };
 
 exports.updateOrderStatus = async (orderId, status) => {
-    return await Order.findByIdAndUpdate(orderId, { status: status }, { new: true });
+    const order = await Order.findByIdAndUpdate(orderId, { status: status }, { new: true });
+    if (order) {
+        appEvents.emit('ORDER_STATUS_UPDATED', { orderId: order._id, status: status, storeId: order.storeId });
+    }
+    return order;
 };
 
 exports.dispatchOrder = async (orderId) => {
-    return await Order.findByIdAndUpdate(orderId, { status: 'Dispatched' }, { new: true });
+    const order = await Order.findByIdAndUpdate(orderId, { status: 'Dispatched' }, { new: true });
+    if (order) {
+        appEvents.emit('ORDER_STATUS_UPDATED', { orderId: order._id, status: 'Dispatched', storeId: order.storeId });
+    }
+    return order;
 };
 
 exports.getOrderById = async (orderId) => {
