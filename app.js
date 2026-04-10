@@ -3,11 +3,8 @@
 
 const Fastify = require('fastify');
 const initRedis = require('./config/redis'); 
+const cacheUtils = require('./utils/cacheUtils');
 
-/**
- * APPLICATION FACTORY
- * This file strictly configures the Fastify instance and its plugins.
- */
 const createApp = () => {
     const fastify = Fastify({
         logger: process.env.NODE_ENV === 'production' ? { level: 'info' } : true,
@@ -16,14 +13,17 @@ const createApp = () => {
 
     const redisClient = initRedis();
     
-    // Decorate Fastify with the Redis client for global access.
+    // OPTIMIZED: Sync the cache utility with the global Redis client to save connections.
+    cacheUtils.setClient(redisClient);
     fastify.decorate('redis', redisClient);
 
     // --- Modularized Setups ---
-    // SPLIT: middlewareSetup has been divided into domain-specific plugins.
     require('./plugins/securitySetup')(fastify); 
     require('./plugins/serverUtilsSetup')(fastify); 
     require('./plugins/apiDocsSetup')(fastify); 
+    
+    // NEW: Handles internal event logic (e.g., auto-broadcasting)
+    require('./plugins/eventsSetup')(fastify);
 
     require('./plugins/authSetup')(fastify);
     require('./plugins/wsSetup')(fastify);
