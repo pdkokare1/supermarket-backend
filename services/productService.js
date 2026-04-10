@@ -4,13 +4,12 @@
 const Product = require('../models/Product');
 const cacheUtils = require('../utils/cacheUtils');
 const { buildProductQuery } = require('../utils/queryBuilderUtils');
+const { getPaginationOptions, getSortQuery } = require('../utils/paginationUtils');
 
 // ==========================================
 // --- HELPER FUNCTIONS ---
 // ==========================================
 
-// OPTIMIZED: Removed Fastify server dependency. 
-// The service now strictly handles data and caching.
 const invalidateProductCache = async () => {
     await cacheUtils.invalidateByPattern('products:*');
 };
@@ -25,21 +24,21 @@ exports.getPaginatedProducts = async (queryParams) => {
     if (cachedData) return cachedData;
 
     const filter = buildProductQuery(queryParams); 
-    const page = parseInt(queryParams.page) || 1; 
-    const limit = parseInt(queryParams.limit); 
     
-    let sortQuery = { createdAt: -1 };
-    if (queryParams.sort === 'name_asc') sortQuery = { name: 1 };
-    if (queryParams.sort === 'stock_low') sortQuery = { "variants.stock": 1 }; 
+    // OPTIMIZED: Using centralized pagination and sorting utilities
+    const { limit, skip } = getPaginationOptions(queryParams);
+    const sortQuery = getSortQuery(queryParams.sort);
     
-    // OPTIMIZED: Projection added to exclude heavy audit arrays from frontend payloads
     let query = Product.find(filter)
         .select('-variants.purchaseHistory -variants.returnHistory')
         .sort(sortQuery);
 
-    if (limit) query = query.skip((page - 1) * limit).limit(limit); 
+    if (limit > 0) query = query.skip(skip).limit(limit); 
     
-    const [products, total] = await Promise.all([query.lean(), Product.countDocuments(filter)]);
+    const [products, total] = await Promise.all([
+        query.lean(), 
+        Product.countDocuments(filter)
+    ]);
     
     const responseData = { success: true, count: products.length, total: total, data: products };
     await cacheUtils.setCachedData(cacheKey, responseData, 3600);
@@ -47,7 +46,6 @@ exports.getPaginatedProducts = async (queryParams) => {
     return responseData;
 };
 
-// OPTIMIZED: Removed 'server' parameter.
 exports.createProduct = async (productData) => {
     const newProduct = new Product(productData);
     await newProduct.save();
@@ -55,7 +53,6 @@ exports.createProduct = async (productData) => {
     return newProduct;
 };
 
-// OPTIMIZED: Removed 'server' parameter.
 exports.updateProduct = async (productId, updateData) => {
     const { _id, isArchived, isActive, ...safeUpdateData } = updateData;
     
@@ -69,7 +66,6 @@ exports.updateProduct = async (productId, updateData) => {
     return updatedProduct;
 };
 
-// OPTIMIZED: Removed 'server' parameter.
 exports.archiveProduct = async (productId) => {
     const product = await Product.findById(productId);
     if (!product) return null;
@@ -82,7 +78,6 @@ exports.archiveProduct = async (productId) => {
     return product;
 };
 
-// OPTIMIZED: Removed 'server' parameter.
 exports.toggleProductStatus = async (productId) => {
     const product = await Product.findById(productId);
     if (!product) return null;
