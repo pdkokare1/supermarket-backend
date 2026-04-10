@@ -26,23 +26,13 @@ exports.getProfile = catchAsync(async (request, reply) => {
 exports.updateLimit = catchAsync(async (request, reply) => {
     const { isCreditEnabled, creditLimit, name } = request.body;
     const cust = await customerService.updateCustomerLimit(request.params.phone, name, isCreditEnabled, creditLimit);
-    
-    // MODULARIZED: Notify POS that customer credit limits have changed
-    if (request.server.broadcastToPOS) {
-        request.server.broadcastToPOS({ type: 'CUSTOMER_UPDATED', phone: cust.phone });
-    }
-
+    // REMOVED: request.server.broadcastToPOS (Now handled by Service events)
     return { success: true, data: cust };
 }, 'Customer - Updating limit');
 
 exports.recordPayment = catchAsync(async (request, reply) => {
     const cust = await customerService.recordPayment(request.params.phone, request.body.amount);
-    
-    // MODULARIZED: Notify POS that customer credit has been cleared
-    if (request.server.broadcastToPOS) {
-        request.server.broadcastToPOS({ type: 'CUSTOMER_PAYMENT_RECORDED', phone: cust.phone });
-    }
-
+    // REMOVED: request.server.broadcastToPOS (Now handled by Service events)
     return { success: true, data: cust, message: 'Payment recorded successfully' };
 }, 'Customer - Recording payment');
 
