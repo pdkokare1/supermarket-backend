@@ -1,50 +1,27 @@
 /* server.js */
+'use strict';
 
-const Fastify = require('fastify');
+const cluster = require('cluster');
 const mongoose = require('mongoose');
 require('dotenv').config();
 
-const cluster = require('cluster');
 const connectDB = require('./config/db');
-const initRedis = require('./config/redis'); 
 const { handleInventoryReport } = require('./jobs/inventoryHandler'); 
 const { setupGracefulShutdown, setupCluster } = require('./utils/serverProcessUtils');
+const createApp = require('./app');
 
-// Added trustProxy so Fastify can read headers passing through Railway's proxy.
-// Changed production log level to 'info' so traffic is visible in the Railway dashboard.
-const fastify = Fastify({
-    logger: process.env.NODE_ENV === 'production' ? { level: 'info' } : true,
-    trustProxy: true 
-});
-
+// Initialize the Application Configuration
+const { fastify, redisClient } = createApp();
 const PORT = process.env.PORT || 3000;
-
-const redisClient = initRedis();
-
-// OPTIMIZED: Decorate Fastify with the Redis client. 
-// This allows any future controller or service to access Redis natively via request.server.redis.
-fastify.decorate('redis', redisClient);
-
-// --- Modularized Setups ---
-// OPTIMIZED: Removed redisClient injection. Relying on fastify.redis.
-require('./plugins/middlewareSetup')(fastify); 
-require('./plugins/authSetup')(fastify);
-require('./plugins/wsSetup')(fastify);
-require('./plugins/errorHandler')(fastify);
-
-// --- Modularized System Routes ---
-// OPTIMIZED: Removed redisClient options injection. Relying on fastify.redis.
-fastify.register(require('./routes/systemRoutes'));
-
-// --- Feature Routes ---
-fastify.register(require('./routes')); 
 
 // ==========================================
 // --- INITIALIZATION HELPERS ---
 // ==========================================
 
 const initScheduler = () => {
-    require('./jobs/cronScheduler')(fastify, (newReport) => handleInventoryReport(redisClient, fastify, newReport));
+    require('./jobs/cronScheduler')(fastify, (newReport) => 
+        handleInventoryReport(redisClient, fastify, newReport)
+    );
 };
 
 const startServer = async () => {
@@ -64,13 +41,17 @@ const startServer = async () => {
 // --- EXECUTION BOOTSTRAP ---
 // ==========================================
 
+// Setup Process-Level Utilities
 setupGracefulShutdown(fastify, redisClient);
 
 if (process.env.ENABLE_CLUSTERING === 'true' && cluster.isPrimary) {
+    // Primary Cluster Process
     setupCluster(fastify, connectDB, initScheduler);
 } else if (process.env.ENABLE_CLUSTERING !== 'true') {
+    // Standalone Mode (Development or Small Environments)
     initScheduler();
     startServer(); 
 } else {
+    // Worker Processes (Traffic Handlers)
     startServer(); 
 }
