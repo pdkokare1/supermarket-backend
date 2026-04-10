@@ -7,7 +7,6 @@ const initRedis = require('./config/redis');
 /**
  * APPLICATION FACTORY
  * This file strictly configures the Fastify instance and its plugins.
- * It does not start the server or handle clustering.
  */
 const createApp = () => {
     const fastify = Fastify({
@@ -21,7 +20,11 @@ const createApp = () => {
     fastify.decorate('redis', redisClient);
 
     // --- Modularized Setups ---
-    require('./plugins/middlewareSetup')(fastify); 
+    // SPLIT: middlewareSetup has been divided into domain-specific plugins.
+    require('./plugins/securitySetup')(fastify); 
+    require('./plugins/serverUtilsSetup')(fastify); 
+    require('./plugins/apiDocsSetup')(fastify); 
+
     require('./plugins/authSetup')(fastify);
     require('./plugins/wsSetup')(fastify);
     require('./plugins/errorHandler')(fastify);
