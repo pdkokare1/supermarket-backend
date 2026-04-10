@@ -6,7 +6,7 @@ const Order = require('../models/Order');
 const { withTransaction } = require('../utils/dbUtils'); 
 const AppError = require('../utils/AppError'); 
 const auditService = require('./auditService'); 
-const appEvents = require('../utils/eventEmitter'); // Added for event-driven updates
+const appEvents = require('../utils/eventEmitter'); 
 
 // ==========================================
 // --- HELPER FUNCTIONS ---
@@ -28,6 +28,31 @@ const getProductAndVariant = async (productId, variantId, session = null) => {
 // ==========================================
 // --- INVENTORY OPERATIONS ---
 // ==========================================
+
+exports.restoreInventory = async (items, storeId, session) => {
+    const bulkOperations = [];
+    for (const item of items) {
+        if (storeId) {
+            bulkOperations.push({ 
+                updateOne: { 
+                    filter: { _id: item.productId }, 
+                    update: { $inc: { "variants.$[var].stock": item.qty, "variants.$[var].locationInventory.$[loc].stock": item.qty } }, 
+                    arrayFilters: [{ "var._id": item.variantId }, { "loc.storeId": storeId }] 
+                } 
+            });
+        } else {
+            bulkOperations.push({ 
+                updateOne: { 
+                    filter: { _id: item.productId, "variants._id": item.variantId }, 
+                    update: { $inc: { "variants.$.stock": item.qty } } 
+                } 
+            });
+        }
+    }
+    if (bulkOperations.length > 0) {
+        await Product.bulkWrite(bulkOperations, { session });
+    }
+};
 
 exports.deductInventory = async (items, storeId, session) => {
     const productIds = items.map(item => item.productId);
@@ -222,7 +247,6 @@ exports.processRestock = async (productId, payload) => {
             );
         }
 
-        // EVENT: Notify system of stock refill
         appEvents.emit('PRODUCT_UPDATED', { 
             productId: updatedProduct._id, 
             message: 'Stock Refilled', 
@@ -266,7 +290,6 @@ exports.processRTV = async (productId, payload) => {
             { new: true, arrayFilters, session }
         );
 
-        // EVENT: Notify system of return
         appEvents.emit('PRODUCT_UPDATED', { 
             productId: updatedProduct._id, 
             message: 'Stock Returned', 
@@ -327,7 +350,6 @@ exports.processTransfer = async (payload, username, logError) => {
             logError
         });
 
-        // EVENT: Notify system of transfer
         appEvents.emit('PRODUCT_UPDATED', { 
             productId: updatedProduct._id, 
             message: 'Stock Transferred' 
