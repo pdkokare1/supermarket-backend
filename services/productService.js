@@ -3,12 +3,9 @@
 
 const Product = require('../models/Product');
 const cacheUtils = require('../utils/cacheUtils');
+const appEvents = require('../utils/eventEmitter');
 const { buildProductQuery } = require('../utils/queryBuilderUtils');
 const { getPaginationOptions, getSortQuery } = require('../utils/paginationUtils');
-
-// ==========================================
-// --- HELPER FUNCTIONS ---
-// ==========================================
 
 const invalidateProductCache = async () => {
     await cacheUtils.invalidateByPattern('products:*');
@@ -24,8 +21,6 @@ exports.getPaginatedProducts = async (queryParams) => {
     if (cachedData) return cachedData;
 
     const filter = buildProductQuery(queryParams); 
-    
-    // OPTIMIZED: Using centralized pagination and sorting utilities
     const { limit, skip } = getPaginationOptions(queryParams);
     const sortQuery = getSortQuery(queryParams.sort);
     
@@ -50,6 +45,10 @@ exports.createProduct = async (productData) => {
     const newProduct = new Product(productData);
     await newProduct.save();
     await invalidateProductCache();
+    
+    // AUTOMATION: Notify system of new product
+    appEvents.emit('PRODUCT_UPDATED', { productId: newProduct._id });
+    
     return newProduct;
 };
 
@@ -62,7 +61,10 @@ exports.updateProduct = async (productId, updateData) => {
         { new: true, runValidators: true }
     );
     
-    if (updatedProduct) await invalidateProductCache();
+    if (updatedProduct) {
+        await invalidateProductCache();
+        appEvents.emit('PRODUCT_UPDATED', { productId: updatedProduct._id });
+    }
     return updatedProduct;
 };
 
@@ -75,6 +77,8 @@ exports.archiveProduct = async (productId) => {
     await product.save();
     
     await invalidateProductCache();
+    appEvents.emit('PRODUCT_UPDATED', { productId: product._id });
+    
     return product;
 };
 
@@ -86,5 +90,7 @@ exports.toggleProductStatus = async (productId) => {
     await product.save();
     
     await invalidateProductCache();
+    appEvents.emit('PRODUCT_UPDATED', { productId: product._id });
+    
     return product;
 };
