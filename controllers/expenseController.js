@@ -13,6 +13,12 @@ exports.uploadReceipt = catchAsync(async (request, reply) => {
 
 exports.createExpense = catchAsync(async (request, reply) => {
     const newExpense = await expenseService.createExpense(request.body);
+    
+    // MODULARIZED: Notify Admin real-time tracking
+    if (request.server.broadcastToPOS) {
+        request.server.broadcastToPOS({ type: 'EXPENSE_LOGGED', amount: newExpense.amount });
+    }
+
     return { success: true, message: 'Expense logged to cloud!', data: newExpense };
 }, 'saving expense');
 
