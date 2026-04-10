@@ -4,6 +4,7 @@ const Brand = require('../models/Brand');
 const AppError = require('../utils/AppError');
 
 exports.getAllBrands = async () => {
+    // OPTIMIZED: Added .lean()
     return await Brand.find().sort({ name: 1 }).lean();
 };
 
