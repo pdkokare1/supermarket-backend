@@ -21,16 +21,11 @@ const buildProductQuery = (queryObj) => {
     } else if (queryObj.stockStatus === 'dead') {
         filter['variants.stock'] = { $gt: 15 };
     } else if (queryObj.stockStatus === 'low') {
-        filter.$expr = {
-            $anyElementTrue: {
-                $map: {
-                    input: "$variants", as: "v", in: {
-                        $and: [
-                            { $gt: ["$$v.stock", 0] },
-                            { $lte: ["$$v.stock", { $ifNull: ["$$v.lowStockThreshold", 5] }] }
-                        ]
-                    }
-                }
+        // OPTIMIZED: Replaced $anyElementTrue/$map with $elemMatch for better indexing and performance.
+        filter.variants = {
+            $elemMatch: {
+                stock: { $gt: 0 },
+                $expr: { $lte: ["$stock", { $ifNull: ["$lowStockThreshold", 5] }] }
             }
         };
     }
