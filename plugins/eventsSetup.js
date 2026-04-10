@@ -8,7 +8,6 @@ module.exports = function(fastify) {
     
     // --- INVENTORY EVENTS ---
     appEvents.on('PRODUCT_UPDATED', (payload) => {
-        fastify.log.info(`Broadcasting product update for ID: ${payload.productId}`);
         fastify.broadcastToPOS({ 
             type: 'INVENTORY_UPDATED', 
             productId: payload.productId,
@@ -18,34 +17,45 @@ module.exports = function(fastify) {
     });
 
     // --- ORDER EVENTS ---
-
-    // Handles New Orders (POS, Online, External)
     appEvents.on('NEW_ORDER', (payload) => {
         const { order, storeId, source } = payload;
-        
-        // Notify SSE clients (Admin/Customer Dashboard)
         sseService.notifyNewOrder({ server: fastify }, order, storeId, source);
-
-        // Notify WebSocket clients (POS terminals)
         if (source === 'POS') {
             fastify.broadcastToPOS({ type: 'NEW_ORDER', orderId: order._id, source: 'POS', storeId: storeId });
         }
     });
 
-    // Handles Status Changes (Cancelled, Dispatched, Packing, etc.)
     appEvents.on('ORDER_STATUS_UPDATED', (payload) => {
-        const { orderId, status, storeId } = payload;
-        sseService.notifyStatusUpdate({ server: fastify }, orderId, status, storeId);
+        sseService.notifyStatusUpdate({ server: fastify }, payload.orderId, payload.status, payload.storeId);
     });
 
-    // Handles General Order Modifications (Driver assignment, items updated)
     appEvents.on('ORDER_UPDATED', (payload) => {
         fastify.broadcastToPOS({ type: 'ORDER_UPDATED', orderId: payload.orderId, storeId: payload.storeId });
     });
 
-    // Handles Refunds
     appEvents.on('ORDER_REFUNDED', (payload) => {
         fastify.broadcastToPOS({ type: 'ORDER_REFUNDED', orderId: payload.orderId, storeId: payload.storeId });
     });
 
+    // --- CUSTOMER EVENTS ---
+    appEvents.on('CUSTOMER_UPDATED', (payload) => {
+        fastify.broadcastToPOS({ type: 'CUSTOMER_UPDATED', phone: payload.phone });
+    });
+
+    appEvents.on('CUSTOMER_PAYMENT_RECORDED', (payload) => {
+        fastify.broadcastToPOS({ type: 'CUSTOMER_PAYMENT_RECORDED', phone: payload.phone });
+    });
+
+    // --- PROMOTION EVENTS ---
+    appEvents.on('PROMOTION_ADDED', (payload) => {
+        fastify.broadcastToPOS({ type: 'PROMOTION_ADDED', promotionId: payload.promotionId });
+    });
+
+    appEvents.on('PROMOTION_TOGGLED', (payload) => {
+        fastify.broadcastToPOS({ 
+            type: 'PROMOTION_TOGGLED', 
+            promotionId: payload.promotionId, 
+            isActive: payload.isActive 
+        });
+    });
 };
