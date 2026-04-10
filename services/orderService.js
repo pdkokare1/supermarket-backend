@@ -6,9 +6,10 @@ const Customer = require('../models/Customer');
 const { withTransaction } = require('../utils/dbUtils');
 const AppError = require('../utils/AppError');
 const auditService = require('./auditService'); 
+const inventoryService = require('./inventoryService'); 
 const cacheUtils = require('../utils/cacheUtils');
 const { getPaginationOptions } = require('../utils/paginationUtils');
-const appEvents = require('../utils/eventEmitter'); // Added for event-driven notifications
+const appEvents = require('../utils/eventEmitter'); 
 
 // ==========================================
 // --- HELPER FUNCTIONS ---
@@ -22,59 +23,6 @@ async function processPayLaterRefund(customerPhone, amount, session) {
     }
 }
 
-async function restoreInventory(items, storeId, session) {
-    const bulkOperations = [];
-    for (const item of items) {
-        if (storeId) {
-            bulkOperations.push({ 
-                updateOne: { 
-                    filter: { _id: item.productId }, 
-                    update: { $inc: { "variants.$[var].stock": item.qty, "variants.$[var].locationInventory.$[loc].stock": item.qty } }, 
-                    arrayFilters: [{ "var._id": item.variantId }, { "loc.storeId": storeId }] 
-                } 
-            });
-        } else {
-            bulkOperations.push({ 
-                updateOne: { 
-                    filter: { _id: item.productId, "variants._id": item.variantId }, 
-                    update: { $inc: { "variants.$.stock": item.qty } } 
-                } 
-            });
-        }
-    }
-    if (bulkOperations.length > 0) {
-        await Product.bulkWrite(bulkOperations, { session });
-    }
-}
-
-// ==========================================
-// --- CRON ABSTRACTIONS ---
-// ==========================================
-
-exports.deleteOldCancelledOrders = async (days) => {
-    const targetDate = new Date();
-    targetDate.setDate(targetDate.getDate() - days);
-    return await Order.deleteMany({ status: 'Cancelled', createdAt: { $lt: targetDate } });
-};
-
-exports.generateRoutineDeliveries = async () => {
-    const routineOrders = await Order.find({ deliveryType: 'Routine', status: { $ne: 'Cancelled' } }).lean();
-    if (routineOrders.length > 0) {
-        const bulkOps = routineOrders.map(ro => ({
-            insertOne: {
-                document: {
-                    customerName: ro.customerName, customerPhone: ro.customerPhone,
-                    deliveryAddress: ro.deliveryAddress, items: ro.items,
-                    totalAmount: ro.totalAmount, paymentMethod: ro.paymentMethod,
-                    deliveryType: 'Instant', scheduleTime: 'Generated via Routine', status: 'Order Placed'
-                }
-            }
-        }));
-        await Order.bulkWrite(bulkOps);
-    }
-    return routineOrders.length;
-};
-
 // ==========================================
 // --- ORDER MODIFICATION & RETRIEVAL ---
 // ==========================================
@@ -85,7 +33,7 @@ exports.processPartialRefund = async (orderId, payload, user) => {
         const order = await Order.findById(orderId).session(session);
         if (!order) throw new AppError('Order not found', 404);
 
-        await restoreInventory([{ productId, variantId, qty: qtyToRefund }], order.storeId, session);
+        await inventoryService.restoreInventory([{ productId, variantId, qty: qtyToRefund }], order.storeId, session);
 
         order.items = order.items
             .map(item => {
@@ -107,7 +55,6 @@ exports.processPartialRefund = async (orderId, payload, user) => {
         await auditService.logEvent({ action: 'PARTIAL_REFUND', targetType: 'Order', targetId: order._id.toString(), username: user.username, userId: user.id, details: { refundedItem: productId, qty: qtyToRefund }, session });
         await cacheUtils.deleteKey('orders:analytics');
 
-        // EVENT: Notify system of refund
         appEvents.emit('ORDER_REFUNDED', { orderId: order._id, storeId: order.storeId });
         
         return order;
@@ -122,13 +69,12 @@ exports.processCancelOrder = async (orderId, reason, user) => {
         order.status = 'Cancelled';
         if (order.paymentMethod === 'Pay Later') await processPayLaterRefund(order.customerPhone, order.totalAmount, session);
 
-        await restoreInventory(order.items, order.storeId, session);
+        await inventoryService.restoreInventory(order.items, order.storeId, session);
         await order.save({ session });
         
         await auditService.logEvent({ action: 'CANCEL_ORDER', targetType: 'Order', targetId: order._id.toString(), username: user ? user.username : 'System', userId: user ? user.id : null, details: { reason: reason || 'Not provided', amountRefunded: order.totalAmount }, session });
         await cacheUtils.deleteKey('orders:analytics');
 
-        // EVENT: Notify system of cancellation
         appEvents.emit('ORDER_STATUS_UPDATED', { orderId: order._id, status: 'Cancelled', storeId: order.storeId });
 
         return order;
