@@ -37,6 +37,8 @@ exports.onlineCheckout = catchAsync(async (request, reply) => {
 
 exports.posCheckout = catchAsync(async (request, reply) => {
     const newOrder = await checkoutService.processPosCheckout(request.body);
+    
+    // MODULARIZED: Standard broadcast access
     if (request.server.broadcastToPOS) {
         request.server.broadcastToPOS({ type: 'NEW_ORDER', orderId: newOrder._id, source: 'POS', storeId: request.body.storeId });
     }
@@ -47,6 +49,12 @@ exports.assignDriver = catchAsync(async (request, reply) => {
     const { driverName, driverPhone } = request.body;
     const order = await orderService.assignDriverToOrder(request.params.id, driverName, driverPhone);
     if (!order) return reply.status(404).send({ success: false, message: 'Order not found' });
+    
+    // MODULARIZED: Notifying real-time clients of change
+    if (request.server.broadcastToPOS) {
+        request.server.broadcastToPOS({ type: 'ORDER_UPDATED', orderId: order._id, storeId: order.storeId });
+    }
+
     return { success: true, data: order, message: 'Driver assigned successfully' };
 }, 'assigning driver');
 
@@ -54,6 +62,7 @@ exports.updateStatus = catchAsync(async (request, reply) => {
     const { status } = request.body;
     const order = await orderService.updateOrderStatus(request.params.id, status);
     if (!order) return reply.status(404).send({ success: false, message: 'Order not found' });
+    
     sseService.notifyStatusUpdate(request, order._id, status, order.storeId);
     return { success: true, data: order };
 }, 'updating status');
@@ -61,12 +70,18 @@ exports.updateStatus = catchAsync(async (request, reply) => {
 exports.dispatchOrder = catchAsync(async (request, reply) => {
     const order = await orderService.dispatchOrder(request.params.id);
     if (!order) return reply.status(404).send({ success: false, message: 'Order not found' });
+    
     sseService.notifyStatusUpdate(request, order._id, 'Dispatched', order.storeId);
     return { success: true, data: order };
 }, 'dispatching order');
 
 exports.partialRefund = catchAsync(async (request, reply) => {
     const order = await orderService.processPartialRefund(request.params.id, request.body, request.user);
+    
+    if (request.server.broadcastToPOS) {
+        request.server.broadcastToPOS({ type: 'ORDER_REFUNDED', orderId: order._id, storeId: order.storeId });
+    }
+
     return { success: true, message: 'Item Partially Refunded', data: order };
 }, 'processing refund');
 
