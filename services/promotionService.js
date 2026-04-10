@@ -3,18 +3,15 @@
 const Promotion = require('../models/Promotion');
 const AppError = require('../utils/AppError');
 const cacheUtils = require('../utils/cacheUtils');
+const appEvents = require('../utils/eventEmitter'); // Added for event-driven updates
 
 exports.getPromotions = async (all) => {
-    // OPTIMIZED: Cache active promotions using O(1) hash maps.
-    // Active promotions are fetched frequently by the POS; this prevents constant database hits.
     const cacheKey = all === 'true' ? 'promotions:all' : 'promotions:active';
     
     const cachedData = await cacheUtils.getCachedData(cacheKey);
     if (cachedData) return cachedData;
 
     const filter = all === 'true' ? {} : { isActive: true };
-    
-    // OPTIMIZED: Strict memory projection via .lean() to prevent mongoose object bloat
     const promotions = await Promotion.find(filter).sort({ createdAt: -1 }).lean();
     
     const formatted = promotions.map(p => ({
@@ -25,9 +22,7 @@ exports.getPromotions = async (all) => {
         minOrderValue: p.minOrderValue || p.minCartValue
     }));
 
-    // Cache the result for 1 hour
     await cacheUtils.setCachedData(cacheKey, formatted, 3600);
-    
     return formatted;
 };
 
@@ -44,9 +39,10 @@ exports.createPromotion = async (payload) => {
     if (payload.endTime) newPromotion.set('endTime', payload.endTime, { strict: false });
     
     await newPromotion.save();
-    
-    // Invalidate cache immediately on new promotion creation
     await cacheUtils.invalidateByPattern('promotions:*');
+    
+    // EVENT: Notify system of new promotion
+    appEvents.emit('PROMOTION_ADDED', { promotionId: newPromotion._id });
     
     return newPromotion;
 };
@@ -57,9 +53,10 @@ exports.togglePromotion = async (id) => {
     
     promo.isActive = !promo.isActive;
     await promo.save();
-    
-    // Invalidate cache immediately on status toggle
     await cacheUtils.invalidateByPattern('promotions:*');
+    
+    // EVENT: Notify system of status change
+    appEvents.emit('PROMOTION_TOGGLED', { promotionId: promo._id, isActive: promo.isActive });
     
     return promo;
 };
