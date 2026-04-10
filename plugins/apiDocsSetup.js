@@ -9,9 +9,5 @@ module.exports = function(fastify) {
             produces: ['application/json']
         }
     });
-    
-    fastify.register(require('@fastify/swagger-ui'), {
-        routePrefix: '/api/docs',
-        uiConfig: { docExpansion: 'none', deepLinking: false }
-    });
+    fastify.register(require('@fastify/swagger-ui'), { routePrefix: '/api/docs', uiConfig: { docExpansion: 'none' } });
 };
