@@ -3,6 +3,7 @@ const Distributor = require('../models/Distributor');
 const AppError = require('../utils/AppError');
 
 exports.getAllDistributors = async () => {
+    // OPTIMIZED: Using .lean() to prevent large object overhead
     return await Distributor.find().sort({ name: 1 }).lean();
 };
 
