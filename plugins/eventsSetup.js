@@ -58,4 +58,23 @@ module.exports = function(fastify) {
             isActive: payload.isActive 
         });
     });
+
+    // --- STAFF EVENTS ---
+    appEvents.on('STAFF_CREATED', (payload) => {
+        fastify.broadcastToPOS({ type: 'STAFF_CREATED', username: payload.username });
+    });
+
+    // --- EXPENSE EVENTS ---
+    appEvents.on('EXPENSE_LOGGED', (payload) => {
+        fastify.broadcastToPOS({ type: 'EXPENSE_LOGGED', amount: payload.amount });
+    });
+
+    // --- DISTRIBUTOR EVENTS ---
+    appEvents.on('DISTRIBUTOR_ADDED', (payload) => {
+        fastify.broadcastToPOS({ type: 'DISTRIBUTOR_ADDED', distributorId: payload.distributorId });
+    });
+
+    appEvents.on('DISTRIBUTOR_UPDATED', (payload) => {
+        fastify.broadcastToPOS({ type: 'DISTRIBUTOR_UPDATED', distributorId: payload.distributorId });
+    });
 };
