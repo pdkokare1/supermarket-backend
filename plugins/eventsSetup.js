@@ -5,7 +5,6 @@ const appEvents = require('../utils/eventEmitter');
 
 module.exports = function(fastify) {
     /**
-     * LISTEN FOR PRODUCT UPDATES
      * When any service emits 'PRODUCT_UPDATED', this listener 
      * broadcasts the change to all connected POS clients.
      */
@@ -14,9 +13,7 @@ module.exports = function(fastify) {
         fastify.broadcastToPOS({ 
             type: 'INVENTORY_UPDATED', 
             productId: payload.productId,
-            message: payload.message || 'Product data changed'
+            message: payload.message || 'Product updated'
         });
     });
-
-    // You can add more listeners here (e.g., Order updates, Shift changes)
 };
