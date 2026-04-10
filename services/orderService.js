@@ -7,6 +7,7 @@ const { withTransaction } = require('../utils/dbUtils');
 const AppError = require('../utils/AppError');
 const auditService = require('./auditService'); 
 const cacheUtils = require('../utils/cacheUtils');
+const { getPaginationOptions } = require('../utils/paginationUtils');
 
 // ==========================================
 // --- HELPER FUNCTIONS ---
@@ -146,11 +147,11 @@ exports.getOrdersList = async (queryParams) => {
     else if (queryParams.dateFilter === 'Yesterday') filter.createdAt = { $gte: yesterday, $lt: today };
     else if (queryParams.dateFilter === '7Days') filter.createdAt = { $gte: sevenDaysAgo };
 
-    const page = parseInt(queryParams.page) || 1;
-    const limit = parseInt(queryParams.limit);
+    // OPTIMIZED: Centralized pagination utility
+    const { limit, skip } = getPaginationOptions(queryParams);
 
     let query = Order.find(filter).sort({ createdAt: -1 });
-    if (limit) query = query.skip((page - 1) * limit).limit(limit);
+    if (limit > 0) query = query.skip(skip).limit(limit);
 
     // OPTIMIZED: Database-level aggregation for pending stats instead of pulling massive arrays into RAM
     const statsPromise = Order.aggregate([
@@ -158,7 +159,11 @@ exports.getOrdersList = async (queryParams) => {
         { $group: { _id: null, pendingCount: { $sum: 1 }, pendingRevenue: { $sum: "$totalAmount" } } }
     ]);
 
-    const [orders, total, pendingStatsArray] = await Promise.all([query.lean(), Order.countDocuments(filter), statsPromise]);
+    const [orders, total, pendingStatsArray] = await Promise.all([
+        query.lean(), 
+        Order.countDocuments(filter), 
+        statsPromise
+    ]);
     
     // Safely extract stats or default to 0
     const pendingStats = pendingStatsArray[0] || { pendingCount: 0, pendingRevenue: 0 };
