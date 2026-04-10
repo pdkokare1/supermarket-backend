@@ -3,6 +3,7 @@
 const Customer = require('../models/Customer');
 const Order = require('../models/Order');
 const AppError = require('../utils/AppError'); 
+const appEvents = require('../utils/eventEmitter'); // Added for event-driven updates
 
 // --- MOVED FROM CONTROLLER ---
 const formatCustomerForExport = (c) => ({
@@ -35,15 +36,12 @@ exports.getAggregatedCustomers = async () => {
 };
 
 exports.getAllCustomers = async () => {
-    // OPTIMIZED: Projecting only required CRM fields to prevent RAM bloat
     return await Customer.find({})
         .select('name phone loyaltyPoints isCreditEnabled creditLimit creditUsed createdAt')
         .lean();
 };
 
-// --- NEW ABSTRACTION FOR EXPORT ---
 exports.getCustomersForExport = async () => {
-    // OPTIMIZED: Memory-safe fetching for large exports
     const customers = await Customer.find({})
         .select('name phone loyaltyPoints isCreditEnabled creditLimit creditUsed createdAt')
         .lean();
@@ -62,6 +60,10 @@ exports.updateCustomerLimit = async (phone, name, isCreditEnabled, creditLimit) 
     cust.isCreditEnabled = isCreditEnabled;
     cust.creditLimit = Number(creditLimit);
     await cust.save();
+
+    // EVENT: Notify system of profile change
+    appEvents.emit('CUSTOMER_UPDATED', { phone: cust.phone });
+
     return cust;
 };
 
@@ -70,7 +72,10 @@ exports.recordPayment = async (phone, amount) => {
     if (!cust) throw new AppError('Customer not found.', 404); 
     
     cust.creditUsed = Math.max(0, cust.creditUsed - Number(amount));
-    
     await cust.save();
+
+    // EVENT: Notify system of payment
+    appEvents.emit('CUSTOMER_PAYMENT_RECORDED', { phone: cust.phone });
+
     return cust;
 };
