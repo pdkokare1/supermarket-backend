@@ -1,13 +1,14 @@
 /* plugins/middlewareSetup.js */
 
-// OPTIMIZED: Removed redisClient parameter. Relying on global fastify.redis.
 module.exports = function(fastify) {
+    // EFFICIENCY: Convert comma-separated string to an array for production lookups.
+    const allowedOrigins = process.env.ALLOWED_ORIGINS 
+        ? process.env.ALLOWED_ORIGINS.split(',') 
+        : true; 
+
     // --- CORS SETUP ---
     fastify.register(require('@fastify/cors'), { 
-        // Forcefully approve all origins via callback to bypass strict validation
-        origin: function (origin, cb) {
-            cb(null, true);
-        },
+        origin: allowedOrigins,
         methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
         credentials: true,
         allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'Origin', 'X-Requested-With'],
@@ -15,18 +16,15 @@ module.exports = function(fastify) {
     });
 
     // --- HELMET SETUP ---
-    // We must explicitly tell Helmet to allow cross-origin resource sharing,
-    // otherwise it silently overrides our CORS setup and blocks API reads.
     fastify.register(require('@fastify/helmet'), {
         crossOriginResourcePolicy: { policy: "cross-origin" },
         crossOriginOpenerPolicy: { policy: "unsafe-none" },
-        contentSecurityPolicy: false // Disable CSP for API to prevent Vercel blockages
+        contentSecurityPolicy: false 
     });
 
     fastify.register(require('@fastify/rate-limit'), {
         max: 100,
         timeWindow: '1 minute',
-        // OPTIMIZED: Grabbing Redis directly from the Fastify instance
         ...(fastify.redis && { redis: fastify.redis })
     });
 
