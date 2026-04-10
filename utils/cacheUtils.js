@@ -1,32 +1,22 @@
 /* utils/cacheUtils.js */
+'use strict';
 
 const crypto = require('crypto');
 
+// The client will be injected from app.js to ensure connection sharing.
 let redisCache = null;
 
-try {
-    const Redis = require('ioredis');
-    if (process.env.REDIS_URL) {
-        redisCache = new Redis(process.env.REDIS_URL);
-        
-        redisCache.on('error', (err) => {
-            console.error("[CACHE UTILS] Redis Error:", err.message);
-        });
-        
-        redisCache.on('connect', () => {
-            console.log("[CACHE UTILS] Successfully connected to Redis");
-        });
-    }
-} catch (e) {
-    console.error("[CACHE UTILS] Redis Initialization Error:", e.message);
-}
-
-exports.redisCache = redisCache;
+/**
+ * Injects the global Redis client into the cache utility.
+ * @param {Object} client - The established Redis client instance.
+ */
+exports.setClient = (client) => {
+    redisCache = client;
+};
 
 exports.generateKey = (prefix, queryObj) => {
     let stringifiedData;
     
-    // CPU Cycle saving. Bypasses JSON.stringify entirely for primitive types.
     if (queryObj && typeof queryObj === 'object') {
         const sortedObj = {};
         Object.keys(queryObj).sort().forEach(key => {
@@ -78,7 +68,6 @@ exports.invalidateByPattern = async (pattern) => {
             const [newCursor, keys] = await redisCache.scan(cursor, 'MATCH', pattern, 'COUNT', 100);
             cursor = newCursor;
             if (keys.length > 0) {
-                // Implemented Redis Pipeline to batch deletes safely without crashing event loops
                 await redisCache.pipeline().del(...keys).exec();
             }
         } while (cursor !== '0');
