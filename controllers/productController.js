@@ -11,34 +11,29 @@ exports.getProducts = catchAsync(async (request, reply) => {
 
 exports.createProduct = catchAsync(async (request, reply) => {
     const newProduct = await productService.createProduct(request.body);
-    // REMOVED: request.server.broadcastToPOS (Now handled automatically by Service events)
     return { success: true, message: 'Product added', data: newProduct };
 }, 'creating product');
 
 exports.updateProduct = catchAsync(async (request, reply) => {
     const updatedProduct = await productService.updateProduct(request.params.id, { ...request.body });
     if (!updatedProduct) return reply.status(404).send({ success: false, message: 'Product Not found' });
-    
     return { success: true, message: 'Product updated', data: updatedProduct };
 }, 'updating product');
 
 exports.archiveProduct = catchAsync(async (request, reply) => {
     const product = await productService.archiveProduct(request.params.id);
     if (!product) return reply.status(404).send({ success: false, message: 'Product Not found' });
-    
     return { success: true, message: `Product archived securely`, data: product };
 }, 'archiving product');
 
 exports.toggleProductStatus = catchAsync(async (request, reply) => {
     const product = await productService.toggleProductStatus(request.params.id);
     if (!product) return reply.status(404).send({ success: false, message: 'Product Not found' });
-    
     return { success: true, message: `Product Status Toggled`, data: product };
 }, 'toggling status');
 
 exports.restockProduct = catchAsync(async (request, reply) => {
     const product = await inventoryService.processRestock(request.params.id, request.body);
-    // Inventory changes also emit events within inventoryService (not shown here but follows same pattern)
     return { success: true, message: 'Restock processed successfully', data: product };
 }, 'restocking product');
 
