@@ -13,7 +13,7 @@ const createApp = () => {
 
     const redisClient = initRedis();
     
-    // OPTIMIZED: Sync the cache utility with the global Redis client to save connections.
+    // SYNC: Use the same Redis client for caching to save memory.
     cacheUtils.setClient(redisClient);
     fastify.decorate('redis', redisClient);
 
@@ -21,18 +21,12 @@ const createApp = () => {
     require('./plugins/securitySetup')(fastify); 
     require('./plugins/serverUtilsSetup')(fastify); 
     require('./plugins/apiDocsSetup')(fastify); 
-    
-    // NEW: Handles internal event logic (e.g., auto-broadcasting)
     require('./plugins/eventsSetup')(fastify);
-
     require('./plugins/authSetup')(fastify);
     require('./plugins/wsSetup')(fastify);
     require('./plugins/errorHandler')(fastify);
 
-    // --- Modularized System Routes ---
     fastify.register(require('./routes/systemRoutes'));
-
-    // --- Feature Routes ---
     fastify.register(require('./routes')); 
 
     return { fastify, redisClient };
