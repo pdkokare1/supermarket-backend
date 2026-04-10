@@ -6,6 +6,7 @@ const Order = require('../models/Order');
 const { withTransaction } = require('../utils/dbUtils'); 
 const AppError = require('../utils/AppError'); 
 const auditService = require('./auditService'); 
+const appEvents = require('../utils/eventEmitter'); // Added for event-driven updates
 
 // ==========================================
 // --- HELPER FUNCTIONS ---
@@ -44,7 +45,6 @@ exports.deductInventory = async (items, storeId, session) => {
         const variant = product.variants.find(v => v._id.toString() === item.variantId.toString());
         if (!variant) return { success: false, message: `Variant not found for item: ${item.name}` };
 
-        // Fast-fail memory check
         if (variant.stock < item.qty) return { success: false, message: `Insufficient global stock for item: ${item.name}` };
 
         if (storeId) {
@@ -62,7 +62,6 @@ exports.deductInventory = async (items, storeId, session) => {
                             "variants.$[var].locationInventory.$[loc].stock": -item.qty 
                         } 
                     },
-                    // OPTIMIZATION: DB-level atomic constraint prevents concurrent overselling
                     arrayFilters: [
                         { "var._id": item.variantId, "var.stock": { $gte: item.qty } }, 
                         { "loc.storeId": storeId, "loc.stock": { $gte: item.qty } }
@@ -74,7 +73,6 @@ exports.deductInventory = async (items, storeId, session) => {
                 updateOne: {
                     filter: { _id: item.productId },
                     update: { $inc: { "variants.$[var].stock": -item.qty } },
-                    // OPTIMIZATION: DB-level atomic constraint
                     arrayFilters: [{ "var._id": item.variantId, "var.stock": { $gte: item.qty } }]
                 }
             });
@@ -83,7 +81,6 @@ exports.deductInventory = async (items, storeId, session) => {
 
     if (bulkOperations.length > 0) {
         const bulkResult = await Product.bulkWrite(bulkOperations, { session });
-        // OPTIMIZATION: Identify if another transaction snatched the stock right before this locked
         if (bulkResult.modifiedCount !== items.length) {
             return { success: false, message: 'Stock level changed during checkout. Please review cart.' };
         }
@@ -99,8 +96,6 @@ exports.getExpiringProducts = async (days = 7) => {
     const targetDate = new Date();
     targetDate.setDate(targetDate.getDate() + days);
 
-    // OPTIMIZED: Replaced RAM-heavy javascript looping with an efficient MongoDB aggregation pipeline.
-    // This offloads the filtering directly to the database engine.
     return await Product.aggregate([
         { $match: { isActive: true, "variants.expiryDate": { $ne: null } } },
         { $unwind: "$variants" },
@@ -131,7 +126,6 @@ exports.calculateSalesVelocityAndStock = async (velocityDays, lowStockThreshold,
         if (v._id) variantSales[v._id.toString()] = v.totalSold;
     });
 
-    // OPTIMIZED: Added .select() to prevent loading entire product bodies (images, descriptions) into RAM during bulk processing.
     const productCursor = Product.find({ isActive: true }).select('name variants').cursor();
     
     let lowStockItems = [];
@@ -227,6 +221,14 @@ exports.processRestock = async (productId, payload) => {
                 { upsert: true, session }
             );
         }
+
+        // EVENT: Notify system of stock refill
+        appEvents.emit('PRODUCT_UPDATED', { 
+            productId: updatedProduct._id, 
+            message: 'Stock Refilled', 
+            storeId: storeId 
+        });
+
         return updatedProduct;
     });
 };
@@ -263,6 +265,13 @@ exports.processRTV = async (productId, payload) => {
             updateQuery,
             { new: true, arrayFilters, session }
         );
+
+        // EVENT: Notify system of return
+        appEvents.emit('PRODUCT_UPDATED', { 
+            productId: updatedProduct._id, 
+            message: 'Stock Returned', 
+            storeId: storeId 
+        });
 
         return updatedProduct;
     });
@@ -316,6 +325,12 @@ exports.processTransfer = async (payload, username, logError) => {
             details: { variantId, fromStoreId, toStoreId, quantity },
             session,
             logError
+        });
+
+        // EVENT: Notify system of transfer
+        appEvents.emit('PRODUCT_UPDATED', { 
+            productId: updatedProduct._id, 
+            message: 'Stock Transferred' 
         });
         
         return updatedProduct;
