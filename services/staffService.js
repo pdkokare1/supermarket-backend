@@ -3,6 +3,7 @@
 const User = require('../models/User');
 const securityService = require('./securityService'); // Reusing Phase 2 module
 const AppError = require('../utils/AppError');
+const appEvents = require('../utils/eventEmitter'); // Added for event-driven updates
 
 exports.createStaff = async (payload) => {
     const { name, username, pin, role } = payload;
@@ -27,6 +28,10 @@ exports.createStaff = async (payload) => {
     });
 
     await newUser.save();
+
+    // EVENT: Notify system of new staff creation
+    appEvents.emit('STAFF_CREATED', { username: newUser.username });
+
     return { name: newUser.name, username: newUser.username, role: newUser.role };
 };
 
