@@ -1,24 +1,15 @@
 /* controllers/orderController.js */
 
-const sseService = require('../services/orderSseService');
 const orderService = require('../services/orderService'); 
 const checkoutService = require('../services/checkoutService'); 
 const analyticsService = require('../services/analyticsService'); 
 const catchAsync = require('../utils/catchAsync');
 const { sendCsvResponse } = require('../utils/csvUtils'); 
-const appEvents = require('../utils/eventEmitter'); // For manual injection in checkouts
+const appEvents = require('../utils/eventEmitter'); 
 
 // ==========================================
 // --- CONTROLLER EXPORTS ---
 // ==========================================
-
-exports.streamAdmin = async (request, reply) => {
-    sseService.initializeAdminStream(request, reply);
-};
-
-exports.streamCustomer = async (request, reply) => {
-    sseService.initializeCustomerStream(request, reply, request.params.id);
-};
 
 exports.externalCheckout = catchAsync(async (request, reply) => {
     const apiKey = request.headers['x-api-key'];
@@ -27,7 +18,6 @@ exports.externalCheckout = catchAsync(async (request, reply) => {
     }
     const newOrder = await checkoutService.processExternalCheckout(request.body);
     
-    // Decoupled: Emit event for internal listeners
     appEvents.emit('NEW_ORDER', { order: newOrder, storeId: request.body.storeId, source: request.body.source });
 
     return { success: true, message: `External Order Accepted from ${request.body.source}`, orderId: newOrder._id, orderNumber: newOrder.orderNumber };
