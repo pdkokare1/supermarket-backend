@@ -7,6 +7,9 @@ const appEvents = require('../utils/eventEmitter');
 const { buildProductQuery } = require('../utils/queryBuilderUtils');
 const { getPaginationOptions, getSortQuery } = require('../utils/paginationUtils');
 
+// CONFIGURATION: Centralized Cache TTL (1 hour)
+const CACHE_TTL = 3600;
+
 const invalidateProductCache = async () => {
     await cacheUtils.invalidateByPattern('products:*');
 };
@@ -25,7 +28,7 @@ exports.getPaginatedProducts = async (queryParams) => {
     
     const [products, total] = await Promise.all([query.lean(), Product.countDocuments(filter)]);
     const responseData = { success: true, count: products.length, total: total, data: products };
-    await cacheUtils.setCachedData(cacheKey, responseData, 3600);
+    await cacheUtils.setCachedData(cacheKey, responseData, CACHE_TTL);
     
     return responseData;
 };
