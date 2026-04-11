@@ -2,8 +2,9 @@
 
 const Shift = require('../models/Shift');
 const Order = require('../models/Order');
-const AuditLog = require('../models/AuditLog');
 const AppError = require('../utils/AppError');
+const auditService = require('./auditService'); // Added for standardized logging
+const appEvents = require('../utils/eventEmitter'); // Added for event-driven updates
 
 exports.openShift = async (payload, user, logError) => {
     const { userName, startingFloat } = payload;
@@ -21,14 +22,18 @@ exports.openShift = async (payload, user, logError) => {
     
     await newShift.save();
 
-    await AuditLog.create({
-        userId: user ? user.id : null,
-        username: user ? user.username : userName || 'System',
+    await auditService.logEvent({
         action: 'SHIFT_OPENED',
         targetType: 'Shift',
         targetId: newShift._id.toString(),
-        details: { startingFloat: newShift.startingFloat }
-    }).catch(e => logError('AuditLog Error:', e));
+        userId: user ? user.id : null,
+        username: user ? user.username : userName || 'System',
+        details: { startingFloat: newShift.startingFloat },
+        logError
+    });
+
+    // EVENT: Notify POS real-time system
+    appEvents.emit('SHIFT_OPENED', { shiftId: newShift._id });
 
     return newShift;
 };
@@ -76,14 +81,18 @@ exports.closeShift = async (payload, user, logError) => {
 
     const discrepancy = shift.actualCash - shift.expectedCash;
 
-    await AuditLog.create({
-        userId: user ? user.id : null,
-        username: user ? user.username : 'System',
+    await auditService.logEvent({
         action: 'SHIFT_CLOSED',
         targetType: 'Shift',
         targetId: shift._id.toString(),
-        details: { expectedCash, actualCash: shift.actualCash, discrepancy }
-    }).catch(e => logError('AuditLog Error:', e));
+        userId: user ? user.id : null,
+        username: user ? user.username : 'System',
+        details: { expectedCash, actualCash: shift.actualCash, discrepancy },
+        logError
+    });
+
+    // EVENT: Notify POS real-time system
+    appEvents.emit('SHIFT_CLOSED', { shiftId: shift._id });
 
     return { shift, discrepancy };
 };
