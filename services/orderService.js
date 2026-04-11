@@ -33,6 +33,7 @@ exports.processPartialRefund = async (orderId, payload, user) => {
         const order = await Order.findById(orderId).session(session);
         if (!order) throw new AppError('Order not found', 404);
 
+        // Uses modularized inventory service
         await inventoryService.restoreInventory([{ productId, variantId, qty: qtyToRefund }], order.storeId, session);
 
         order.items = order.items
@@ -69,6 +70,7 @@ exports.processCancelOrder = async (orderId, reason, user) => {
         order.status = 'Cancelled';
         if (order.paymentMethod === 'Pay Later') await processPayLaterRefund(order.customerPhone, order.totalAmount, session);
 
+        // Uses modularized inventory service
         await inventoryService.restoreInventory(order.items, order.storeId, session);
         await order.save({ session });
         
