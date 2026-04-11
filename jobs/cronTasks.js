@@ -13,10 +13,10 @@ const zlib = require('zlib');
 
 // --- IMPORTED MODULAR SERVICES ---
 const inventoryService = require('../services/inventoryService');
-const orderService = require('../services/orderService');
+const jobsService = require('../services/jobsService'); // Replaced orderService for cron logic
 const auditService = require('../services/auditService');
-const analyticsService = require('../services/analyticsService'); // Fixed import
-const notificationService = require('../services/notificationService'); // New centralized notifications
+const analyticsService = require('../services/analyticsService'); 
+const notificationService = require('../services/notificationService'); 
 
 cloudinary.config({
     cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
@@ -129,7 +129,7 @@ async function runExpiryMonitor(fastify) {
 async function runDataRetentionCleanup(fastify) {
     fastify.log.info('Running 3:00 AM Data Retention Cleanup (90 Days)...');
     try {
-        const deletedOrders = await orderService.deleteOldCancelledOrders(90);
+        const deletedOrders = await jobsService.deleteOldCancelledOrders(90);
         const deletedLogs = await auditService.deleteOldAuditLogs(90);
 
         fastify.log.info(`[CLEANUP] Deleted ${deletedOrders.deletedCount} old cancelled orders and ${deletedLogs.deletedCount} old audit logs.`);
@@ -141,7 +141,7 @@ async function runDataRetentionCleanup(fastify) {
 async function runRoutineDeliveries(fastify) {
     fastify.log.info('Running 6:00 AM Routine Deliveries CRON Job...');
     try {
-        const generatedCount = await orderService.generateRoutineDeliveries();
+        const generatedCount = await jobsService.generateRoutineDeliveries();
         if (generatedCount > 0) {
             fastify.log.info(`Successfully generated ${generatedCount} routine orders for today.`);
         }
@@ -199,7 +199,6 @@ async function runEODBackup(fastify) {
         tomorrow.setDate(tomorrow.getDate() + 1);
         const todayStr = new Date().toDateString();
 
-        // Using correctly routed Analytics Service
         const f = await analyticsService.getDailyFinancialTotals(today, tomorrow, todayStr);
 
         const dateString = new Date().toLocaleDateString();
