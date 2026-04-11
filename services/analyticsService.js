@@ -9,7 +9,6 @@ const cacheUtils = require('../utils/cacheUtils');
 // --- (From Phase 1) ---
 exports.getDailyFinancialTotals = async (today, tomorrow, todayStr) => {
     // OPTIMIZED: Replaced RAM-heavy cursors and loops with parallel MongoDB aggregation pipelines.
-    // The database engine now handles the complex mathematical summing (including split logic), returning O(1) memory footprint.
     const [orderStats, expenseStats] = await Promise.all([
         Order.aggregate([
             { $match: { createdAt: { $gte: today, $lt: tomorrow }, status: { $ne: 'Cancelled' } } },
@@ -43,7 +42,7 @@ exports.getDailyFinancialTotals = async (today, tomorrow, todayStr) => {
 };
 
 exports.getAnalyticsData = async () => {
-    // ... (Phase 1 logic remains here in your actual file)
+    // Existing logic preserved: Note - In your production file, ensure Phase 1 logic is present here.
 };
 
 // --- (NEW) Phase 5: P&L ---
@@ -53,16 +52,15 @@ exports.getPnl = async (startDate, endDate) => {
         dateFilter.createdAt = { $gte: new Date(startDate), $lte: new Date(endDate) };
     }
 
-    // OPTIMIZED: Added strict .select() to prevent OOM errors when processing long date ranges.
     const orders = await Order.find({ ...dateFilter, status: { $nin: ['Cancelled'] } })
         .select('totalAmount discountAmount taxAmount items')
         .lean();
         
     let totalRevenue = 0, totalCOGS = 0, totalDiscounts = 0, totalTax = 0;
 
-    // OPTIMIZED: Reduced projection to only the exact variant fields needed for COGS calculation.
+    // EFFICIENCY: Minimal selection for cost mapping
     const products = await Product.find({ isActive: true })
-        .select('variants.price variants.purchaseHistory')
+        .select('variants._id variants.price variants.purchaseHistory')
         .lean();
         
     const costMap = {};
@@ -87,7 +85,6 @@ exports.getPnl = async (startDate, endDate) => {
         });
     });
 
-    // OPTIMIZED: Only pull the amount field to minimize memory overhead.
     const expenses = await Expense.find(dateFilter)
         .select('amount')
         .lean();
@@ -105,7 +102,6 @@ exports.getPnl = async (startDate, endDate) => {
 exports.generateForecast = async (geminiKey) => {
     if (!geminiKey) throw new Error('Gemini API key not configured on server.');
 
-    // OPTIMIZED: Added .select() to drastically reduce memory footprint before passing data to the AI.
     const products = await Product.find({ isActive: true, isArchived: { $ne: true } })
         .select('name variants.weightOrVolume variants.stock variants.price variants.lowStockThreshold')
         .lean();
