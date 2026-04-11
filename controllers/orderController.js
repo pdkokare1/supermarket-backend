@@ -6,6 +6,17 @@ const catchAsync = require('../utils/catchAsync');
 const { sendCsvResponse } = require('../utils/csvUtils'); 
 
 // ==========================================
+// --- HELPER FUNCTIONS ---
+// ==========================================
+
+const handleOrderResponse = (reply, order, successMessage = null) => {
+    if (!order) return reply.status(404).send({ success: false, message: 'Order not found' });
+    const response = { success: true, data: order };
+    if (successMessage) response.message = successMessage;
+    return response;
+};
+
+// ==========================================
 // --- CONTROLLER EXPORTS ---
 // ==========================================
 
@@ -34,24 +45,18 @@ exports.posCheckout = catchAsync(async (request, reply) => {
 exports.assignDriver = catchAsync(async (request, reply) => {
     const { driverName, driverPhone } = request.body;
     const order = await orderService.assignDriverToOrder(request.params.id, driverName, driverPhone);
-    if (!order) return reply.status(404).send({ success: false, message: 'Order not found' });
-    
-    return { success: true, data: order, message: 'Driver assigned successfully' };
+    return handleOrderResponse(reply, order, 'Driver assigned successfully');
 }, 'assigning driver');
 
 exports.updateStatus = catchAsync(async (request, reply) => {
     const { status } = request.body;
     const order = await orderService.updateOrderStatus(request.params.id, status);
-    if (!order) return reply.status(404).send({ success: false, message: 'Order not found' });
-    
-    return { success: true, data: order };
+    return handleOrderResponse(reply, order);
 }, 'updating status');
 
 exports.dispatchOrder = catchAsync(async (request, reply) => {
     const order = await orderService.dispatchOrder(request.params.id);
-    if (!order) return reply.status(404).send({ success: false, message: 'Order not found' });
-    
-    return { success: true, data: order };
+    return handleOrderResponse(reply, order);
 }, 'dispatching order');
 
 exports.partialRefund = catchAsync(async (request, reply) => {
@@ -75,6 +80,5 @@ exports.exportOrders = catchAsync(async (request, reply) => {
 
 exports.getOrderById = catchAsync(async (request, reply) => {
     const order = await orderService.getOrderById(request.params.id);
-    if (!order) return reply.status(404).send({ success: false, message: 'Order not found' });
-    return { success: true, data: order };
+    return handleOrderResponse(reply, order);
 }, 'fetching order status');
