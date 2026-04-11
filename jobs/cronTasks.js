@@ -13,7 +13,7 @@ const zlib = require('zlib');
 
 // --- IMPORTED MODULAR SERVICES ---
 const inventoryService = require('../services/inventoryService');
-const jobsService = require('../services/jobsService'); // Replaced orderService
+const jobsService = require('../services/jobsService'); 
 const auditService = require('../services/auditService');
 const analyticsService = require('../services/analyticsService'); 
 const notificationService = require('../services/notificationService'); 
@@ -24,15 +24,16 @@ cloudinary.config({
     api_secret: process.env.CLOUDINARY_API_SECRET
 });
 
+// OPTIMIZED: Schema definition moved outside to prevent OverwriteModelError and memory leaks
+const lockSchema = new mongoose.Schema({ jobName: { type: String, unique: true }, lockedAt: Date });
+const CronLock = mongoose.models.CronLock || mongoose.model('CronLock', lockSchema);
+
 // ==========================================
 // --- CRON JOB EXPORTS ---
 // ==========================================
 
 async function runWithLock(jobName, fastify, task) {
     try {
-        const lockSchema = new mongoose.Schema({ jobName: { type: String, unique: true }, lockedAt: Date });
-        const CronLock = mongoose.models.CronLock || mongoose.model('CronLock', lockSchema);
-        
         await CronLock.updateOne({ jobName }, { $setOnInsert: { jobName, lockedAt: null } }, { upsert: true }).catch(() => true);
 
         const tenMinsAgo = new Date(Date.now() - 10 * 60 * 1000);
@@ -50,7 +51,6 @@ async function runWithLock(jobName, fastify, task) {
         await CronLock.updateOne({ jobName }, { $set: { lockedAt: null } });
     } catch (error) {
         fastify.log.error(`[CRON] Lock Error in ${jobName}:`, error);
-        const CronLock = mongoose.models.CronLock;
         if (CronLock) await CronLock.updateOne({ jobName }, { $set: { lockedAt: null } }).catch(() => true);
     }
 }
