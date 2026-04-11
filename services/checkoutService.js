@@ -7,7 +7,7 @@ const inventoryService = require('./inventoryService');
 const { withTransaction } = require('../utils/dbUtils');
 const AppError = require('../utils/AppError');
 const cacheUtils = require('../utils/cacheUtils');
-const appEvents = require('../utils/eventEmitter'); // Added for event-driven updates
+const appEvents = require('../utils/eventEmitter'); 
 
 function sendWhatsAppMessage(phone, msg) {
     if (phone && phone.length >= 10 && process.env.CALLMEBOT_API_KEY && process.env.WA_PHONE_NUMBER) {
@@ -53,13 +53,16 @@ async function finalizeAndSaveOrder(session, items, storeId, orderPrefix, orderD
 }
 
 exports.processExternalCheckout = async (payload) => {
-    return withTransaction(async (session) => {
+    const newOrder = await withTransaction(async (session) => {
         const { source, externalOrderId, customerName, customerPhone, deliveryAddress, items, totalAmount, paymentMethod, notes, storeId } = payload;
         const orderPrefix = `EXT-${source.toUpperCase().substring(0, 3)}`;
         const formattedNotes = `[${source.toUpperCase()}] Ext ID: ${externalOrderId || 'N/A'}. ${notes || ''}`;
         const orderData = { notes: formattedNotes, customerName: customerName || `${source} Customer`, customerPhone: customerPhone || '', deliveryAddress: deliveryAddress || `${source} Pickup`, totalAmount, paymentMethod: paymentMethod || 'Prepaid External', deliveryType: 'Instant', status: 'Order Placed' };
         return await finalizeAndSaveOrder(session, items, storeId, orderPrefix, orderData);
     });
+
+    appEvents.emit('NEW_ORDER', { order: newOrder, storeId: payload.storeId, source: payload.source });
+    return newOrder;
 };
 
 exports.processOnlineCheckout = async (payload) => {
@@ -80,12 +83,13 @@ exports.processOnlineCheckout = async (payload) => {
         }
         await custProfile.save({ session });
 
-        // EVENT: Notify system that customer data changed (e.g., credit used)
         appEvents.emit('CUSTOMER_UPDATED', { phone: custProfile.phone });
 
         const orderData = { notes: notes || '', customerName, customerPhone, deliveryAddress, totalAmount, paymentMethod: paymentMethod || 'Cash on Delivery', deliveryType: deliveryType || 'Instant', scheduleTime: scheduleTime || 'ASAP' };
         return await finalizeAndSaveOrder(session, items, storeId, 'ORD', orderData);
     });
+
+    appEvents.emit('NEW_ORDER', { order: newOrder, storeId, source: 'Online' });
 
     const msg = `DailyPick Order Received! 🛒\nOrder ID: ${newOrder.orderNumber}\nTotal: ₹${totalAmount}\nDelivery: ${scheduleTime || 'ASAP'}\nThanks for shopping!`;
     sendWhatsAppMessage(customerPhone, msg);
@@ -111,7 +115,6 @@ exports.processPosCheckout = async (payload) => {
                 if (paymentMethod === 'Pay Later') validateAndApplyPayLater(custProfile, totalAmount);
                 await custProfile.save({ session });
                 
-                // EVENT: Notify system that loyalty points or credit changed
                 appEvents.emit('CUSTOMER_UPDATED', { phone: custProfile.phone });
             } else {
                 if (paymentMethod === 'Pay Later') throw new AppError('Pay Later is not enabled for this new account.', 400);
@@ -127,6 +130,8 @@ exports.processPosCheckout = async (payload) => {
         const orderData = { registerId: registerId || null, notes: notes || '', customerName: finalCustomerName, customerPhone: customerPhone || '', deliveryAddress: 'In-Store Purchase', totalAmount, taxAmount: taxAmount || 0, discountAmount: discountAmount || 0, paymentMethod, splitDetails: splitDetails || { cash: 0, upi: 0 }, deliveryType: 'Instant', status: 'Completed' };
         return await finalizeAndSaveOrder(session, items, storeId, 'ORD', orderData);
     });
+
+    appEvents.emit('NEW_ORDER', { order: newOrder, storeId, source: 'POS' });
 
     const loyaltyMsg = pointsRedeemed > 0 ? ` Points Redeemed: ${pointsRedeemed}.` : '';
     const msg = `Thank you for shopping at DailyPick! 🛒\nOrder: ${newOrder.orderNumber}\nTotal: ₹${totalAmount}\n${loyaltyMsg}\nVisit again!`;
