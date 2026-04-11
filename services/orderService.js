@@ -23,6 +23,10 @@ async function processPayLaterRefund(customerPhone, amount, session) {
     }
 }
 
+const clearOrderAnalyticsCache = async () => {
+    await cacheUtils.deleteKey('orders:analytics');
+};
+
 // ==========================================
 // --- ORDER MODIFICATION & RETRIEVAL ---
 // ==========================================
@@ -54,7 +58,7 @@ exports.processPartialRefund = async (orderId, payload, user) => {
         await order.save({ session });
 
         await auditService.logEvent({ action: 'PARTIAL_REFUND', targetType: 'Order', targetId: order._id.toString(), username: user.username, userId: user.id, details: { refundedItem: productId, qty: qtyToRefund }, session });
-        await cacheUtils.deleteKey('orders:analytics');
+        await clearOrderAnalyticsCache();
 
         appEvents.emit('ORDER_REFUNDED', { orderId: order._id, storeId: order.storeId });
         
@@ -75,7 +79,7 @@ exports.processCancelOrder = async (orderId, reason, user) => {
         await order.save({ session });
         
         await auditService.logEvent({ action: 'CANCEL_ORDER', targetType: 'Order', targetId: order._id.toString(), username: user ? user.username : 'System', userId: user ? user.id : null, details: { reason: reason || 'Not provided', amountRefunded: order.totalAmount }, session });
-        await cacheUtils.deleteKey('orders:analytics');
+        await clearOrderAnalyticsCache();
 
         appEvents.emit('ORDER_STATUS_UPDATED', { orderId: order._id, status: 'Cancelled', storeId: order.storeId });
 
@@ -161,11 +165,7 @@ exports.updateOrderStatus = async (orderId, status) => {
 };
 
 exports.dispatchOrder = async (orderId) => {
-    const order = await Order.findByIdAndUpdate(orderId, { status: 'Dispatched' }, { new: true });
-    if (order) {
-        appEvents.emit('ORDER_STATUS_UPDATED', { orderId: order._id, status: 'Dispatched', storeId: order.storeId });
-    }
-    return order;
+    return await exports.updateOrderStatus(orderId, 'Dispatched');
 };
 
 exports.getOrderById = async (orderId) => {
