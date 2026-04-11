@@ -39,4 +39,5 @@ const startServer = async () => {
 // --- EXECUTION BOOTSTRAP ---
 // ==========================================
 
+// Trigger the modular bootstrap process
 bootstrapServer(fastify, redisClient, PORT, connectDB, initScheduler, startServer);
