@@ -3,7 +3,7 @@
 const Customer = require('../models/Customer');
 const Order = require('../models/Order');
 const AppError = require('../utils/AppError'); 
-const appEvents = require('../utils/eventEmitter'); // Added for event-driven updates
+const appEvents = require('../utils/eventEmitter'); 
 
 // --- MOVED FROM CONTROLLER ---
 const formatCustomerForExport = (c) => ({
@@ -42,9 +42,8 @@ exports.getAllCustomers = async () => {
 };
 
 exports.getCustomersForExport = async () => {
-    const customers = await Customer.find({})
-        .select('name phone loyaltyPoints isCreditEnabled creditLimit creditUsed createdAt')
-        .lean();
+    // MODULARITY: Reusing the existing retrieval logic to ensure consistency
+    const customers = await exports.getAllCustomers();
     return customers.map(formatCustomerForExport);
 };
 
