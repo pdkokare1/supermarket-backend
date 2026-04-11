@@ -1,5 +1,7 @@
 /* services/productCacheService.js */
 
+const cacheUtils = require('../utils/cacheUtils');
+
 let redisCache = null;
 
 try {
@@ -12,21 +14,8 @@ try {
 }
 
 const invalidateProductCache = async () => {
-    if (redisCache) {
-        try {
-            let cursor = '0';
-            do {
-                const [newCursor, keys] = await redisCache.scan(cursor, 'MATCH', 'products:*', 'COUNT', 100);
-                cursor = newCursor;
-                if (keys.length > 0) {
-                    // OPTIMIZED: Using Redis pipeline for faster batch deletion
-                    await redisCache.pipeline().del(...keys).exec();
-                }
-            } while (cursor !== '0');
-        } catch(e) {
-            console.error("[CACHE SERVICE] Error invalidating product cache:", e.message);
-        }
-    }
+    // OPTIMIZED: Replaced local loop with centralized cacheUtils utility
+    await cacheUtils.invalidateByPattern('products:*');
 };
 
 module.exports = {
