@@ -4,7 +4,6 @@ const mongoose = require('mongoose');
 const cluster = require('cluster');
 const os = require('os');
 
-// NEW OPTIMIZATION: Global error catchers to prevent silent worker deaths
 process.on('uncaughtException', (err) => {
     console.error('[PROCESS] Uncaught Exception:', err);
 });
@@ -46,7 +45,6 @@ exports.setupCluster = (fastify, connectDB, initScheduler) => {
     connectDB(fastify).then(() => {
         initScheduler();
         
-        // OPTIMIZATION: Cap workers to prevent Out-Of-Memory (OOM) errors in containerized environments (Docker/Railway)
         const numWorkers = process.env.MAX_WORKERS ? parseInt(process.env.MAX_WORKERS, 10) : Math.min(os.cpus().length, 4);
         console.log(`[CLUSTER] Primary Process ${process.pid} running. Distributing traffic across ${numWorkers} workers...`);
         
@@ -57,4 +55,24 @@ exports.setupCluster = (fastify, connectDB, initScheduler) => {
             cluster.fork(); 
         });
     });
+};
+
+/**
+ * Centrally manages the startup sequence of the server.
+ */
+exports.bootstrapServer = async (fastify, redisClient, port, connectDB, initScheduler, startServer) => {
+    // Setup Process-Level Utilities
+    this.setupGracefulShutdown(fastify, redisClient);
+
+    if (process.env.ENABLE_CLUSTERING === 'true' && cluster.isPrimary) {
+        // Primary Cluster Process
+        this.setupCluster(fastify, connectDB, initScheduler);
+    } else if (process.env.ENABLE_CLUSTERING !== 'true') {
+        // Standalone Mode (Development or Small Environments)
+        initScheduler();
+        await startServer(); 
+    } else {
+        // Worker Processes (Traffic Handlers)
+        await startServer(); 
+    }
 };
