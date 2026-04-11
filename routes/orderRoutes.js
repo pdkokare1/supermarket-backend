@@ -1,19 +1,19 @@
 /* routes/orderRoutes.js */
 
 const orderController = require('../controllers/orderController');
+const sseController = require('../controllers/sseController');
 const sseService = require('../services/orderSseService');
 const schemas = require('../schemas/orderSchemas');
 
 async function orderRoutes(fastify, options) {
 
-    // Global Decorator for cleanup mapped to SSE service
     fastify.decorate('closeAllSSE', () => {
         sseService.closeAllConnections();
     });
 
-    // --- Streams ---
-    fastify.get('/api/orders/stream/admin', { preHandler: [fastify.authenticate, fastify.verifyAdmin] }, orderController.streamAdmin);
-    fastify.get('/api/orders/stream/customer/:id', { preHandler: [fastify.authenticate] }, orderController.streamCustomer);
+    // --- Streams (Updated to SSE Controller) ---
+    fastify.get('/api/orders/stream/admin', { preHandler: [fastify.authenticate, fastify.verifyAdmin] }, sseController.streamAdmin);
+    fastify.get('/api/orders/stream/customer/:id', { preHandler: [fastify.authenticate] }, sseController.streamCustomer);
 
     // --- Checkouts ---
     fastify.post('/api/orders/external', { ...schemas.externalCheckoutSchema }, orderController.externalCheckout);
