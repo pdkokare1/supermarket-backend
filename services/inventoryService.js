@@ -25,6 +25,18 @@ const getProductAndVariant = async (productId, variantId, session = null) => {
     return { product, variant };
 };
 
+const addLocationStockQuery = (updateQuery, arrayFilters, variant, storeId, quantity, locIdentifier = 'loc') => {
+    const hasStore = variant.locationInventory.some(l => l.storeId && l.storeId.toString() === storeId.toString());
+    if (hasStore) {
+        updateQuery.$inc = updateQuery.$inc || {};
+        updateQuery.$inc[`variants.$[var].locationInventory.$[${locIdentifier}].stock`] = Number(quantity);
+        arrayFilters.push({ [`${locIdentifier}.storeId`]: storeId });
+    } else {
+        updateQuery.$push = updateQuery.$push || {};
+        updateQuery.$push["variants.$[var].locationInventory"] = { storeId: storeId, stock: Number(quantity) };
+    }
+};
+
 // ==========================================
 // --- INVENTORY OPERATIONS ---
 // ==========================================
@@ -226,13 +238,7 @@ exports.processRestock = async (productId, payload) => {
         const arrayFilters = [{ "var._id": variantId }];
 
         if (storeId) {
-            const hasStore = variant.locationInventory.some(l => l.storeId && l.storeId.toString() === storeId);
-            if (hasStore) {
-                updateQuery.$inc["variants.$[var].locationInventory.$[loc].stock"] = Number(addedQuantity);
-                arrayFilters.push({ "loc.storeId": storeId });
-            } else {
-                updateQuery.$push["variants.$[var].locationInventory"] = { storeId: storeId, stock: Number(addedQuantity) };
-            }
+            addLocationStockQuery(updateQuery, arrayFilters, variant, storeId, addedQuantity, 'loc');
         }
 
         const updatedProduct = await Product.findOneAndUpdate(
@@ -327,15 +333,7 @@ exports.processTransfer = async (payload, username, logError) => {
             { "fromLoc.storeId": fromStoreId }
         ];
 
-        let toLoc = variant.locationInventory.find(l => l.storeId.toString() === toStoreId);
-        if (toLoc) {
-            updateQuery.$inc["variants.$[var].locationInventory.$[toLoc].stock"] = Number(quantity);
-            arrayFilters.push({ "toLoc.storeId": toStoreId });
-        } else {
-            updateQuery.$push = {
-                "variants.$[var].locationInventory": { storeId: toStoreId, stock: Number(quantity) }
-            };
-        }
+        addLocationStockQuery(updateQuery, arrayFilters, variant, toStoreId, quantity, 'toLoc');
 
         const updatedProduct = await Product.findOneAndUpdate(
             { _id: productId },
