@@ -11,7 +11,7 @@ async function orderRoutes(fastify, options) {
         sseService.closeAllConnections();
     });
 
-    // --- Streams (Updated to SSE Controller) ---
+    // --- Streams ---
     fastify.get('/api/orders/stream/admin', { preHandler: [fastify.authenticate, fastify.verifyAdmin] }, sseController.streamAdmin);
     fastify.get('/api/orders/stream/customer/:id', { preHandler: [fastify.authenticate] }, sseController.streamCustomer);
 
