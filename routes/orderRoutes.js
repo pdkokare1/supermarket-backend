@@ -1,6 +1,7 @@
 /* routes/orderRoutes.js */
 
 const orderController = require('../controllers/orderController');
+const analyticsController = require('../controllers/analyticsController'); // Added
 const sseController = require('../controllers/sseController');
 const sseService = require('../services/orderSseService');
 const schemas = require('../schemas/orderSchemas');
@@ -28,7 +29,8 @@ async function orderRoutes(fastify, options) {
     fastify.put('/api/orders/:id/cancel', { preHandler: [fastify.authenticate, fastify.verifyAdmin], ...schemas.cancelSchema }, orderController.cancelOrder);
 
     // --- Analytics & Fetching ---
-    fastify.get('/api/orders/analytics', { preHandler: [fastify.authenticate, fastify.verifyAdmin] }, orderController.getAnalytics);
+    // Now using analyticsController for reporting
+    fastify.get('/api/orders/analytics', { preHandler: [fastify.authenticate, fastify.verifyAdmin] }, analyticsController.getOrdersAnalytics);
     fastify.get('/api/orders/export', { preHandler: [fastify.authenticate, fastify.verifyAdmin] }, orderController.exportOrders);
     fastify.get('/api/orders', { preHandler: [fastify.authenticate, fastify.verifyAdmin], ...schemas.getOrdersSchema }, orderController.getOrders);
     
