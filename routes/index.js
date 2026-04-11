@@ -1,21 +1,26 @@
 /* routes/index.js */
 
-const fs = require('fs');
-const path = require('path');
-
 async function apiRoutes(fastify, options) {
-    const routesDir = __dirname;
-    const files = await fs.promises.readdir(routesDir);
-
-    // MAINTAINABILITY: Centralized list of files to ignore during dynamic registration.
-    const EXCLUDED_FILES = ['index.js', 'systemRoutes.js', 'migrateRoute.js'];
-
-    for (const file of files) {
-        // Registers all files ending in 'Routes.js' that are not in the exclusion list.
-        if (file.endsWith('Routes.js') && !EXCLUDED_FILES.includes(file)) {
-            fastify.register(require(path.join(routesDir, file)));
-        }
-    }
+    // Explicit registration for performance and maintainability.
+    // This avoids dynamic file scanning at runtime.
+    
+    fastify.register(require('./authRoutes'));
+    fastify.register(require('./customerRoutes'));
+    fastify.register(require('./productRoutes'));
+    fastify.register(require('./productOpsRoutes'));
+    fastify.register(require('./orderRoutes'));
+    fastify.register(require('./analyticsRoutes'));
+    fastify.register(require('./storeRoutes'));
+    fastify.register(require('./staffRoutes'));
+    fastify.register(require('./shiftRoutes'));
+    fastify.register(require('./promotionRoutes'));
+    fastify.register(require('./expenseRoutes'));
+    fastify.register(require('./distributorRoutes'));
+    fastify.register(require('./categoryRoutes'));
+    fastify.register(require('./brandRoutes'));
+    fastify.register(require('./auditRoutes'));
+    fastify.register(require('./registerRoutes'));
+    fastify.register(require('./settingsRoutes'));
 }
 
 module.exports = apiRoutes;
