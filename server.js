@@ -1,16 +1,14 @@
 /* server.js */
 'use strict';
 
-const cluster = require('cluster');
 const mongoose = require('mongoose');
 require('dotenv').config();
 
 const connectDB = require('./config/db');
 const { handleInventoryReport } = require('./jobs/inventoryHandler'); 
-const { setupGracefulShutdown, setupCluster } = require('./utils/serverProcessUtils');
+const { bootstrapServer } = require('./utils/serverProcessUtils');
 const createApp = require('./app');
 
-// Initialize the Application Configuration
 const { fastify, redisClient } = createApp();
 const PORT = process.env.PORT || 3000;
 
@@ -41,17 +39,4 @@ const startServer = async () => {
 // --- EXECUTION BOOTSTRAP ---
 // ==========================================
 
-// Setup Process-Level Utilities
-setupGracefulShutdown(fastify, redisClient);
-
-if (process.env.ENABLE_CLUSTERING === 'true' && cluster.isPrimary) {
-    // Primary Cluster Process
-    setupCluster(fastify, connectDB, initScheduler);
-} else if (process.env.ENABLE_CLUSTERING !== 'true') {
-    // Standalone Mode (Development or Small Environments)
-    initScheduler();
-    startServer(); 
-} else {
-    // Worker Processes (Traffic Handlers)
-    startServer(); 
-}
+bootstrapServer(fastify, redisClient, PORT, connectDB, initScheduler, startServer);
