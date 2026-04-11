@@ -61,18 +61,14 @@ exports.setupCluster = (fastify, connectDB, initScheduler) => {
  * Centrally manages the startup sequence of the server.
  */
 exports.bootstrapServer = async (fastify, redisClient, port, connectDB, initScheduler, startServer) => {
-    // Setup Process-Level Utilities
     this.setupGracefulShutdown(fastify, redisClient);
 
     if (process.env.ENABLE_CLUSTERING === 'true' && cluster.isPrimary) {
-        // Primary Cluster Process
         this.setupCluster(fastify, connectDB, initScheduler);
     } else if (process.env.ENABLE_CLUSTERING !== 'true') {
-        // Standalone Mode (Development or Small Environments)
         initScheduler();
         await startServer(); 
     } else {
-        // Worker Processes (Traffic Handlers)
         await startServer(); 
     }
 };
