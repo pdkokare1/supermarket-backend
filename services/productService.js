@@ -14,6 +14,12 @@ const invalidateProductCache = async () => {
     await cacheUtils.invalidateByPattern('products:*');
 };
 
+// MODULARITY: Helper to handle all post-update side effects in one place
+const triggerProductUpdates = async (productId) => {
+    await invalidateProductCache();
+    appEvents.emit('PRODUCT_UPDATED', { productId });
+};
+
 exports.getPaginatedProducts = async (queryParams) => {
     const cacheKey = cacheUtils.generateKey('products', queryParams);
     const cachedData = await cacheUtils.getCachedData(cacheKey);
@@ -36,8 +42,7 @@ exports.getPaginatedProducts = async (queryParams) => {
 exports.createProduct = async (productData) => {
     const newProduct = new Product(productData);
     await newProduct.save();
-    await invalidateProductCache();
-    appEvents.emit('PRODUCT_UPDATED', { productId: newProduct._id });
+    await triggerProductUpdates(newProduct._id);
     return newProduct;
 };
 
@@ -45,8 +50,7 @@ exports.updateProduct = async (productId, updateData) => {
     const { _id, isArchived, isActive, ...safeUpdateData } = updateData;
     const updatedProduct = await Product.findByIdAndUpdate(productId, { $set: safeUpdateData }, { new: true, runValidators: true });
     if (updatedProduct) {
-        await invalidateProductCache();
-        appEvents.emit('PRODUCT_UPDATED', { productId: updatedProduct._id });
+        await triggerProductUpdates(updatedProduct._id);
     }
     return updatedProduct;
 };
@@ -57,8 +61,7 @@ exports.archiveProduct = async (productId) => {
     product.isArchived = true; 
     product.isActive = false; 
     await product.save();
-    await invalidateProductCache();
-    appEvents.emit('PRODUCT_UPDATED', { productId: product._id });
+    await triggerProductUpdates(product._id);
     return product;
 };
 
@@ -67,7 +70,6 @@ exports.toggleProductStatus = async (productId) => {
     if (!product) return null;
     product.isActive = !product.isActive; 
     await product.save();
-    await invalidateProductCache();
-    appEvents.emit('PRODUCT_UPDATED', { productId: product._id });
+    await triggerProductUpdates(product._id);
     return product;
 };
