@@ -2,10 +2,8 @@
 
 const orderService = require('../services/orderService'); 
 const checkoutService = require('../services/checkoutService'); 
-const analyticsService = require('../services/analyticsService'); 
 const catchAsync = require('../utils/catchAsync');
 const { sendCsvResponse } = require('../utils/csvUtils'); 
-const appEvents = require('../utils/eventEmitter'); 
 
 // ==========================================
 // --- CONTROLLER EXPORTS ---
@@ -18,24 +16,18 @@ exports.externalCheckout = catchAsync(async (request, reply) => {
     }
     const newOrder = await checkoutService.processExternalCheckout(request.body);
     
-    appEvents.emit('NEW_ORDER', { order: newOrder, storeId: request.body.storeId, source: request.body.source });
-
     return { success: true, message: `External Order Accepted from ${request.body.source}`, orderId: newOrder._id, orderNumber: newOrder.orderNumber };
 }, 'processing external checkout');
 
 exports.onlineCheckout = catchAsync(async (request, reply) => {
     const newOrder = await checkoutService.processOnlineCheckout(request.body);
     
-    appEvents.emit('NEW_ORDER', { order: newOrder, storeId: request.body.storeId, source: 'Online' });
-
     return { success: true, message: 'Order Placed Successfully', orderId: newOrder._id };
 }, 'processing checkout');
 
 exports.posCheckout = catchAsync(async (request, reply) => {
     const newOrder = await checkoutService.processPosCheckout(request.body);
     
-    appEvents.emit('NEW_ORDER', { order: newOrder, storeId: request.body.storeId, source: 'POS' });
-
     return { success: true, message: 'POS Transaction Complete', orderId: newOrder._id, orderData: newOrder };
 }, 'processing POS transaction');
 
@@ -71,10 +63,6 @@ exports.cancelOrder = catchAsync(async (request, reply) => {
     const order = await orderService.processCancelOrder(request.params.id, request.body.reason, request.user);
     return { success: true, message: 'Order Cancelled and Stock Refunded', data: order };
 }, 'cancelling order');
-
-exports.getAnalytics = catchAsync(async (request, reply) => {
-    return await analyticsService.getAnalyticsData();
-}, 'fetching analytics');
 
 exports.getOrders = catchAsync(async (request, reply) => {
     return await orderService.getOrdersList(request.query);
