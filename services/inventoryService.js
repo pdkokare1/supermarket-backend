@@ -29,6 +29,9 @@ const getProductAndVariant = async (productId, variantId, session = null) => {
 // --- INVENTORY OPERATIONS ---
 // ==========================================
 
+/**
+ * Restores stock back to inventory (used for refunds/cancellations).
+ */
 exports.restoreInventory = async (items, storeId, session) => {
     const bulkOperations = [];
     for (const item of items) {
