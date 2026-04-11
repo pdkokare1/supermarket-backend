@@ -39,3 +39,7 @@ exports.getLeaderboard = catchAsync(async (request, reply) => {
     await cacheUtils.setCachedData(cacheKey, responseData, 300);
     return responseData;
 }, 'fetching leaderboard');
+
+exports.getOrdersAnalytics = catchAsync(async (request, reply) => {
+    return await analyticsService.getAnalyticsData();
+}, 'fetching order analytics');
