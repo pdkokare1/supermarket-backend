@@ -6,6 +6,19 @@ const AppError = require('../utils/AppError');
 const auditService = require('./auditService'); 
 const securityService = require('./securityService'); 
 
+// MODULARITY: Standardized helper for all Auth-related audit logs
+const logAuthAudit = async (server, action, targetId, username, details = {}, userId = null) => {
+    await auditService.logEvent({
+        action,
+        targetType: 'Auth',
+        targetId,
+        username,
+        userId,
+        details,
+        logError: server.log.error.bind(server.log)
+    });
+};
+
 exports.setupDefaultAdmin = async (envSetupKey, queryKey, isProduction) => {
     if (isProduction) throw new AppError('Forbidden: Setup route disabled in production.', 403);
 
@@ -41,20 +54,12 @@ exports.authenticateUser = async (username, pin, ip, server) => {
                            .collation({ locale: 'en', strength: 2 }); 
     
     if (!user) {
-        await auditService.logEvent({
-            action: 'FAILED_LOGIN_ATTEMPT', targetType: 'Auth', targetId: 'Login',
-            username: safeUsername || 'Unknown', details: { ip, reason: 'User not found' },
-            logError: server.log.error.bind(server.log)
-        });
+        await logAuthAudit(server, 'FAILED_LOGIN_ATTEMPT', 'Login', safeUsername || 'Unknown', { ip, reason: 'User not found' });
         throw new AppError('Invalid Username or PIN.', 401, { safeUsername, reason: 'User not found' });
     }
 
     if (user.isLocked) {
-        await auditService.logEvent({
-            action: 'FAILED_LOGIN_ATTEMPT', targetType: 'Auth', targetId: user._id.toString(),
-            username: user.username, details: { ip, reason: 'Account locked' },
-            logError: server.log.error.bind(server.log)
-        });
+        await logAuthAudit(server, 'FAILED_LOGIN_ATTEMPT', user._id.toString(), user.username, { ip, reason: 'Account locked' });
         throw new AppError('Account locked due to too many failed attempts. Try again in 15 minutes.', 403, { user, reason: 'Account locked' });
     }
     
@@ -75,11 +80,7 @@ exports.authenticateUser = async (username, pin, ip, server) => {
         if (user.failedLoginAttempts >= 5) user.lockUntil = Date.now() + 15 * 60 * 1000; 
         await user.save();
         
-        await auditService.logEvent({
-            action: 'FAILED_LOGIN_ATTEMPT', targetType: 'Auth', targetId: user._id.toString(),
-            username: user.username, details: { ip, reason: 'Invalid PIN' },
-            logError: server.log.error.bind(server.log)
-        });
+        await logAuthAudit(server, 'FAILED_LOGIN_ATTEMPT', user._id.toString(), user.username, { ip, reason: 'Invalid PIN' });
 
         throw new AppError('Invalid Username or PIN.', 401, { user, reason: 'Invalid PIN' });
     }
@@ -88,11 +89,7 @@ exports.authenticateUser = async (username, pin, ip, server) => {
     user.lockUntil = undefined;
     await user.save();
 
-    await auditService.logEvent({
-        action: 'SUCCESSFUL_LOGIN', targetType: 'Auth', targetId: user._id.toString(),
-        username: user.username, userId: user._id, details: { role: user.role, ip },
-        logError: server.log.error.bind(server.log)
-    });
+    await logAuthAudit(server, 'SUCCESSFUL_LOGIN', user._id.toString(), user.username, { role: user.role, ip }, user._id);
 
     const tokens = securityService.generateTokens(server, user);
     return { user, ...tokens };
@@ -113,11 +110,7 @@ exports.revokeSession = async (userId, server) => {
         user.tokenVersion = (user.tokenVersion || 0) + 1;
         await user.save();
         
-        await auditService.logEvent({
-            action: 'LOGOUT', targetType: 'Auth', targetId: user._id.toString(),
-            username: user.username, userId: user._id,
-            logError: server.log.error.bind(server.log)
-        });
+        await logAuthAudit(server, 'LOGOUT', user._id.toString(), user.username, {}, user._id);
     }
     return user;
 };
