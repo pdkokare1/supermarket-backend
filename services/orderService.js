@@ -96,15 +96,15 @@ exports.getOrdersList = async (queryParams) => {
 
     const { limit, skip } = getPaginationOptions(queryParams);
 
-    // Optimized Single-Pass Aggregation
+    // OPTIMIZATION: Single-Pass Aggregation with Root Match
+    // By matching at the root level before $facet, we shrink the pipeline's memory footprint drastically.
     const result = await Order.aggregate([
+        { $match: filter },
         { $facet: {
             metadata: [
-                { $match: filter },
                 { $count: "total" }
             ],
             data: [
-                { $match: filter },
                 { $sort: { createdAt: -1 } },
                 { $skip: skip },
                 { $limit: limit || 50 }
@@ -134,7 +134,7 @@ exports.getOrdersList = async (queryParams) => {
 
 exports.getAllOrdersForExport = async () => {
     const exportData = [];
-    // Memory Efficient: Use Cursor for large datasets
+    // Memory Efficient: Use Cursor for large datasets to prevent V8 memory spikes
     const cursor = Order.find()
         .select('orderNumber createdAt customerName customerPhone totalAmount status paymentMethod deliveryType')
         .sort({ createdAt: -1 })
