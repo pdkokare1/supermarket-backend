@@ -40,4 +40,13 @@ module.exports = function (fastify) {
             return; 
         }
     });
+
+    // ENTERPRISE OPTIMIZATION: Extracted external API key validation into a reusable middleware decorator
+    fastify.decorate("verifyApiKey", async function (request, reply) {
+        const apiKey = request.headers['x-api-key'];
+        if (!apiKey || apiKey !== process.env.EXTERNAL_API_KEY) {
+            reply.status(401).send({ success: false, message: 'Unauthorized webhook access.' });
+            return;
+        }
+    });
 };
