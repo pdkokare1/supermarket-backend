@@ -2,10 +2,10 @@
 'use strict';
 
 const Fastify = require('fastify');
-const fp = require('fastify-plugin'); // OPTIMIZATION: Added for proper plugin encapsulation
+const fp = require('fastify-plugin'); 
 const initRedis = require('./config/redis'); 
 const cacheUtils = require('./utils/cacheUtils');
-const mongoose = require('mongoose'); // OPTIMIZATION: Needed for graceful database shutdown
+const mongoose = require('mongoose'); 
 
 const createApp = () => {
     const fastify = Fastify({
@@ -35,19 +35,26 @@ const createApp = () => {
     fastify.register(require('./routes/systemRoutes'));
     fastify.register(require('./routes')); 
 
-    // OPTIMIZATION: Graceful Shutdown Hook to prevent zombie DB connections during Railway/Vercel redeployments
+    // OPTIMIZATION: Graceful Shutdown Hook with Promise.race fallback timeout
     fastify.addHook('onClose', async (instance, done) => {
         instance.log.info('Server shutting down. Closing database connections...');
+        
+        const closeConnections = async () => {
+            if (mongoose.connection.readyState === 1) await mongoose.connection.close();
+            if (redisClient) await redisClient.quit();
+        };
+
+        const timeout = new Promise((_, reject) => 
+            setTimeout(() => reject(new Error('Shutdown operation timed out after 5000ms')), 5000)
+        );
+
         try {
-            if (mongoose.connection.readyState === 1) {
-                await mongoose.connection.close();
-            }
-            if (redisClient) {
-                await redisClient.quit();
-            }
+            await Promise.race([closeConnections(), timeout]);
+            instance.log.info('Connections closed successfully.');
         } catch (err) {
             instance.log.error('Error during shutdown:', err);
         }
+        
         done();
     });
 
