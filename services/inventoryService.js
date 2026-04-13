@@ -71,12 +71,15 @@ exports.restoreInventory = async (items, storeId, session) => {
 
 exports.deductInventory = async (items, storeId, session) => {
     const productIds = items.map(item => item.productId);
-    const products = await Product.find({ _id: { $in: productIds } }).session(session).lean();
     
+    // DEPRECATION CONSULTATION: 
+    // The following Javascript-level memory check has been commented out to prevent race conditions. 
+    // By skipping this and relying purely on MongoDB's atomic bulkWrite with array filters below, 
+    // we guarantee that simultaneous checkouts cannot deduct stock below zero.
+    /*
+    const products = await Product.find({ _id: { $in: productIds } }).session(session).lean();
     const productMap = {};
     products.forEach(p => productMap[p._id.toString()] = p);
-
-    const bulkOperations = [];
 
     for (const item of items) {
         const product = productMap[item.productId.toString()];
@@ -86,13 +89,13 @@ exports.deductInventory = async (items, storeId, session) => {
         if (!variant) return { success: false, message: `Variant not found for item: ${item.name}` };
 
         if (variant.stock < item.qty) return { success: false, message: `Insufficient global stock for item: ${item.name}` };
+    }
+    */
 
+    const bulkOperations = [];
+
+    for (const item of items) {
         if (storeId) {
-            const locStock = variant.locationInventory ? variant.locationInventory.find(l => l.storeId.toString() === storeId.toString()) : null;
-            if (!locStock || locStock.stock < item.qty) {
-                return { success: false, message: `Insufficient local store stock for item: ${item.name}` };
-            }
-            
             bulkOperations.push({
                 updateOne: {
                     filter: { _id: item.productId },
@@ -122,7 +125,7 @@ exports.deductInventory = async (items, storeId, session) => {
     if (bulkOperations.length > 0) {
         const bulkResult = await Product.bulkWrite(bulkOperations, { session });
         if (bulkResult.modifiedCount !== items.length) {
-            return { success: false, message: 'Stock level changed during checkout. Please review cart.' };
+            return { success: false, message: 'Stock level changed during checkout or item unavailable. Please review cart.' };
         }
     }
     return { success: true };
@@ -171,7 +174,7 @@ exports.calculateSalesVelocityAndStock = async (velocityDays, lowStockThreshold,
     let lowStockItems = [];
     let deadStockItems = [];
     let bulkOps = []; 
-    const BATCH_SIZE = 500; // OPTIMIZATION: Memory cap for bulk operations
+    const BATCH_SIZE = 500; 
     
     for await (let p of productCursor) {
         let isModified = false;
@@ -204,14 +207,14 @@ exports.calculateSalesVelocityAndStock = async (velocityDays, lowStockThreshold,
             });
         }
 
-        // Execute in batches to save memory
         if (bulkOps.length >= BATCH_SIZE) {
             await Product.bulkWrite(bulkOps);
             bulkOps = []; 
+            // OPTIMIZATION: Unblock the event loop so checkouts can process concurrently
+            await new Promise(resolve => setImmediate(resolve));
         }
     }
 
-    // Write any remaining operations
     if (bulkOps.length > 0) {
         await Product.bulkWrite(bulkOps);
     }
