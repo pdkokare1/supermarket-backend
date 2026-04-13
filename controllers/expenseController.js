@@ -7,8 +7,20 @@ exports.uploadReceipt = catchAsync(async (request, reply) => {
     const data = await request.file();
     if (!data) return reply.status(400).send({ success: false, message: 'No file uploaded' });
 
-    const secureUrl = await expenseService.uploadReceiptToCloud(data.file);
-    return { success: true, receiptUrl: secureUrl };
+    try {
+        const secureUrl = await expenseService.uploadReceiptToCloud(data.file);
+        return { success: true, receiptUrl: secureUrl };
+    } finally {
+        // OPTIMIZATION: Critical memory leak protection.
+        // Ensures the raw Node.js stream is fully drained and destroyed from RAM,
+        // even if the Cloudinary upload fails mid-stream.
+        if (data && data.file) {
+            data.file.resume();
+            if (typeof data.file.destroy === 'function') {
+                data.file.destroy();
+            }
+        }
+    }
 }, 'Expense Receipt Upload');
 
 exports.createExpense = catchAsync(async (request, reply) => {
