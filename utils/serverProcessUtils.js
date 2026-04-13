@@ -18,6 +18,9 @@ exports.setupGracefulShutdown = (fastify, redisClient) => {
         process.on(signal, async () => {
             fastify.log.info(`${signal} received. Shutting down gracefully...`);
             
+            // OPTIMIZATION: Signal to readiness probes to stop sending traffic here
+            fastify.isShuttingDown = true; 
+
             if (typeof fastify.closeAllSSE === 'function') fastify.closeAllSSE();
             
             setTimeout(() => {
@@ -26,6 +29,12 @@ exports.setupGracefulShutdown = (fastify, redisClient) => {
             }, 15000).unref(); 
 
             try {
+                // OPTIMIZATION: Force close idle keep-alive sockets to instantly drain traffic 
+                // to the new Railway container, while letting active checkouts finish.
+                if (fastify.server && fastify.server.closeIdleConnections) {
+                    fastify.server.closeIdleConnections();
+                }
+
                 await fastify.close();
                 await mongoose.connection.close();
                 if (redisClient) await redisClient.quit();
@@ -57,18 +66,12 @@ exports.setupCluster = (fastify, connectDB, initScheduler) => {
     });
 };
 
-/**
- * Centrally manages the startup sequence of the server.
- */
 exports.bootstrapServer = async (fastify, redisClient, port, connectDB, initScheduler, startServer) => {
     this.setupGracefulShutdown(fastify, redisClient);
 
     if (process.env.ENABLE_CLUSTERING === 'true' && cluster.isPrimary) {
         this.setupCluster(fastify, connectDB, initScheduler);
-    } else if (process.env.ENABLE_CLUSTERING !== 'true') {
-        initScheduler();
-        await startServer(); 
     } else {
-        await startServer(); 
+        startServer();
     }
 };
