@@ -171,6 +171,7 @@ exports.calculateSalesVelocityAndStock = async (velocityDays, lowStockThreshold,
     let lowStockItems = [];
     let deadStockItems = [];
     let bulkOps = []; 
+    const BATCH_SIZE = 500; // OPTIMIZATION: Memory cap for bulk operations
     
     for await (let p of productCursor) {
         let isModified = false;
@@ -202,8 +203,15 @@ exports.calculateSalesVelocityAndStock = async (velocityDays, lowStockThreshold,
                 }
             });
         }
+
+        // Execute in batches to save memory
+        if (bulkOps.length >= BATCH_SIZE) {
+            await Product.bulkWrite(bulkOps);
+            bulkOps = []; 
+        }
     }
 
+    // Write any remaining operations
     if (bulkOps.length > 0) {
         await Product.bulkWrite(bulkOps);
     }
