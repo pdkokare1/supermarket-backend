@@ -11,24 +11,25 @@ const { handleOrderResponse } = require('../utils/responseUtils');
 // ==========================================
 
 exports.externalCheckout = catchAsync(async (request, reply) => {
-    const apiKey = request.headers['x-api-key'];
-    if (!apiKey || apiKey !== process.env.EXTERNAL_API_KEY) {
-        return reply.status(401).send({ success: false, message: 'Unauthorized webhook access.' });
-    }
+    // OPTIMIZATION: API Key validation moved to route middleware for separation of concerns
     const newOrder = await checkoutService.processExternalCheckout(request.body);
     
+    // OPTIMIZATION: Added explicit 201 Created status for enterprise REST compliance
+    reply.code(201);
     return { success: true, message: `External Order Accepted from ${request.body.source}`, orderId: newOrder._id, orderNumber: newOrder.orderNumber };
 }, 'processing external checkout');
 
 exports.onlineCheckout = catchAsync(async (request, reply) => {
     const newOrder = await checkoutService.processOnlineCheckout(request.body);
     
+    reply.code(201);
     return { success: true, message: 'Order Placed Successfully', orderId: newOrder._id };
 }, 'processing checkout');
 
 exports.posCheckout = catchAsync(async (request, reply) => {
     const newOrder = await checkoutService.processPosCheckout(request.body);
     
+    reply.code(201);
     return { success: true, message: 'POS Transaction Complete', orderId: newOrder._id, orderData: newOrder };
 }, 'processing POS transaction');
 
