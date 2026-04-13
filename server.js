@@ -17,7 +17,8 @@ const PORT = process.env.PORT || 3000;
 // ==========================================
 
 const initScheduler = () => {
-    require('./jobs/cronScheduler')(fastify, (newReport) => 
+    const scheduler = require('./jobs/cronScheduler');
+    scheduler(fastify, (newReport) => 
         handleInventoryReport(redisClient, fastify, newReport)
     );
 };
@@ -39,5 +40,4 @@ const startServer = async () => {
 // --- EXECUTION BOOTSTRAP ---
 // ==========================================
 
-// Trigger the modular bootstrap process
 bootstrapServer(fastify, redisClient, PORT, connectDB, initScheduler, startServer);
