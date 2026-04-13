@@ -23,6 +23,12 @@ process.on('unhandledRejection', (err) => {
 
 process.on('uncaughtException', (err) => {
     fastify.log.error(`UNCAUGHT EXCEPTION: ${err.message}`);
+    
+    // OPTIMIZATION: Ensure asynchronous Pino logs are written to the cloud stream before sudden container termination.
+    if (fastify.log.flushSync) {
+        fastify.log.flushSync();
+    }
+    
     process.exit(1);
 });
 
