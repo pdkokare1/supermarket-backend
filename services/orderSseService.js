@@ -12,7 +12,9 @@ try {
         redisPub = new Redis(process.env.REDIS_URL);
         redisSub = new Redis(process.env.REDIS_URL);
         
-        redisSub.subscribe('ORDER_STREAM_EVENT');
+        // OPTIMIZATION: Subscribe to both the legacy stream channel and the new horizontally-scaled operations channel
+        redisSub.subscribe('ORDER_STREAM_EVENT', 'GAMUT_ORDER_EVENTS');
+        
         redisSub.on('message', (channel, message) => {
             if (channel === 'ORDER_STREAM_EVENT') {
                 const parsed = JSON.parse(message);
@@ -25,6 +27,15 @@ try {
                         if (!conn.destroyed) conn.write(`data: ${parsed.payload}\n\n`);
                     });
                 }
+            } 
+            // OPTIMIZATION: Bridge core service updates directly to Admin SSE streams
+            else if (channel === 'GAMUT_ORDER_EVENTS') {
+                const parsed = JSON.parse(message);
+                const bridgePayload = JSON.stringify({ type: parsed.eventName, ...parsed.payload });
+                
+                adminConnections.forEach(conn => {
+                    if (!conn.destroyed) conn.write(`data: ${bridgePayload}\n\n`);
+                });
             }
         });
     }
