@@ -2,7 +2,10 @@
 'use strict';
 
 module.exports = function(fastify) {
-    const allowedOrigins = process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : true; 
+    // Efficiency: Pre-split origin string once during initialization
+    const allowedOrigins = process.env.ALLOWED_ORIGINS 
+        ? process.env.ALLOWED_ORIGINS.split(',') 
+        : true; 
 
     fastify.register(require('@fastify/cors'), { 
         origin: allowedOrigins,
