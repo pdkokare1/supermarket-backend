@@ -58,8 +58,16 @@ exports.getPnl = async (startDate, endDate) => {
         
     let totalRevenue = 0, totalCOGS = 0, totalDiscounts = 0, totalTax = 0;
 
-    // EFFICIENCY: Minimal selection for cost mapping
-    const products = await Product.find({ isActive: true })
+    // EFFICIENCY: Identify only the products explicitly sold in these orders
+    const relevantProductIds = new Set();
+    orders.forEach(order => {
+        if (order.items) {
+            order.items.forEach(item => relevantProductIds.add(item.productId.toString()));
+        }
+    });
+
+    // EFFICIENCY: Minimal selection for cost mapping, now strictly limited to relevant products
+    const products = await Product.find({ _id: { $in: Array.from(relevantProductIds) } })
         .select('variants._id variants.price variants.purchaseHistory')
         .lean();
         
