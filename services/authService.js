@@ -116,5 +116,6 @@ exports.revokeSession = async (userId, server) => {
 };
 
 exports.getUserById = async (id) => {
-    return await User.findOne({ _id: id });
+    // OPTIMIZATION: Natively faster lookup method
+    return await User.findById(id);
 };
