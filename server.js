@@ -13,6 +13,20 @@ const { fastify, redisClient } = createApp();
 const PORT = process.env.PORT || 3000;
 
 // ==========================================
+// --- ENTERPRISE PROCESS STABILITY ---
+// ==========================================
+
+process.on('unhandledRejection', (err) => {
+    fastify.log.error(`UNHANDLED REJECTION: ${err.message}`);
+    // In production, you might want process.exit(1) here to let the cloud provider restart a clean container
+});
+
+process.on('uncaughtException', (err) => {
+    fastify.log.error(`UNCAUGHT EXCEPTION: ${err.message}`);
+    process.exit(1);
+});
+
+// ==========================================
 // --- INITIALIZATION HELPERS ---
 // ==========================================
 
