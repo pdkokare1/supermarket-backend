@@ -29,10 +29,23 @@ exports.getPaginatedProducts = async (queryParams) => {
     const { limit, skip } = getPaginationOptions(queryParams);
     const sortQuery = getSortQuery(queryParams.sort);
     
-    let query = Product.find(filter).select('-variants.purchaseHistory -variants.returnHistory').sort(sortQuery);
-    if (limit > 0) query = query.skip(skip).limit(limit); 
-    
-    const [products, total] = await Promise.all([query.lean(), Product.countDocuments(filter)]);
+    // OPTIMIZATION: Single-pass aggregation replacing find() and countDocuments()
+    const result = await Product.aggregate([
+        { $match: filter },
+        { $facet: {
+            metadata: [ { $count: "total" } ],
+            data: [
+                { $sort: sortQuery || { createdAt: -1 } },
+                { $skip: skip },
+                { $limit: limit || 50 },
+                { $project: { "variants.purchaseHistory": 0, "variants.returnHistory": 0 } }
+            ]
+        }}
+    ]);
+
+    const products = result[0].data;
+    const total = result[0].metadata[0]?.total || 0;
+
     const responseData = { success: true, count: products.length, total: total, data: products };
     await cacheUtils.setCachedData(cacheKey, responseData, CACHE_TTL);
     
