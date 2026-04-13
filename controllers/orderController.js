@@ -4,17 +4,7 @@ const orderService = require('../services/orderService');
 const checkoutService = require('../services/checkoutService'); 
 const catchAsync = require('../utils/catchAsync');
 const { sendCsvResponse } = require('../utils/csvUtils'); 
-
-// ==========================================
-// --- HELPER FUNCTIONS ---
-// ==========================================
-
-const handleOrderResponse = (reply, order, successMessage = null) => {
-    if (!order) return reply.status(404).send({ success: false, message: 'Order not found' });
-    const response = { success: true, data: order };
-    if (successMessage) response.message = successMessage;
-    return response;
-};
+const { handleOrderResponse } = require('../utils/responseUtils');
 
 // ==========================================
 // --- CONTROLLER EXPORTS ---
