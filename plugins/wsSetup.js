@@ -6,12 +6,19 @@ module.exports = function (fastify) {
     let redisPubWS = null;
     let redisSubWS = null;
 
-    // NEW: Abstracted Broadcast Helper
     const sendToClients = (messageObj) => {
         if (!fastify.websocketServer) return;
         const msgStr = JSON.stringify(messageObj);
         fastify.websocketServer.clients.forEach(function each(client) {
             if (client.readyState === 1) { 
+                
+                // OPTIMIZATION: Backpressure limit to prevent V8 Out-Of-Memory.
+                // Discards message for this client if their network buffer exceeds 512KB.
+                if (client.bufferedAmount > 1024 * 512) {
+                    fastify.log.warn(`Dropping WS frame for choking client.`);
+                    return; 
+                }
+
                 if (!messageObj.storeId || client.storeId === messageObj.storeId || client.isAdmin) {
                     client.send(msgStr);
                 }
