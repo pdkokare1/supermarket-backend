@@ -4,6 +4,7 @@ const Customer = require('../models/Customer');
 const Order = require('../models/Order');
 const AppError = require('../utils/AppError'); 
 const appEvents = require('../utils/eventEmitter'); 
+const cacheUtils = require('../utils/cacheUtils'); // NEW: Added cache utility
 
 // --- MOVED FROM CONTROLLER ---
 const formatCustomerForExport = (c) => ({
@@ -17,7 +18,12 @@ const formatCustomerForExport = (c) => ({
 });
 
 exports.getAggregatedCustomers = async () => {
-    return await Order.aggregate([
+    // OPTIMIZATION: Cache the heavy CRM aggregation for 1 hour to save DB CPU
+    const CACHE_KEY = 'crm:aggregated_customers';
+    const cachedData = await cacheUtils.getCachedData(CACHE_KEY);
+    if (cachedData) return cachedData;
+
+    const data = await Order.aggregate([
         { $match: { status: { $ne: 'Cancelled' } } },
         { $sort: { createdAt: 1 } }, 
         { 
@@ -33,6 +39,9 @@ exports.getAggregatedCustomers = async () => {
         { $sort: { lifetimeValue: -1 } },
         { $project: { _id: 0 } } 
     ]);
+
+    await cacheUtils.setCachedData(CACHE_KEY, data, 3600); // 3600 seconds = 1 hour
+    return data;
 };
 
 exports.getAllCustomers = async () => {
@@ -42,9 +51,18 @@ exports.getAllCustomers = async () => {
 };
 
 exports.getCustomersForExport = async () => {
-    // MODULARITY: Reusing the existing retrieval logic to ensure consistency
-    const customers = await exports.getAllCustomers();
-    return customers.map(formatCustomerForExport);
+    const exportData = [];
+    
+    // OPTIMIZATION: Memory safe cursor iteration prevents OOM crashes on large exports
+    const cursor = Customer.find()
+        .select('name phone loyaltyPoints isCreditEnabled creditLimit creditUsed createdAt')
+        .cursor();
+
+    for (let c = await cursor.next(); c != null; c = await cursor.next()) {
+        exportData.push(formatCustomerForExport(c));
+    }
+    
+    return exportData;
 };
 
 exports.getCustomerByPhone = async (phone) => {
