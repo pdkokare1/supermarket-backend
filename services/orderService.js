@@ -16,6 +16,18 @@ const appEvents = require('../utils/eventEmitter');
 // --- HELPER FUNCTIONS ---
 // ==========================================
 
+// OPTIMIZATION: Helper to publish across horizontal instances via Redis Pub/Sub
+const broadcastEvent = (eventName, payload) => {
+    // Retain native Node emitter for single-instance listeners
+    appEvents.emit(eventName, payload);
+    
+    // Broadcast to other Railway instances via Redis
+    const redis = cacheUtils.getClient();
+    if (redis) {
+        redis.publish('GAMUT_ORDER_EVENTS', JSON.stringify({ eventName, payload })).catch(() => {});
+    }
+};
+
 async function processPayLaterRefund(customerPhone, amount, session) {
     const custProfile = await Customer.findOne({ phone: customerPhone }).session(session);
     if (custProfile) {
@@ -60,7 +72,7 @@ exports.processPartialRefund = async (orderId, payload, user) => {
         await auditService.logEvent({ action: 'PARTIAL_REFUND', targetType: 'Order', targetId: order._id.toString(), username: user.username, userId: user.id, details: { refundedItem: productId, qty: qtyToRefund }, session });
         await clearOrderAnalyticsCache();
 
-        appEvents.emit('ORDER_REFUNDED', { orderId: order._id, storeId: order.storeId });
+        broadcastEvent('ORDER_REFUNDED', { orderId: order._id, storeId: order.storeId });
         
         return order;
     });
@@ -80,7 +92,7 @@ exports.processCancelOrder = async (orderId, reason, user) => {
         await auditService.logEvent({ action: 'CANCEL_ORDER', targetType: 'Order', targetId: order._id.toString(), username: user ? user.username : 'System', userId: user ? user.id : null, details: { reason: reason || 'Not provided', amountRefunded: order.totalAmount }, session });
         await clearOrderAnalyticsCache();
 
-        appEvents.emit('ORDER_STATUS_UPDATED', { orderId: order._id, status: 'Cancelled', storeId: order.storeId });
+        broadcastEvent('ORDER_STATUS_UPDATED', { orderId: order._id, status: 'Cancelled', storeId: order.storeId });
 
         return order;
     });
@@ -97,7 +109,6 @@ exports.getOrdersList = async (queryParams) => {
     const { limit, skip } = getPaginationOptions(queryParams);
 
     // OPTIMIZATION: Single-Pass Aggregation with Root Match
-    // By matching at the root level before $facet, we shrink the pipeline's memory footprint drastically.
     const result = await Order.aggregate([
         { $match: filter },
         { $facet: {
@@ -134,13 +145,13 @@ exports.getOrdersList = async (queryParams) => {
 
 exports.getAllOrdersForExport = async () => {
     const exportData = [];
-    // Memory Efficient: Use Cursor for large datasets to prevent V8 memory spikes
     const cursor = Order.find()
         .select('orderNumber createdAt customerName customerPhone totalAmount status paymentMethod deliveryType')
         .sort({ createdAt: -1 })
         .cursor();
 
-    for (let o = await cursor.next(); o != null; o = await cursor.next()) {
+    // OPTIMIZATION: Modern V8 Async Iterator for maximum memory efficiency on streams
+    for await (const o of cursor) {
         exportData.push({ 
             OrderID: o.orderNumber || o._id.toString(), 
             Date: new Date(o.createdAt).toLocaleString(), 
@@ -159,7 +170,7 @@ exports.getAllOrdersForExport = async () => {
 exports.assignDriverToOrder = async (orderId, driverName, driverPhone) => {
     const order = await Order.findByIdAndUpdate(orderId, { deliveryDriverName: driverName, driverPhone: driverPhone || '' }, { new: true });
     if (order) {
-        appEvents.emit('ORDER_UPDATED', { orderId: order._id, storeId: order.storeId });
+        broadcastEvent('ORDER_UPDATED', { orderId: order._id, storeId: order.storeId });
     }
     return order;
 };
@@ -167,7 +178,7 @@ exports.assignDriverToOrder = async (orderId, driverName, driverPhone) => {
 exports.updateOrderStatus = async (orderId, status) => {
     const order = await Order.findByIdAndUpdate(orderId, { status: status }, { new: true });
     if (order) {
-        appEvents.emit('ORDER_STATUS_UPDATED', { orderId: order._id, status: status, storeId: order.storeId });
+        broadcastEvent('ORDER_STATUS_UPDATED', { orderId: order._id, status: status, storeId: order.storeId });
     }
     return order;
 };
