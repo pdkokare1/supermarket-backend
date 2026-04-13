@@ -4,19 +4,11 @@ const mongoose = require('mongoose');
 const Order = require('../models/Order');
 const Customer = require('../models/Customer');
 const inventoryService = require('./inventoryService'); 
+const notificationService = require('./notificationService'); 
 const { withTransaction } = require('../utils/dbUtils');
 const AppError = require('../utils/AppError');
 const cacheUtils = require('../utils/cacheUtils');
 const appEvents = require('../utils/eventEmitter'); 
-
-function sendWhatsAppMessage(phone, msg) {
-    if (phone && phone.length >= 10 && process.env.CALLMEBOT_API_KEY && process.env.WA_PHONE_NUMBER) {
-        const waUrl = `https://api.callmebot.com/whatsapp.php?phone=${phone}&text=${encodeURIComponent(msg)}&apikey=${process.env.CALLMEBOT_API_KEY}`;
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 3000);
-        fetch(waUrl, { signal: controller.signal }).catch(() => {}).finally(() => clearTimeout(timeoutId)); 
-    }
-}
 
 async function generateOrderSequence(session) {
     const counter = await mongoose.model('OrderCounter').findByIdAndUpdate(
@@ -32,7 +24,7 @@ function validateAndApplyPayLater(custProfile, amount) {
         throw new AppError('Pay Later is not enabled for this account.', 400);
     }
     if ((custProfile.creditUsed + amount) > custProfile.creditLimit) {
-        throw new AppError(`Credit limit exceeded. Available credit: ₹${custProfile.creditLimit - custProfile.creditUsed}`, 400);
+        throw new AppError(`Credit limit exceeded. Available credit: Rs ${custProfile.creditLimit - custProfile.creditUsed}`, 400);
     }
     custProfile.creditUsed += amount;
 }
@@ -91,8 +83,8 @@ exports.processOnlineCheckout = async (payload) => {
 
     appEvents.emit('NEW_ORDER', { order: newOrder, storeId, source: 'Online' });
 
-    const msg = `DailyPick Order Received! 🛒\nOrder ID: ${newOrder.orderNumber}\nTotal: ₹${totalAmount}\nDelivery: ${scheduleTime || 'ASAP'}\nThanks for shopping!`;
-    sendWhatsAppMessage(customerPhone, msg);
+    const msg = `DailyPick Order Received! 🛒\nOrder ID: ${newOrder.orderNumber}\nTotal: Rs ${totalAmount}\nDelivery: ${scheduleTime || 'ASAP'}\nThanks for shopping!`;
+    notificationService.sendWhatsAppMessage(customerPhone, msg).catch(() => {}); // Fire and forget
 
     return newOrder;
 };
@@ -134,8 +126,8 @@ exports.processPosCheckout = async (payload) => {
     appEvents.emit('NEW_ORDER', { order: newOrder, storeId, source: 'POS' });
 
     const loyaltyMsg = pointsRedeemed > 0 ? ` Points Redeemed: ${pointsRedeemed}.` : '';
-    const msg = `Thank you for shopping at DailyPick! 🛒\nOrder: ${newOrder.orderNumber}\nTotal: ₹${totalAmount}\n${loyaltyMsg}\nVisit again!`;
-    sendWhatsAppMessage(customerPhone, msg);
+    const msg = `Thank you for shopping at DailyPick! 🛒\nOrder: ${newOrder.orderNumber}\nTotal: Rs ${totalAmount}\n${loyaltyMsg}\nVisit again!`;
+    notificationService.sendWhatsAppMessage(customerPhone, msg).catch(() => {}); // Fire and forget
 
     return newOrder;
 };
