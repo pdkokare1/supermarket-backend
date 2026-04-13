@@ -5,6 +5,7 @@ const Order = require('../models/Order');
 const AppError = require('../utils/AppError');
 const auditService = require('./auditService'); // Added for standardized logging
 const appEvents = require('../utils/eventEmitter'); // Added for event-driven updates
+const cacheUtils = require('../utils/cacheUtils'); // OPTIMIZATION: Added for heavy POS state caching
 
 exports.openShift = async (payload, user, logError) => {
     const { userName, startingFloat } = payload;
@@ -32,6 +33,9 @@ exports.openShift = async (payload, user, logError) => {
         logError
     });
 
+    // OPTIMIZATION: Invalidate stale shift cache
+    await cacheUtils.deleteKey('shift:current');
+
     // EVENT: Notify POS real-time system
     appEvents.emit('SHIFT_OPENED', { shiftId: newShift._id });
 
@@ -39,7 +43,16 @@ exports.openShift = async (payload, user, logError) => {
 };
 
 exports.getCurrentShift = async () => {
-    return await Shift.findOne({ status: 'Open' }).lean();
+    // OPTIMIZATION: Cache the open shift state. Extremely high-traffic POS endpoint.
+    const CACHE_KEY = 'shift:current';
+    let shift = await cacheUtils.getCachedData(CACHE_KEY);
+    
+    if (!shift) {
+        shift = await Shift.findOne({ status: 'Open' }).lean();
+        if (shift) await cacheUtils.setCachedData(CACHE_KEY, shift, 3600); // 1 hour TTL
+    }
+    
+    return shift;
 };
 
 exports.closeShift = async (payload, user, logError) => {
@@ -90,6 +103,9 @@ exports.closeShift = async (payload, user, logError) => {
         details: { expectedCash, actualCash: shift.actualCash, discrepancy },
         logError
     });
+
+    // OPTIMIZATION: Invalidate stale shift cache
+    await cacheUtils.deleteKey('shift:current');
 
     // EVENT: Notify POS real-time system
     appEvents.emit('SHIFT_CLOSED', { shiftId: shift._id });
