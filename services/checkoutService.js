@@ -61,6 +61,10 @@ exports.processOnlineCheckout = async (payload) => {
     const { customerName, customerPhone, deliveryAddress, items, totalAmount, deliveryType, scheduleTime, paymentMethod, notes, storeId } = payload;
     
     const newOrder = await withTransaction(async (session) => {
+        
+        // DEPRECATION CONSULTATION: 
+        // Read-then-write creates race conditions causing Duplicate Key crashes.
+        /*
         let custProfile = await Customer.findOne({ phone: customerPhone })
             .select('name phone loyaltyPoints creditUsed creditLimit isCreditEnabled')
             .session(session);
@@ -74,6 +78,20 @@ exports.processOnlineCheckout = async (payload) => {
             custProfile.name = customerName; 
         }
         await custProfile.save({ session });
+        */
+
+        // OPTIMIZED: Atomic Upsert to eliminate concurrency collisions
+        let custProfile = await Customer.findOneAndUpdate(
+            { phone: customerPhone },
+            { 
+                $setOnInsert: { phone: customerPhone, loyaltyPoints: 0 },
+                $set: { name: customerName } 
+            },
+            { new: true, upsert: true, session }
+        ).select('name phone loyaltyPoints creditUsed creditLimit isCreditEnabled');
+
+        if (paymentMethod === 'Pay Later') validateAndApplyPayLater(custProfile, totalAmount);
+        await custProfile.save({ session }); 
 
         appEvents.emit('CUSTOMER_UPDATED', { phone: custProfile.phone });
 
@@ -84,7 +102,7 @@ exports.processOnlineCheckout = async (payload) => {
     appEvents.emit('NEW_ORDER', { order: newOrder, storeId, source: 'Online' });
 
     const msg = `DailyPick Order Received! 🛒\nOrder ID: ${newOrder.orderNumber}\nTotal: Rs ${totalAmount}\nDelivery: ${scheduleTime || 'ASAP'}\nThanks for shopping!`;
-    notificationService.sendWhatsAppMessage(customerPhone, msg).catch(() => {}); // Fire and forget
+    notificationService.sendWhatsAppMessage(customerPhone, msg).catch(() => {}); 
 
     return newOrder;
 };
@@ -96,27 +114,24 @@ exports.processPosCheckout = async (payload) => {
         let finalCustomerName = 'Walk-in Guest';
 
         if (customerPhone) {
-            let custProfile = await Customer.findOne({ phone: customerPhone })
-                .select('name phone loyaltyPoints creditUsed creditLimit isCreditEnabled')
-                .session(session);
+            // OPTIMIZED: Applied the same atomic protection to POS checkout
+            let custProfile = await Customer.findOneAndUpdate(
+                { phone: customerPhone },
+                { $setOnInsert: { phone: customerPhone, name: 'In-Store Customer', loyaltyPoints: 0 } },
+                { new: true, upsert: true, session }
+            ).select('name phone loyaltyPoints creditUsed creditLimit isCreditEnabled');
                 
-            if (custProfile) {
-                finalCustomerName = custProfile.name;
-                if (pointsRedeemed && pointsRedeemed > 0) custProfile.loyaltyPoints = Math.max(0, (custProfile.loyaltyPoints || 0) - pointsRedeemed);
-                custProfile.loyaltyPoints = (custProfile.loyaltyPoints || 0) + Math.floor(totalAmount / 100);
-                if (paymentMethod === 'Pay Later') validateAndApplyPayLater(custProfile, totalAmount);
-                await custProfile.save({ session });
-                
-                appEvents.emit('CUSTOMER_UPDATED', { phone: custProfile.phone });
-            } else {
-                if (paymentMethod === 'Pay Later') throw new AppError('Pay Later is not enabled for this new account.', 400);
-                const earnedPoints = Math.floor(totalAmount / 100);
-                custProfile = new Customer({ phone: customerPhone, name: 'In-Store Customer', loyaltyPoints: earnedPoints });
-                await custProfile.save({ session });
-                finalCustomerName = 'In-Store Customer';
-                
-                appEvents.emit('CUSTOMER_UPDATED', { phone: custProfile.phone });
+            finalCustomerName = custProfile.name;
+            
+            if (pointsRedeemed && pointsRedeemed > 0) {
+                custProfile.loyaltyPoints = Math.max(0, (custProfile.loyaltyPoints || 0) - pointsRedeemed);
             }
+            custProfile.loyaltyPoints = (custProfile.loyaltyPoints || 0) + Math.floor(totalAmount / 100);
+            
+            if (paymentMethod === 'Pay Later') validateAndApplyPayLater(custProfile, totalAmount);
+            await custProfile.save({ session });
+            
+            appEvents.emit('CUSTOMER_UPDATED', { phone: custProfile.phone });
         }
 
         const orderData = { registerId: registerId || null, notes: notes || '', customerName: finalCustomerName, customerPhone: customerPhone || '', deliveryAddress: 'In-Store Purchase', totalAmount, taxAmount: taxAmount || 0, discountAmount: discountAmount || 0, paymentMethod, splitDetails: splitDetails || { cash: 0, upi: 0 }, deliveryType: 'Instant', status: 'Completed' };
@@ -127,7 +142,7 @@ exports.processPosCheckout = async (payload) => {
 
     const loyaltyMsg = pointsRedeemed > 0 ? ` Points Redeemed: ${pointsRedeemed}.` : '';
     const msg = `Thank you for shopping at DailyPick! 🛒\nOrder: ${newOrder.orderNumber}\nTotal: Rs ${totalAmount}\n${loyaltyMsg}\nVisit again!`;
-    notificationService.sendWhatsAppMessage(customerPhone, msg).catch(() => {}); // Fire and forget
+    notificationService.sendWhatsAppMessage(customerPhone, msg).catch(() => {}); 
 
     return newOrder;
 };
