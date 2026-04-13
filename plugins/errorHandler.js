@@ -15,11 +15,15 @@ module.exports = function (fastify) {
             error.message = 'Duplicate field value entered. Please use another value.';
         }
 
+        // OPTIMIZATION: Upgraded APM payload for enterprise tracing
         const apmLog = {
             event: 'CRITICAL_ERROR',
             timestamp: new Date().toISOString(),
+            reqId: request.id || 'Unknown',
             method: request.method,
             url: request.url,
+            query: request.query || {},
+            params: request.params || {},
             userId: request.user ? request.user.id : 'Unauthenticated',
             errorName: error.name,
             errorMessage: error.message,
@@ -31,7 +35,7 @@ module.exports = function (fastify) {
             fastify.log.error(`[APM MONITOR] ${JSON.stringify(apmLog)}`);
             if (process.env.NODE_ENV !== 'production') fastify.log.error(error); 
         } else {
-            fastify.log.warn(`[CLIENT ERROR] ${error.statusCode} - ${error.message} - ${request.url}`);
+            fastify.log.warn(`[CLIENT ERROR] ${error.statusCode} - ${error.message} - [REQ_ID: ${request.id}]`);
         }
 
         reply.status(error.statusCode || 500).send({
