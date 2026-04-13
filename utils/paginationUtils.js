@@ -7,9 +7,15 @@
 const getPaginationOptions = (query) => {
     const page = parseInt(query.page, 10) || 1;
     const limit = parseInt(query.limit, 10) || 0; // 0 indicates no limit (fetch all)
+    
+    // DEPRECATION CONSULTATION: Standard skip/limit becomes O(N) slow on large DBs.
+    // We keep it for backwards compatibility, but enterprise queries should use cursors.
     const skip = (page - 1) * limit;
 
-    return { page, limit, skip };
+    // OPTIMIZATION: Added Cursor extraction for O(1) high-performance pagination
+    const cursor = query.cursor || null;
+
+    return { page, limit, skip, cursor };
 };
 
 const getSortQuery = (sortType, defaultSort = { createdAt: -1 }) => {
