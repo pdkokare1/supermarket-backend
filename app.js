@@ -2,6 +2,7 @@
 'use strict';
 
 const Fastify = require('fastify');
+const fp = require('fastify-plugin'); // OPTIMIZATION: Added for proper plugin encapsulation
 const initRedis = require('./config/redis'); 
 const cacheUtils = require('./utils/cacheUtils');
 const mongoose = require('mongoose'); // OPTIMIZATION: Needed for graceful database shutdown
@@ -16,7 +17,11 @@ const createApp = () => {
     
     // SYNC: Use the same Redis client for caching to save memory.
     cacheUtils.setClient(redisClient);
-    fastify.decorate('redis', redisClient);
+    
+    // OPTIMIZATION: Wrapped decorator in fastify-plugin to ensure global scope across all encapsulated routes/plugins
+    fastify.register(fp(async (instance, opts) => {
+        instance.decorate('redis', redisClient);
+    }));
 
     // --- Modularized Setups ---
     require('./plugins/securitySetup')(fastify); 
@@ -33,11 +38,15 @@ const createApp = () => {
     // OPTIMIZATION: Graceful Shutdown Hook to prevent zombie DB connections during Railway/Vercel redeployments
     fastify.addHook('onClose', async (instance, done) => {
         instance.log.info('Server shutting down. Closing database connections...');
-        if (mongoose.connection.readyState === 1) {
-            await mongoose.connection.close();
-        }
-        if (redisClient) {
-            await redisClient.quit();
+        try {
+            if (mongoose.connection.readyState === 1) {
+                await mongoose.connection.close();
+            }
+            if (redisClient) {
+                await redisClient.quit();
+            }
+        } catch (err) {
+            instance.log.error('Error during shutdown:', err);
         }
         done();
     });
