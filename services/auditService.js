@@ -13,15 +13,22 @@ exports.getAuditLogs = async (queryParams) => {
     if (queryParams.username) filter.username = queryParams.username;
     if (queryParams.action) filter.action = queryParams.action;
 
-    // By enforcing .select() and .lean(), we drastically drop the backend RAM needed to process thousands of audit logs
-    const logs = await AuditLog.find(filter)
-        .select('action targetType targetId username createdAt details')
-        .sort({ createdAt: -1 })
-        .skip(skip)
-        .limit(limit)
-        .lean();
+    // OPTIMIZATION: Single-pass database execution for highly scalable log fetching.
+    const result = await AuditLog.aggregate([
+        { $match: filter },
+        { $facet: {
+            metadata: [ { $count: "total" } ],
+            data: [
+                { $sort: { createdAt: -1 } },
+                { $skip: skip },
+                { $limit: limit },
+                { $project: { action: 1, targetType: 1, targetId: 1, username: 1, createdAt: 1, details: 1 } }
+            ]
+        }}
+    ]);
 
-    const total = await AuditLog.countDocuments(filter);
+    const logs = result[0].data;
+    const total = result[0].metadata[0]?.total || 0;
 
     return {
         success: true,
