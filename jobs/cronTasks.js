@@ -204,14 +204,14 @@ async function runEODBackup(fastify) {
         const dateString = new Date().toLocaleDateString();
         let reportText = `📈 *DailyPick EOD Report*\nDate: ${dateString}\n\n` +
                          `*Total Orders:* ${f.totalOrderCount}\n` +
-                         `*Gross Revenue:* ₹${f.totalRevenue.toFixed(2)}\n\n` +
+                         `*Gross Revenue:* Rs ${f.totalRevenue.toFixed(2)}\n\n` +
                          `*Breakdown:*\n` +
-                         `💵 Cash: ₹${f.cash.toFixed(2)}\n` +
-                         `📱 UPI: ₹${f.upi.toFixed(2)}\n` +
-                         `⏳ Pay Later: ₹${f.payLater.toFixed(2)}\n\n` +
+                         `💵 Cash: Rs ${f.cash.toFixed(2)}\n` +
+                         `📱 UPI: Rs ${f.upi.toFixed(2)}\n` +
+                         `⏳ Pay Later: Rs ${f.payLater.toFixed(2)}\n\n` +
                          `*Expenses & Profit:*\n` +
-                         `📉 Total Expenses: ₹${f.totalExpenses.toFixed(2)}\n` +
-                         `💰 Net Profit: ₹${f.netProfit.toFixed(2)}\n\n`;
+                         `📉 Total Expenses: Rs ${f.totalExpenses.toFixed(2)}\n` +
+                         `💰 Net Profit: Rs ${f.netProfit.toFixed(2)}\n\n`;
 
         const datePrefix = new Date().toISOString().split('T')[0];
         let emailAppend = '';
@@ -247,7 +247,7 @@ async function runEODBackup(fastify) {
             if (ordersPath && fs.existsSync(ordersPath)) fs.unlinkSync(ordersPath);
         }
 
-        const emailSent = await notificationService.sendAdminEmail(fastify, `EOD Report & Backup: ₹${f.netProfit.toFixed(2)} Net Profit`, null, reportText + emailAppend);
+        const emailSent = await notificationService.sendAdminEmail(fastify, `EOD Report & Backup: Rs ${f.netProfit.toFixed(2)} Net Profit`, null, reportText + emailAppend);
         if (emailSent) fastify.log.info('11:59 PM EOD Email sent successfully.');
 
         const waSent = await notificationService.sendAdminWhatsApp(fastify, reportText + `Great work today! 🚀`);
