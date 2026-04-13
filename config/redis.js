@@ -11,7 +11,11 @@ const initRedis = () => {
                     const delay = Math.min(times * 50, 2000);
                     return delay;
                 },
-                maxRetriesPerRequest: 3 // Prevent infinite hanging if Redis goes down
+                maxRetriesPerRequest: 3, // Prevent infinite hanging if Redis goes down
+                
+                // OPTIMIZATION: Fail-fast offline queue. Prevents API requests from hanging 
+                // in memory indefinitely if the app loses connection to the Redis cloud instance.
+                enableOfflineQueue: false 
             });
 
             redisClient.on('connect', () => console.log('[SERVER] Redis connected successfully.'));
