@@ -4,6 +4,7 @@
 const Fastify = require('fastify');
 const initRedis = require('./config/redis'); 
 const cacheUtils = require('./utils/cacheUtils');
+const mongoose = require('mongoose'); // OPTIMIZATION: Needed for graceful database shutdown
 
 const createApp = () => {
     const fastify = Fastify({
@@ -28,6 +29,18 @@ const createApp = () => {
 
     fastify.register(require('./routes/systemRoutes'));
     fastify.register(require('./routes')); 
+
+    // OPTIMIZATION: Graceful Shutdown Hook to prevent zombie DB connections during Railway/Vercel redeployments
+    fastify.addHook('onClose', async (instance, done) => {
+        instance.log.info('Server shutting down. Closing database connections...');
+        if (mongoose.connection.readyState === 1) {
+            await mongoose.connection.close();
+        }
+        if (redisClient) {
+            await redisClient.quit();
+        }
+        done();
+    });
 
     return { fastify, redisClient };
 };
