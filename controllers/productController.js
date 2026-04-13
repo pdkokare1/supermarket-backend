@@ -6,7 +6,15 @@ const productService = require('../services/productService');
 const catchAsync = require('../utils/catchAsync');
 
 exports.getProducts = catchAsync(async (request, reply) => {
-    return await productService.getPaginatedProducts(request.query);
+    const productData = await productService.getPaginatedProducts(request.query);
+    // OPTIMIZATION: Standardized response wrapper.
+    return { 
+        success: true, 
+        message: productData.message || 'Products fetched successfully', 
+        count: productData.count,
+        total: productData.total,
+        data: productData.data 
+    };
 }, 'fetching products');
 
 exports.createProduct = catchAsync(async (request, reply) => {
