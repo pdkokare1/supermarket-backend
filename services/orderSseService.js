@@ -32,17 +32,24 @@ try {
     console.error("Redis Initialization Error in SSE Service:", e);
 }
 
-// OPTIMIZED: Strict Garbage Collection heartbeat for SSE to prevent Zombie Connections from leaking server memory.
 setInterval(() => {
     adminConnections = adminConnections.filter(conn => {
         if (conn.destroyed || !conn.writable) {
-            conn.destroy(); // Force release OS resource
+            
+            // DEPRECATION CONSULTATION: Original code just called conn.destroy()
+            /* conn.destroy(); */
+
+            // OPTIMIZATION: Clear dangling listeners before destruction to ensure 
+            // proper Node.js Garbage Collection for memory leak prevention.
+            conn.removeAllListeners();
+            conn.destroy(); 
             return false;
         }
         try {
             conn.write(':\n\n');
             return true;
         } catch (e) {
+            conn.removeAllListeners();
             conn.destroy();
             return false; 
         }
@@ -51,6 +58,7 @@ setInterval(() => {
     for (const orderId in customerConnections) {
         customerConnections[orderId] = customerConnections[orderId].filter(conn => {
             if (conn.destroyed || !conn.writable) {
+                conn.removeAllListeners();
                 conn.destroy();
                 return false;
             }
@@ -58,6 +66,7 @@ setInterval(() => {
                 conn.write(':\n\n');
                 return true;
             } catch (e) {
+                conn.removeAllListeners();
                 conn.destroy();
                 return false;
             }
@@ -99,7 +108,6 @@ const publishEvent = (target, payload, additionalData = {}) => {
 
 const setSSEHeaders = (request, reply) => {
     reply.hijack(); 
-    // OPTIMIZED: Disable implicit Node.js socket timeouts for SSE Streams to prevent 2-minute disconnect drops
     if (reply.raw.socket) reply.raw.socket.setTimeout(0); 
     
     reply.raw.writeHead(200, {
@@ -111,7 +119,6 @@ const setSSEHeaders = (request, reply) => {
     });
 };
 
-// --- ABSTRACTION HELPERS ---
 const initializeAdminStream = (request, reply) => {
     setSSEHeaders(request, reply);
     reply.raw.write('data: {"message": "Admin Stream Connected"}\n\n');
