@@ -24,7 +24,6 @@ cloudinary.config({
     api_secret: process.env.CLOUDINARY_API_SECRET
 });
 
-// OPTIMIZED: Schema definition moved outside to prevent OverwriteModelError and memory leaks
 const lockSchema = new mongoose.Schema({ jobName: { type: String, unique: true }, lockedAt: Date });
 const CronLock = mongoose.models.CronLock || mongoose.model('CronLock', lockSchema);
 
@@ -66,15 +65,32 @@ const createBackupFile = async (model, filename, query = {}) => {
     const cursor = model.find(query).lean().cursor();
     
     let isFirst = true;
-    let counter = 0;
     
     for await (const doc of cursor) {
-        if (!isFirst) gzipStream.write(',\n');
+        if (!isFirst) {
+            const canWriteComma = gzipStream.write(',\n');
+            if (!canWriteComma) await new Promise(resolve => gzipStream.once('drain', resolve));
+        }
+        
+        // DEPRECATION CONSULTATION:
+        // Ignoring backpressure causes silent Out-Of-Memory crashes.
+        /*
         gzipStream.write(JSON.stringify(doc));
         isFirst = false;
-        
         counter++;
         if (counter % 100 === 0) {
+            await new Promise(resolve => setImmediate(resolve));
+        }
+        */
+
+        // OPTIMIZED: Strict memory backpressure handling
+        const canWrite = gzipStream.write(JSON.stringify(doc));
+        isFirst = false;
+        
+        if (!canWrite) {
+            await new Promise(resolve => gzipStream.once('drain', resolve));
+        } else {
+            // Still yield to event loop occasionally if buffer is empty but stream is busy
             await new Promise(resolve => setImmediate(resolve));
         }
     }
