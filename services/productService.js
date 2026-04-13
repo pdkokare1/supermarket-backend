@@ -10,14 +10,9 @@ const { getPaginationOptions, getSortQuery } = require('../utils/paginationUtils
 // CONFIGURATION: Centralized Cache TTL (1 hour)
 const CACHE_TTL = 3600;
 
-const invalidateProductCache = async () => {
-    await cacheUtils.invalidateByPattern('products:*');
-};
-
-// MODULARITY: Helper to handle all post-update side effects in one place
+// MODULARITY: Strictly event-driven. Redis invalidation is deferred to event listeners.
 const triggerProductUpdates = async (productId) => {
-    await invalidateProductCache();
-    appEvents.emit('PRODUCT_UPDATED', { productId });
+    appEvents.emit('PRODUCT_UPDATED', { productId, pattern: 'products:*' });
 };
 
 exports.getPaginatedProducts = async (queryParams) => {
@@ -46,7 +41,7 @@ exports.getPaginatedProducts = async (queryParams) => {
     const products = result[0].data;
     const total = result[0].metadata[0]?.total || 0;
 
-    const responseData = { success: true, count: products.length, total: total, data: products };
+    const responseData = { success: true, message: 'Products fetched successfully', count: products.length, total: total, data: products };
     await cacheUtils.setCachedData(cacheKey, responseData, CACHE_TTL);
     
     return responseData;
