@@ -2,16 +2,42 @@
 'use strict';
 
 module.exports = function(fastify) {
-    // Efficiency: Pre-split origin string once during initialization
+    
+    // DEPRECATION CONSULTATION: Static comma-separated list doesn't scale well with dynamic Vercel preview URLs.
+    /*
     const allowedOrigins = process.env.ALLOWED_ORIGINS 
         ? process.env.ALLOWED_ORIGINS.split(',') 
         : true; 
+    */
+
+    // OPTIMIZATION: Enterprise CORS allowing the production Hostinger URL + Vercel dynamic previews
+    const dynamicOriginAuth = (origin, cb) => {
+        // Allow requests with no origin (e.g., mobile apps, curl, server-to-server)
+        if (!origin) return cb(null, true);
+        
+        // Fallback for local development
+        if (process.env.NODE_ENV !== 'production') return cb(null, true);
+
+        const envOrigins = process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : [];
+        
+        // Authorize explicitly whitelisted origins
+        if (envOrigins.includes(origin)) return cb(null, true);
+
+        // Authorize any dynamic Vercel frontend branch previews
+        if (origin.endsWith('.vercel.app')) return cb(null, true);
+        
+        // Authorize custom Hostinger URLs
+        if (origin.includes('hostinger')) return cb(null, true);
+
+        // Reject all other unauthorized domains
+        cb(new Error("Origin not allowed by strict CORS policy"), false);
+    };
 
     fastify.register(require('@fastify/cors'), { 
-        origin: allowedOrigins,
+        origin: dynamicOriginAuth,
         methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
         credentials: true,
-        allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'Origin', 'X-Requested-With'],
+        allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'Origin', 'X-Requested-With', 'x-api-key'],
         optionsSuccessStatus: 204 
     });
 
@@ -24,6 +50,18 @@ module.exports = function(fastify) {
     fastify.register(require('@fastify/rate-limit'), {
         max: 100,
         timeWindow: '1 minute',
+        // OPTIMIZATION: DDOS Protection - Correctly resolve IPs behind Railway load balancers
+        keyGenerator: function (request) {
+            return request.headers['x-forwarded-for'] || request.ip;
+        },
+        // Global error message customization for rate limits
+        errorResponseBuilder: function (request, context) {
+            return {
+                statusCode: 429,
+                error: 'Too Many Requests',
+                message: `Rate limit exceeded. Try again in ${context.after}.`
+            };
+        },
         ...(fastify.redis && { redis: fastify.redis })
     });
 };
