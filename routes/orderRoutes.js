@@ -17,7 +17,8 @@ async function orderRoutes(fastify, options) {
     fastify.get('/api/orders/stream/customer/:id', { preHandler: [fastify.authenticate] }, sseController.streamCustomer);
 
     // --- Checkouts ---
-    fastify.post('/api/orders/external', { ...schemas.externalCheckoutSchema }, orderController.externalCheckout);
+    // OPTIMIZATION: Applied verifyApiKey middleware for early request rejection
+    fastify.post('/api/orders/external', { preHandler: [fastify.verifyApiKey], ...schemas.externalCheckoutSchema }, orderController.externalCheckout);
     fastify.post('/api/orders', { preHandler: [fastify.authenticate], ...schemas.onlineCheckoutSchema }, orderController.onlineCheckout);
     fastify.post('/api/orders/pos', { preHandler: [fastify.authenticate, fastify.verifyAdmin], ...schemas.posCheckoutSchema }, orderController.posCheckout);
 
