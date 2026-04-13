@@ -33,5 +33,12 @@ exports.getExpenses = async (dateStr) => {
     let filter = {};
     if (dateStr) filter.dateStr = dateStr;
     
-    return await Expense.find(filter).sort({ createdAt: -1 }).lean();
+    let query = Expense.find(filter).sort({ createdAt: -1 });
+    
+    // OPTIMIZATION: Safety limit to prevent memory bloat on unfettered historical requests
+    if (!dateStr) {
+        query = query.limit(1000);
+    }
+    
+    return await query.lean();
 };
