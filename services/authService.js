@@ -69,9 +69,24 @@ exports.authenticateUser = async (username, pin, ip, server) => {
     if (isHashed) {
         isValid = await securityService.comparePassword(pin, user.pin);
     } else {
+        // DEPRECATION CONSULTATION: Plain text string comparison is vulnerable to timing attacks
+        /*
         if (user.pin === pin) {
             isValid = true;
             user.pin = await securityService.hashPassword(pin);
+        }
+        */
+
+        // OPTIMIZATION: Timing-safe buffer comparison to prevent character-by-character brute forcing
+        try {
+            const bufUserPin = Buffer.from(user.pin);
+            const bufPin = Buffer.from(pin);
+            if (bufUserPin.length === bufPin.length && crypto.timingSafeEqual(bufUserPin, bufPin)) {
+                isValid = true;
+                user.pin = await securityService.hashPassword(pin);
+            }
+        } catch (e) {
+            isValid = false; // Buffer lengths mismatched or invalid encoding
         }
     }
 
@@ -116,6 +131,5 @@ exports.revokeSession = async (userId, server) => {
 };
 
 exports.getUserById = async (id) => {
-    // OPTIMIZATION: Natively faster lookup method
     return await User.findById(id);
 };
