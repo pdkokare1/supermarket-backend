@@ -9,6 +9,18 @@ const zlib = require('zlib');
 
 module.exports = function(fastify) {
     cron.schedule('0 3 * * 0', async () => {
+        // OPTIMIZATION: Distributed Lock to prevent duplicate backups on horizontal scaling
+        if (fastify.redis) {
+            const lockKey = 'lock:cron:weekly_backup';
+            // Attempt to set a lock for 1 hour (3600 seconds). NX ensures only one instance can set it.
+            const acquiredLock = await fastify.redis.set(lockKey, 'locked', 'EX', 3600, 'NX');
+            
+            if (!acquiredLock) {
+                fastify.log.info('[SECURITY] Backup already handled by another instance. Skipping duplicate execution.');
+                return;
+            }
+        }
+
         if (!process.env.BACKUP_EMAIL || !process.env.SMTP_USER || !process.env.SMTP_PASS) {
             fastify.log.warn('[SECURITY] Backup Cron: Email configuration missing. Skipping automated backup.');
             return;
