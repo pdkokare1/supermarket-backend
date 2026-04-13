@@ -9,6 +9,7 @@ const auditService = require('./auditService');
 const inventoryService = require('./inventoryService'); 
 const cacheUtils = require('../utils/cacheUtils');
 const { getPaginationOptions } = require('../utils/paginationUtils');
+const { getFilterDates } = require('../utils/dateUtils');
 const appEvents = require('../utils/eventEmitter'); 
 
 // ==========================================
@@ -37,7 +38,6 @@ exports.processPartialRefund = async (orderId, payload, user) => {
         const order = await Order.findById(orderId).session(session);
         if (!order) throw new AppError('Order not found', 404);
 
-        // Uses modularized inventory service
         await inventoryService.restoreInventory([{ productId, variantId, qty: qtyToRefund }], order.storeId, session);
 
         order.items = order.items
@@ -74,7 +74,6 @@ exports.processCancelOrder = async (orderId, reason, user) => {
         order.status = 'Cancelled';
         if (order.paymentMethod === 'Pay Later') await processPayLaterRefund(order.customerPhone, order.totalAmount, session);
 
-        // Uses modularized inventory service
         await inventoryService.restoreInventory(order.items, order.storeId, session);
         await order.save({ session });
         
@@ -92,31 +91,34 @@ exports.getOrdersList = async (queryParams) => {
     if (queryParams.tab === 'Instant') filter.deliveryType = { $ne: 'Routine' };
     if (queryParams.tab === 'Routine') filter.deliveryType = 'Routine';
 
-    const today = new Date(); today.setHours(0, 0, 0, 0);
-    const yesterday = new Date(today); yesterday.setDate(yesterday.getDate() - 1);
-    const sevenDaysAgo = new Date(today); sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
-
-    if (queryParams.dateFilter === 'Today') filter.createdAt = { $gte: today };
-    else if (queryParams.dateFilter === 'Yesterday') filter.createdAt = { $gte: yesterday, $lt: today };
-    else if (queryParams.dateFilter === '7Days') filter.createdAt = { $gte: sevenDaysAgo };
+    const dateFilter = getFilterDates(queryParams.dateFilter);
+    if (dateFilter) filter.createdAt = dateFilter;
 
     const { limit, skip } = getPaginationOptions(queryParams);
 
-    let query = Order.find(filter).sort({ createdAt: -1 });
-    if (limit > 0) query = query.skip(skip).limit(limit);
-
-    const statsPromise = Order.aggregate([
-        { $match: { status: { $in: ['Order Placed', 'Packing'] } } },
-        { $group: { _id: null, pendingCount: { $sum: 1 }, pendingRevenue: { $sum: "$totalAmount" } } }
+    // Optimized Single-Pass Aggregation
+    const result = await Order.aggregate([
+        { $facet: {
+            metadata: [
+                { $match: filter },
+                { $count: "total" }
+            ],
+            data: [
+                { $match: filter },
+                { $sort: { createdAt: -1 } },
+                { $skip: skip },
+                { $limit: limit || 50 }
+            ],
+            stats: [
+                { $match: { status: { $in: ['Order Placed', 'Packing'] } } },
+                { $group: { _id: null, pendingCount: { $sum: 1 }, pendingRevenue: { $sum: "$totalAmount" } } }
+            ]
+        }}
     ]);
 
-    const [orders, total, pendingStatsArray] = await Promise.all([
-        query.lean(), 
-        Order.countDocuments(filter), 
-        statsPromise
-    ]);
-    
-    const pendingStats = pendingStatsArray[0] || { pendingCount: 0, pendingRevenue: 0 };
+    const orders = result[0].data;
+    const total = result[0].metadata[0]?.total || 0;
+    const pendingStats = result[0].stats[0] || { pendingCount: 0, pendingRevenue: 0 };
 
     return { 
         success: true, 
@@ -131,21 +133,27 @@ exports.getOrdersList = async (queryParams) => {
 };
 
 exports.getAllOrdersForExport = async () => {
-    const orders = await Order.find()
+    const exportData = [];
+    // Memory Efficient: Use Cursor for large datasets
+    const cursor = Order.find()
         .select('orderNumber createdAt customerName customerPhone totalAmount status paymentMethod deliveryType')
         .sort({ createdAt: -1 })
-        .lean();
+        .cursor();
+
+    for (let o = await cursor.next(); o != null; o = await cursor.next()) {
+        exportData.push({ 
+            OrderID: o.orderNumber || o._id.toString(), 
+            Date: new Date(o.createdAt).toLocaleString(), 
+            CustomerName: o.customerName, 
+            Phone: o.customerPhone, 
+            TotalAmount: o.totalAmount, 
+            Status: o.status, 
+            PaymentMethod: o.paymentMethod, 
+            DeliveryType: o.deliveryType 
+        });
+    }
         
-    return orders.map(o => ({ 
-        OrderID: o.orderNumber || o._id.toString(), 
-        Date: new Date(o.createdAt).toLocaleString(), 
-        CustomerName: o.customerName, 
-        Phone: o.customerPhone, 
-        TotalAmount: o.totalAmount, 
-        Status: o.status, 
-        PaymentMethod: o.paymentMethod, 
-        DeliveryType: o.deliveryType 
-    }));
+    return exportData;
 };
 
 exports.assignDriverToOrder = async (orderId, driverName, driverPhone) => {
