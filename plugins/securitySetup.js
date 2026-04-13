@@ -52,7 +52,9 @@ module.exports = function(fastify) {
         timeWindow: '1 minute',
         // OPTIMIZATION: DDOS Protection - Correctly resolve IPs behind Railway load balancers
         keyGenerator: function (request) {
-            return request.headers['x-forwarded-for'] || request.ip;
+            // Because trustProxy is true in app.js, Fastify safely parses the correct client IP.
+            // Using request.headers directly here can fail if Railway sends an array of proxies.
+            return request.ip;
         },
         // Global error message customization for rate limits
         errorResponseBuilder: function (request, context) {
