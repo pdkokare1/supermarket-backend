@@ -10,9 +10,17 @@ const connectDB = async (fastify) => {
             await mongoose.connect(process.env.MONGO_URI, {
                 // OPTIMIZATION: Configurable pool size for clustered environments
                 maxPoolSize: parseInt(process.env.MONGO_MAX_POOL_SIZE, 10) || 50,
+                // OPTIMIZATION: Maintain a minimum baseline of connections to prevent cold-start latency spikes
+                minPoolSize: parseInt(process.env.MONGO_MIN_POOL_SIZE, 10) || 10, 
                 // OPTIMIZATION: Fail fast (5s) to trigger the retry logic instead of hanging
                 serverSelectionTimeoutMS: 5000 
             });
+
+            // OPTIMIZATION: Better Observability for dropped connections
+            mongoose.connection.on('disconnected', () => {
+                if (fastify && fastify.log) fastify.log.warn('MongoDB connection dropped. Awaiting automatic reconnection...');
+            });
+
             if (fastify && fastify.log) {
                 fastify.log.info(`Successfully connected to MongoDB Atlas by Process ${process.pid}`);
             } else {
