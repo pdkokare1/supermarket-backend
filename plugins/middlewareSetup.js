@@ -1,9 +1,23 @@
 /* plugins/middlewareSetup.js */
 
 const auditService = require('../services/auditService');
+const crypto = require('crypto'); // OPTIMIZATION: Natively generate correlation IDs
 
 module.exports = function(fastify) {
     
+    // OPTIMIZATION: Cloud Observability & Correlation Tracing
+    fastify.addHook('onRequest', async (request, reply) => {
+        // Generate or forward tracing ID
+        const correlationId = request.headers['x-correlation-id'] || crypto.randomUUID();
+        request.correlationId = correlationId;
+        
+        // Attach to the logger context so it automatically appears in all pino logs
+        request.log = request.log.child({ correlationId });
+        
+        // Return to client so frontend errors can be directly mapped to backend logs
+        reply.header('x-correlation-id', correlationId);
+    });
+
     // OPTIMIZATION: Non-Blocking Compliance Logging Hook
     // Flushes the audit batch asynchronously ONLY after the response is securely sent to the user
     fastify.addHook('onResponse', async (request, reply) => {
@@ -20,7 +34,7 @@ module.exports = function(fastify) {
         origin: allowedOrigins,
         methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
         credentials: true,
-        allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'Origin', 'X-Requested-With'],
+        allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'Origin', 'X-Requested-With', 'x-api-key', 'x-correlation-id'],
         optionsSuccessStatus: 204 
     });
 
