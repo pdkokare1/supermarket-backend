@@ -8,12 +8,16 @@ module.exports = function (fastify) {
         process.exit(1);
     }
 
+    // ENTERPRISE OPTIMIZATION: Enforcing short-lived TTL mapping directly onto the payload signing
     fastify.register(require('@fastify/jwt'), {
         secret: {
             private: process.env.JWT_PRIVATE_KEY.replace(/\\n/g, '\n'),
             public: process.env.JWT_PUBLIC_KEY.replace(/\\n/g, '\n')
         },
-        sign: { algorithm: 'RS256' }
+        sign: { 
+            algorithm: 'RS256',
+            expiresIn: '15m' // Hardening primary access token lifespan to mitigate XSS interception
+        }
     });
 
     fastify.decorate("authenticate", async function (request, reply) {
@@ -26,6 +30,8 @@ module.exports = function (fastify) {
             // OPTIMIZATION: .lean() skips Mongoose object hydration, making this critical path 5x faster.
             const user = await User.findById(decoded.id).select('tokenVersion isActive').lean();
             
+            // The tokenVersion check is what guarantees that logging out (which increments the DB version) 
+            // instantly invalidates all currently active short-lived access tokens.
             if (!user || !user.isActive || user.tokenVersion !== decoded.tokenVersion) {
                 throw new Error('Token revoked or user inactive');
             }
