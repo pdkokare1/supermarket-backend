@@ -3,10 +3,24 @@
 
 const inventoryService = require('../services/inventoryService');
 const productService = require('../services/productService');
+const productCacheService = require('../services/productCacheService');
 const catchAsync = require('../utils/catchAsync');
 
 exports.getProducts = catchAsync(async (request, reply) => {
+    
+    // DEPRECATION CONSULTATION: Direct DB querying for high-traffic routes overloads MongoDB
+    /*
     const productData = await productService.getPaginatedProducts(request.query);
+    */
+
+    // OPTIMIZATION: High-Performance Read-Through Catalog Caching
+    const cacheKey = `products:catalog:${JSON.stringify(request.query)}`;
+    const productData = await productCacheService.fetchWithCoalescing(
+        cacheKey,
+        300, // 5 min TTL
+        async () => await productService.getPaginatedProducts(request.query)
+    );
+
     // OPTIMIZATION: Standardized response wrapper.
     return { 
         success: true, 
@@ -19,24 +33,31 @@ exports.getProducts = catchAsync(async (request, reply) => {
 
 exports.createProduct = catchAsync(async (request, reply) => {
     const newProduct = await productService.createProduct(request.body);
+    await productCacheService.invalidateProductCache();
     return { success: true, message: 'Product added', data: newProduct };
 }, 'creating product');
 
 exports.updateProduct = catchAsync(async (request, reply) => {
     const updatedProduct = await productService.updateProduct(request.params.id, { ...request.body });
     if (!updatedProduct) return reply.status(404).send({ success: false, message: 'Product Not found' });
+    
+    await productCacheService.invalidateProductCache();
     return { success: true, message: 'Product updated', data: updatedProduct };
 }, 'updating product');
 
 exports.archiveProduct = catchAsync(async (request, reply) => {
     const product = await productService.archiveProduct(request.params.id);
     if (!product) return reply.status(404).send({ success: false, message: 'Product Not found' });
+    
+    await productCacheService.invalidateProductCache();
     return { success: true, message: `Product archived securely`, data: product };
 }, 'archiving product');
 
 exports.toggleProductStatus = catchAsync(async (request, reply) => {
     const product = await productService.toggleProductStatus(request.params.id);
     if (!product) return reply.status(404).send({ success: false, message: 'Product Not found' });
+    
+    await productCacheService.invalidateProductCache();
     return { success: true, message: `Product Status Toggled`, data: product };
 }, 'toggling status');
 
