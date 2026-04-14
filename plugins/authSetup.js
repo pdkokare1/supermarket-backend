@@ -23,18 +23,39 @@ module.exports = function (fastify) {
     fastify.decorate("authenticate", async function (request, reply) {
         try {
             const decoded = await request.jwtVerify();
+            let user;
             
             // DEPRECATION CONSULTATION: Full hydration causes high CPU load on every single request.
             /* const user = await User.findById(decoded.id).select('tokenVersion isActive'); */
 
-            // OPTIMIZATION: .lean() skips Mongoose object hydration, making this critical path 5x faster.
-            const user = await User.findById(decoded.id).select('tokenVersion isActive').lean();
+            // OPTIMIZATION: High-speed Redis caching for session verification
+            if (fastify.redis) {
+                const cacheKey = `auth:session:${decoded.id}`;
+                const cachedSession = await fastify.redis.get(cacheKey);
+                
+                if (cachedSession) {
+                    user = JSON.parse(cachedSession);
+                } else {
+                    // Fallback to .lean() which skips Mongoose object hydration, making this critical path faster
+                    user = await User.findById(decoded.id).select('tokenVersion isActive role').lean();
+                    if (user) {
+                        // Cache for 15 minutes to match token expiry
+                        await fastify.redis.set(cacheKey, JSON.stringify(user), 'EX', 900); 
+                    }
+                }
+            } else {
+                user = await User.findById(decoded.id).select('tokenVersion isActive role').lean();
+            }
             
             // The tokenVersion check is what guarantees that logging out (which increments the DB version) 
             // instantly invalidates all currently active short-lived access tokens.
             if (!user || !user.isActive || user.tokenVersion !== decoded.tokenVersion) {
                 throw new Error('Token revoked or user inactive');
             }
+            
+            // Attach user to request for downstream RBAC checking
+            request.user = user;
+            
         } catch (err) {
             reply.status(401).send({ success: false, message: 'Unauthorized: Invalid or missing token.' });
         }
