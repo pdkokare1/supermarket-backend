@@ -1,6 +1,15 @@
 /* plugins/middlewareSetup.js */
 
+const auditService = require('../services/auditService');
+
 module.exports = function(fastify) {
+    
+    // OPTIMIZATION: Non-Blocking Compliance Logging Hook
+    // Flushes the audit batch asynchronously ONLY after the response is securely sent to the user
+    fastify.addHook('onResponse', async (request, reply) => {
+        await auditService.flushAuditBatch();
+    });
+
     // EFFICIENCY: Convert comma-separated string to an array for production lookups.
     const allowedOrigins = process.env.ALLOWED_ORIGINS 
         ? process.env.ALLOWED_ORIGINS.split(',') 
