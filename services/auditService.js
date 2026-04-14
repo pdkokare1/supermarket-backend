@@ -24,7 +24,7 @@ exports.getAuditLogs = async (queryParams) => {
                 { $sort: { createdAt: -1 } },
                 { $skip: skip },
                 { $limit: limit },
-                { $project: { action: 1, targetType: 1, targetId: 1, username: 1, createdAt: 1, details: 1 } }
+                { $project: { action: 1, targetType: 1, targetId: 1, username: 1, createdAt: 1, details: 1, previousState: 1, newState: 1 } }
             ]
         }}
     ]);
@@ -40,7 +40,8 @@ exports.getAuditLogs = async (queryParams) => {
     };
 };
 
-exports.logEvent = async ({ action, targetType, targetId, username, details = {}, userId = null, session = null, logError = null }) => {
+// OPTIMIZATION: Expanded footprint to securely capture before/after object states
+exports.logEvent = async ({ action, targetType, targetId, username, details = {}, userId = null, previousState = null, newState = null, session = null, logError = null }) => {
     const logEntry = { 
         action, 
         targetType, 
@@ -50,6 +51,8 @@ exports.logEvent = async ({ action, targetType, targetId, username, details = {}
     
     if (Object.keys(details).length > 0) logEntry.details = details;
     if (userId) logEntry.userId = userId;
+    if (previousState) logEntry.previousState = previousState;
+    if (newState) logEntry.newState = newState;
 
     // DEPRECATION CONSULTATION: Awaiting synchronous database inserts slows down administrative operations
     /*
