@@ -1,11 +1,15 @@
 /* config/redis.js */
+'use strict';
+
 const Redis = require('ioredis');
 
-const initRedis = () => {
+// OPTIMIZATION: Accept fastify instance to enforce structured logging
+const initRedis = (fastify = null) => {
     let redisClient = null;
+    const logger = fastify && fastify.log ? fastify.log : console;
+
     try {
         if (process.env.REDIS_URL) {
-            // OPTIMIZATION: Added retry strategy and event listeners for connection resilience and observability
             redisClient = new Redis(process.env.REDIS_URL, {
                 retryStrategy(times) {
                     const delay = Math.min(times * 50, 2000);
@@ -14,16 +18,21 @@ const initRedis = () => {
                 maxRetriesPerRequest: 3, // Prevent infinite hanging if Redis goes down
                 
                 // OPTIMIZATION: Fail-fast offline queue. Prevents API requests from hanging 
-                // in memory indefinitely if the app loses connection to the Redis cloud instance.
-                enableOfflineQueue: false 
+                enableOfflineQueue: false,
+                
+                // OPTIMIZATION: Keep-Alive pings prevent Railway/Cloud proxies from dropping idle TCP connections
+                keepAlive: 10000 
             });
 
-            redisClient.on('connect', () => console.log('[SERVER] Redis connected successfully.'));
-            redisClient.on('error', (err) => console.warn('[SERVER] Redis Error:', err.message));
+            redisClient.on('connect', () => logger.info('[SERVER] Redis connected successfully.'));
+            redisClient.on('error', (err) => logger.error(`[SERVER] Redis Error: ${err.message}`));
+        } else {
+            logger.warn('[SERVER] REDIS_URL not provided. Redis client bypassed.');
         }
     } catch(e) {
-        console.warn('[SERVER] Redis initialization failed:', e.message);
+        logger.error(`[SERVER] Redis initialization failed: ${e.message}`);
     }
+    
     return redisClient;
 };
 
