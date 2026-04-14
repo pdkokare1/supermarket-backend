@@ -12,8 +12,11 @@ const { Transform } = require('stream');
 // ==========================================
 
 exports.externalCheckout = catchAsync(async (request, reply) => {
+    // OPTIMIZATION: Extracting Idempotency Key from headers to prevent double-charges on network retries
+    const payload = { ...request.body, idempotencyKey: request.headers['idempotency-key'] || request.body.idempotencyKey };
+    
     // OPTIMIZATION: API Key validation moved to route middleware for separation of concerns
-    const newOrder = await checkoutService.processExternalCheckout(request.body);
+    const newOrder = await checkoutService.processExternalCheckout(payload);
     
     // OPTIMIZATION: Added explicit 201 Created status for enterprise REST compliance
     reply.code(201);
@@ -21,14 +24,20 @@ exports.externalCheckout = catchAsync(async (request, reply) => {
 }, 'processing external checkout');
 
 exports.onlineCheckout = catchAsync(async (request, reply) => {
-    const newOrder = await checkoutService.processOnlineCheckout(request.body);
+    // OPTIMIZATION: Secure Idempotency Injection
+    const payload = { ...request.body, idempotencyKey: request.headers['idempotency-key'] || request.body.idempotencyKey };
+    
+    const newOrder = await checkoutService.processOnlineCheckout(payload);
     
     reply.code(201);
     return { success: true, message: 'Order Placed Successfully', orderId: newOrder._id };
 }, 'processing checkout');
 
 exports.posCheckout = catchAsync(async (request, reply) => {
-    const newOrder = await checkoutService.processPosCheckout(request.body);
+    // OPTIMIZATION: Secure Idempotency Injection for POS endpoints
+    const payload = { ...request.body, idempotencyKey: request.headers['idempotency-key'] || request.body.idempotencyKey };
+    
+    const newOrder = await checkoutService.processPosCheckout(payload);
     
     reply.code(201);
     return { success: true, message: 'POS Transaction Complete', orderId: newOrder._id, orderData: newOrder };
