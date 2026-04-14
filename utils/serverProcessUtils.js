@@ -3,6 +3,7 @@
 const mongoose = require('mongoose');
 const cluster = require('cluster');
 const os = require('os');
+const v8 = require('v8');
 
 process.on('uncaughtException', (err) => {
     console.error('[PROCESS] Uncaught Exception:', err);
@@ -12,13 +13,27 @@ process.on('unhandledRejection', (reason, promise) => {
     console.error('[PROCESS] Unhandled Rejection at:', promise, 'reason:', reason);
 });
 
+// OPTIMIZATION: Self-Healing Memory Tripwire
+// Prevents harsh OS kills by gracefully draining traffic if Heap gets dangerously full.
+const startMemoryWatchdog = (fastify) => {
+    setInterval(() => {
+        const stats = v8.getHeapStatistics();
+        const usageRatio = stats.used_heap_size / stats.heap_size_limit;
+        
+        if (usageRatio > 0.85 && !fastify.isShuttingDown) {
+            fastify.log.fatal(`[OOM WARNING] Heap usage at ${(usageRatio * 100).toFixed(2)}%. Triggering self-healing shutdown to protect transactions.`);
+            process.emit('SIGTERM'); 
+        }
+    }, 10000).unref(); 
+};
+
 exports.setupGracefulShutdown = (fastify, redisClient) => {
     const listeners = ['SIGINT', 'SIGTERM'];
     listeners.forEach((signal) => {
         process.on(signal, async () => {
-            fastify.log.info(`${signal} received. Shutting down gracefully...`);
+            if (fastify.isShuttingDown) return; // Prevent double-triggering
             
-            // OPTIMIZATION: Signal to readiness probes to stop sending traffic here
+            fastify.log.info(`${signal} received. Shutting down gracefully...`);
             fastify.isShuttingDown = true; 
 
             if (typeof fastify.closeAllSSE === 'function') fastify.closeAllSSE();
@@ -29,8 +44,6 @@ exports.setupGracefulShutdown = (fastify, redisClient) => {
             }, 15000).unref(); 
 
             try {
-                // OPTIMIZATION: Force close idle keep-alive sockets to instantly drain traffic 
-                // to the new Railway container, while letting active checkouts finish.
                 if (fastify.server && fastify.server.closeIdleConnections) {
                     fastify.server.closeIdleConnections();
                 }
@@ -68,6 +81,7 @@ exports.setupCluster = (fastify, connectDB, initScheduler) => {
 
 exports.bootstrapServer = async (fastify, redisClient, port, connectDB, initScheduler, startServer) => {
     this.setupGracefulShutdown(fastify, redisClient);
+    startMemoryWatchdog(fastify);
 
     if (process.env.ENABLE_CLUSTERING === 'true' && cluster.isPrimary) {
         this.setupCluster(fastify, connectDB, initScheduler);
