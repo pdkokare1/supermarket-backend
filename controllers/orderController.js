@@ -7,6 +7,7 @@ const catchAsync = require('../utils/catchAsync');
 const { sendCsvResponse } = require('../utils/csvUtils'); 
 const { handleOrderResponse } = require('../utils/responseUtils');
 const { Transform } = require('stream');
+const { withTransaction } = require('../utils/dbUtils'); // OPTIMIZATION: Imported for Controller-level transaction boundaries
 
 // ==========================================
 // --- CONTROLLER EXPORTS ---
@@ -17,7 +18,10 @@ exports.externalCheckout = catchAsync(async (request, reply) => {
     const payload = { ...request.body, idempotencyKey: request.headers['idempotency-key'] || request.body.idempotencyKey };
     
     // OPTIMIZATION: API Key validation moved to route middleware for separation of concerns
-    const newOrder = await checkoutService.processExternalCheckout(payload);
+    // OPTIMIZATION: Wrap in ACID Transaction
+    const newOrder = await withTransaction(async (session) => {
+        return await checkoutService.processExternalCheckout(payload, session);
+    });
     
     // OPTIMIZATION: Added explicit 201 Created status for enterprise REST compliance
     reply.code(201);
@@ -28,7 +32,10 @@ exports.onlineCheckout = catchAsync(async (request, reply) => {
     // OPTIMIZATION: Secure Idempotency Injection
     const payload = { ...request.body, idempotencyKey: request.headers['idempotency-key'] || request.body.idempotencyKey };
     
-    const newOrder = await checkoutService.processOnlineCheckout(payload);
+    // OPTIMIZATION: Wrap in ACID Transaction
+    const newOrder = await withTransaction(async (session) => {
+        return await checkoutService.processOnlineCheckout(payload, session);
+    });
     
     reply.code(201);
     return { success: true, message: 'Order Placed Successfully', orderId: newOrder._id };
@@ -38,7 +45,10 @@ exports.posCheckout = catchAsync(async (request, reply) => {
     // OPTIMIZATION: Secure Idempotency Injection for POS endpoints
     const payload = { ...request.body, idempotencyKey: request.headers['idempotency-key'] || request.body.idempotencyKey };
     
-    const newOrder = await checkoutService.processPosCheckout(payload);
+    // OPTIMIZATION: Wrap in ACID Transaction
+    const newOrder = await withTransaction(async (session) => {
+        return await checkoutService.processPosCheckout(payload, session);
+    });
     
     reply.code(201);
     return { success: true, message: 'POS Transaction Complete', orderId: newOrder._id, orderData: newOrder };
