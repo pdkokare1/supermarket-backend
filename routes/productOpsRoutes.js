@@ -5,6 +5,11 @@ const Category = require('../models/Category');
 const { Parser } = require('json2csv'); 
 const cloudinary = require('cloudinary').v2; 
 
+// OPTIMIZATION: Required for safe Zero-Memory streaming
+const util = require('util');
+const stream = require('stream');
+const pipeline = util.promisify(stream.pipeline);
+
 cloudinary.config({
     cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
     api_key: process.env.CLOUDINARY_API_KEY,
@@ -50,7 +55,12 @@ async function productOpsRoutes(fastify, options) {
                         else resolve(result);
                     }
                 );
-                data.file.pipe(uploadStream);
+                
+                // DEPRECATION CONSULTATION: Standard pipe leaks memory if the client disconnects unexpectedly
+                /* data.file.pipe(uploadStream); */
+
+                // OPTIMIZATION: Zero-memory direct pipeline with automatic memory/socket cleanup on client disconnect
+                pipeline(data.file, uploadStream).catch(reject);
             });
 
             return { success: true, imageUrl: uploadResult.secure_url };
