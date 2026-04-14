@@ -1,3 +1,5 @@
+/* models/Customer.js */
+
 const mongoose = require('mongoose');
 
 const customerSchema = new mongoose.Schema({
@@ -32,5 +34,9 @@ const customerSchema = new mongoose.Schema({
         min: 0 
     }
 }, { timestamps: true });
+
+// ENTERPRISE OPTIMIZATION: Immediate memory pointers for lightning-fast POS customer lookup
+customerSchema.index({ phone: 1 });
+customerSchema.index({ name: 1 });
 
 module.exports = mongoose.model('Customer', customerSchema);
