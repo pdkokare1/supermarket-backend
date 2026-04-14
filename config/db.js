@@ -13,7 +13,16 @@ const connectDB = async (fastify) => {
                 // OPTIMIZATION: Maintain a minimum baseline of connections to prevent cold-start latency spikes
                 minPoolSize: parseInt(process.env.MONGO_MIN_POOL_SIZE, 10) || 10, 
                 // OPTIMIZATION: Fail fast (5s) to trigger the retry logic instead of hanging
-                serverSelectionTimeoutMS: 5000 
+                serverSelectionTimeoutMS: 5000,
+                
+                // OPTIMIZATION: (Serverless Protection) Automatically sweep and close idle connections 
+                // to prevent MongoDB Atlas from hitting max connection limits during scale-down events
+                maxIdleTimeMS: 30000, // 30 seconds
+                // OPTIMIZATION: Ensure network drops are detected quickly by Mongoose
+                socketTimeoutMS: 45000, 
+                // OPTIMIZATION: Ping the database periodically so active connections aren't dropped by firewalls
+                keepAlive: true,
+                keepAliveInitialDelay: 300000 
             });
 
             // OPTIMIZATION: Better Observability for dropped connections
