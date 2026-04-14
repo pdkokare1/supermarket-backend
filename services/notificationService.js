@@ -1,8 +1,48 @@
 /* services/notificationService.js */
 
 const nodemailer = require('nodemailer');
+const jobsService = require('./jobsService');
+
+// ==========================================
+// --- FIRE-AND-FORGET QUEUE WRAPPERS ---
+// ==========================================
 
 exports.sendAdminEmail = async (fastify, subject, htmlContent, textContent) => {
+    // DEPRECATION CONSULTATION: Awaiting Nodemailer blocks the main thread
+    /*
+    const transporter = nodemailer.createTransport({...});
+    await transporter.sendMail(mailOptions);
+    */
+    
+    // OPTIMIZATION: Push to background queue
+    await jobsService.enqueueTask('EMAIL', { subject, htmlContent, textContent });
+    return true;
+};
+
+exports.sendWhatsAppMessage = async (phone, messageText, fastify = null) => {
+    // DEPRECATION CONSULTATION: Awaiting external fetch blocks the main thread
+    /*
+    const waUrl = ...
+    await fetch(waUrl, { signal: controller.signal });
+    */
+
+    // OPTIMIZATION: Push to background queue
+    await jobsService.enqueueTask('WHATSAPP', { phone, messageText });
+    return true;
+};
+
+exports.sendAdminWhatsApp = async (fastify, messageText) => {
+    if (process.env.WA_PHONE_NUMBER) {
+        return await exports.sendWhatsAppMessage(process.env.WA_PHONE_NUMBER, messageText, fastify);
+    }
+    return false;
+};
+
+// ==========================================
+// --- BACKGROUND EXECUTORS ---
+// ==========================================
+
+exports.executeAdminEmail = async (fastify, subject, htmlContent, textContent, attachments = null) => {
     if (process.env.EMAIL_USER && process.env.EMAIL_PASS && process.env.TARGET_EMAIL) {
         try {
             const transporter = nodemailer.createTransport({
@@ -18,6 +58,7 @@ exports.sendAdminEmail = async (fastify, subject, htmlContent, textContent) => {
             
             if (htmlContent) mailOptions.html = htmlContent;
             if (textContent) mailOptions.text = textContent;
+            if (attachments) mailOptions.attachments = attachments;
 
             await transporter.sendMail(mailOptions);
             return true;
@@ -29,7 +70,7 @@ exports.sendAdminEmail = async (fastify, subject, htmlContent, textContent) => {
     return false;
 };
 
-exports.sendWhatsAppMessage = async (phone, messageText, fastify = null) => {
+exports.executeWhatsAppMessage = async (phone, messageText, fastify = null) => {
     if (phone && phone.length >= 10 && process.env.CALLMEBOT_API_KEY) {
         try {
             const encodedText = encodeURIComponent(messageText);
@@ -44,13 +85,6 @@ exports.sendWhatsAppMessage = async (phone, messageText, fastify = null) => {
             if (fastify) fastify.log.error('Failed to send WhatsApp:', waErr);
             return false;
         }
-    }
-    return false;
-};
-
-exports.sendAdminWhatsApp = async (fastify, messageText) => {
-    if (process.env.WA_PHONE_NUMBER) {
-        return await exports.sendWhatsAppMessage(process.env.WA_PHONE_NUMBER, messageText, fastify);
     }
     return false;
 };
