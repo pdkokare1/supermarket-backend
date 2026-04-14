@@ -16,6 +16,14 @@ const respondWithCache = async (reply, cacheKey, ttl, fetchFn) => {
     return responseData;
 };
 
+// THE GAMUT ENTERPRISE: Endpoint to retrieve core platform growth metrics
+exports.getPlatformGrowthMetrics = catchAsync(async (request, reply) => {
+    const cacheKey = 'analytics:gamut:growth_metrics';
+    return await respondWithCache(reply, cacheKey, 3600, () => 
+        analyticsService.getGamutGrowthMetrics()
+    );
+}, 'calculating strategic growth metrics');
+
 exports.getPnl = catchAsync(async (request, reply) => {
     // OPTIMIZATION: Relies on the underlying Materialized View inside the Service layer
     const cacheKey = cacheUtils.generateKey('analytics:pnl', request.query);
