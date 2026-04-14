@@ -8,7 +8,7 @@ const AppError = require('../utils/AppError');
 const auditService = require('./auditService'); 
 const inventoryService = require('./inventoryService'); 
 const cacheUtils = require('../utils/cacheUtils');
-const { getPaginationOptions } = require('../utils/paginationUtils');
+const { getPaginationOptions, getCursorFilter } = require('../utils/paginationUtils');
 const { getFilterDates } = require('../utils/dateUtils');
 const appEvents = require('../utils/eventEmitter'); 
 const { Readable } = require('stream');
@@ -107,7 +107,12 @@ exports.getOrdersList = async (queryParams) => {
     const dateFilter = getFilterDates(queryParams.dateFilter);
     if (dateFilter) filter.createdAt = dateFilter;
 
-    const { limit, skip } = getPaginationOptions(queryParams);
+    const { limit, skip, cursor } = getPaginationOptions(queryParams);
+
+    // OPTIMIZATION: Inject O(1) Cursor matching safely combining with other filters
+    if (cursor) {
+        Object.assign(filter, getCursorFilter(cursor, -1));
+    }
 
     // OPTIMIZATION: Single-Pass Aggregation with Root Match
     const result = await Order.aggregate([
@@ -118,7 +123,8 @@ exports.getOrdersList = async (queryParams) => {
             ],
             data: [
                 { $sort: { createdAt: -1 } },
-                { $skip: skip },
+                // If using cursor, skip becomes 0 automatically preventing slow DB scans
+                { $skip: cursor ? 0 : skip },
                 { $limit: limit || 50 }
             ],
             stats: [
@@ -131,11 +137,15 @@ exports.getOrdersList = async (queryParams) => {
     const orders = result[0].data;
     const total = result[0].metadata[0]?.total || 0;
     const pendingStats = result[0].stats[0] || { pendingCount: 0, pendingRevenue: 0 };
+    
+    // OPTIMIZATION: Return the nextCursor natively to the frontend
+    const nextCursor = orders.length > 0 ? orders[orders.length - 1]._id : null;
 
     return { 
         success: true, 
         count: orders.length, 
         total: total, 
+        nextCursor: nextCursor,
         data: orders, 
         stats: { 
             pendingCount: pendingStats.pendingCount, 
