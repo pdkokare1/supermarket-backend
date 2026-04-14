@@ -11,6 +11,7 @@ const cacheUtils = require('../utils/cacheUtils');
 const { getPaginationOptions } = require('../utils/paginationUtils');
 const { getFilterDates } = require('../utils/dateUtils');
 const appEvents = require('../utils/eventEmitter'); 
+const { Readable } = require('stream');
 
 // ==========================================
 // --- HELPER FUNCTIONS ---
@@ -143,28 +144,29 @@ exports.getOrdersList = async (queryParams) => {
     };
 };
 
-exports.getAllOrdersForExport = async () => {
-    const exportData = [];
+exports.getAllOrdersForExport = () => {
     const cursor = Order.find()
         .select('orderNumber createdAt customerName customerPhone totalAmount status paymentMethod deliveryType')
         .sort({ createdAt: -1 })
         .cursor();
 
-    // OPTIMIZATION: Modern V8 Async Iterator for maximum memory efficiency on streams
-    for await (const o of cursor) {
-        exportData.push({ 
-            OrderID: o.orderNumber || o._id.toString(), 
-            Date: new Date(o.createdAt).toLocaleString(), 
-            CustomerName: o.customerName, 
-            Phone: o.customerPhone, 
-            TotalAmount: o.totalAmount, 
-            Status: o.status, 
-            PaymentMethod: o.paymentMethod, 
-            DeliveryType: o.deliveryType 
-        });
+    // OPTIMIZATION: Async Generator stream pipeline ensures O(1) memory footprint for enterprise-scale exports
+    async function* generateRows() {
+        for await (const o of cursor) {
+            yield { 
+                OrderID: o.orderNumber || o._id.toString(), 
+                Date: new Date(o.createdAt).toLocaleString(), 
+                CustomerName: o.customerName || '', 
+                Phone: o.customerPhone || '', 
+                TotalAmount: o.totalAmount || 0, 
+                Status: o.status || '', 
+                PaymentMethod: o.paymentMethod || '', 
+                DeliveryType: o.deliveryType || '' 
+            };
+        }
     }
         
-    return exportData;
+    return Readable.from(generateRows());
 };
 
 exports.assignDriverToOrder = async (orderId, driverName, driverPhone) => {
