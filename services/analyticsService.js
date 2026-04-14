@@ -114,8 +114,8 @@ exports.generateAndCachePnlRollup = async (startDate, endDate) => {
     return rollupData;
 };
 
-// --- THE GAMUT ENTERPRISE: Financial & Growth Analytics Builder ---
-exports.getGamutGrowthMetrics = async () => {
+// --- ENTERPRISE OPTIMIZATION: Financial & Growth Analytics Builder ---
+exports.getDailyPickGrowthMetrics = async () => {
     // Aggregates high-level growth projections
     const totalCustomers = await Customer.countDocuments();
     
