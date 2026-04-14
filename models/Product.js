@@ -79,4 +79,7 @@ productSchema.index({ isActive: 1, "variants.stock": 1 });
 // ENTERPRISE OPTIMIZATION: Front-end Catalog Pre-computation Index
 productSchema.index({ isArchived: 1, isActive: 1, category: 1, "variants.price": 1 });
 
+// OPTIMIZATION: Zero-latency sort index matching the productService's default { createdAt: -1 } fallback
+productSchema.index({ isArchived: 1, isActive: 1, createdAt: -1 });
+
 module.exports = mongoose.model('Product', productSchema);
