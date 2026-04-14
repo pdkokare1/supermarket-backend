@@ -1,3 +1,5 @@
+/* models/AuditLog.js */
+
 const mongoose = require('mongoose');
 
 const auditLogSchema = new mongoose.Schema({
@@ -25,6 +27,15 @@ const auditLogSchema = new mongoose.Schema({
     details: { 
         type: Object, 
         default: {} 
+    },
+    // OPTIMIZATION: Immutable State Tracking for strict compliance ledgers
+    previousState: {
+        type: Object,
+        default: null
+    },
+    newState: {
+        type: Object,
+        default: null
     }
 }, { timestamps: true });
 
