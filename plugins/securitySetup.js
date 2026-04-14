@@ -37,7 +37,7 @@ module.exports = function(fastify) {
         origin: dynamicOriginAuth,
         methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
         credentials: true,
-        allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'Origin', 'X-Requested-With', 'x-api-key'],
+        allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'Origin', 'X-Requested-With', 'x-api-key', 'Idempotency-Key'],
         optionsSuccessStatus: 204 
     });
 
@@ -64,6 +64,12 @@ module.exports = function(fastify) {
                 message: `Rate limit exceeded. Try again in ${context.after}.`
             };
         },
-        ...(fastify.redis && { redis: fastify.redis })
+        
+        // DEPRECATION CONSULTATION: The dynamic fallback approach could silently revert to local RAM 
+        // if Redis initializes late, breaking horizontal load balancer limits. 
+        /* ...(fastify.redis && { redis: fastify.redis }) */
+        
+        // OPTIMIZATION: Explicitly link global Redis to prevent Distributed DDOS attacks bypassing container RAM
+        redis: fastify.redis || null
     });
 };
