@@ -29,16 +29,26 @@ module.exports = function (fastify) {
     if (process.env.REDIS_URL) {
         try {
             const Redis = require('ioredis');
-            redisPubWS = new Redis(process.env.REDIS_URL);
-            redisSubWS = new Redis(process.env.REDIS_URL);
+            // OPTIMIZATION: Configured lazyConnect and autoResubscribe to survive network blips in scalable cloud environments
+            const redisConfig = {
+                lazyConnect: true,
+                maxRetriesPerRequest: null,
+                retryStrategy: (times) => Math.min(times * 100, 3000)
+            };
             
-            redisSubWS.subscribe('POS_WS_STREAM');
+            redisPubWS = new Redis(process.env.REDIS_URL, redisConfig);
+            redisSubWS = new Redis(process.env.REDIS_URL, redisConfig);
+            
+            redisSubWS.subscribe('POS_WS_STREAM').catch(err => fastify.log.error('Redis WS Subscribe Error:', err));
+            
             redisSubWS.on('message', (channel, messageStr) => {
                 if (channel === 'POS_WS_STREAM') {
                     const parsed = JSON.parse(messageStr);
                     sendToClients(parsed);
                 }
             });
+            
+            redisSubWS.on('error', (err) => fastify.log.error('Redis Sub WS Error:', err.message));
         } catch(e) {
             fastify.log.error("Failed to initialize Redis Pub/Sub for WebSockets", e);
         }
@@ -46,7 +56,7 @@ module.exports = function (fastify) {
 
     fastify.decorate('broadcastToPOS', function (message) {
         if (redisPubWS) {
-            redisPubWS.publish('POS_WS_STREAM', JSON.stringify(message));
+            redisPubWS.publish('POS_WS_STREAM', JSON.stringify(message)).catch(() => sendToClients(message));
         } else {
             sendToClients(message);
         }
