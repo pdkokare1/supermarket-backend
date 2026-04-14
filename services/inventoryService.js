@@ -7,6 +7,7 @@ const { withTransaction } = require('../utils/dbUtils');
 const AppError = require('../utils/AppError'); 
 const auditService = require('./auditService'); 
 const appEvents = require('../utils/eventEmitter'); 
+const { invalidateProductCache } = require('./productCacheService');
 
 // ==========================================
 // --- HELPER FUNCTIONS ---
@@ -66,6 +67,7 @@ exports.restoreInventory = async (items, storeId, session) => {
     }
     if (bulkOperations.length > 0) {
         await Product.bulkWrite(bulkOperations, { session });
+        await invalidateProductCache();
     }
 };
 
@@ -127,6 +129,7 @@ exports.deductInventory = async (items, storeId, session) => {
         if (bulkResult.modifiedCount !== items.length) {
             return { success: false, message: 'Stock level changed during checkout or item unavailable. Please review cart.' };
         }
+        await invalidateProductCache();
     }
     return { success: true };
 };
@@ -273,6 +276,7 @@ exports.processRestock = async (productId, payload) => {
             storeId: storeId 
         });
 
+        await invalidateProductCache();
         return updatedProduct;
     });
 };
@@ -316,6 +320,7 @@ exports.processRTV = async (productId, payload) => {
             storeId: storeId 
         });
 
+        await invalidateProductCache();
         return updatedProduct;
     });
 };
@@ -367,6 +372,7 @@ exports.processTransfer = async (payload, username, logError) => {
             message: 'Stock Transferred' 
         });
         
+        await invalidateProductCache();
         return updatedProduct;
     });
 };
