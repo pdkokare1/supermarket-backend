@@ -11,18 +11,18 @@ const cacheUtils = require('../utils/cacheUtils');
 exports.enqueueTask = async (taskType, payload) => {
     const redis = cacheUtils.getClient();
     if (redis) {
-        await redis.lpush('GAMUT_JOBS_QUEUE', JSON.stringify({ taskType, payload, timestamp: Date.now(), retryCount: 0 }));
+        await redis.lpush('DAILYPICK_JOBS_QUEUE', JSON.stringify({ taskType, payload, timestamp: Date.now(), retryCount: 0 }));
     } else {
         // Fallback for local dev environments without Redis
         setImmediate(() => exports.processTask(taskType, payload, 0));
     }
 };
 
-// OPTIMIZATION: Dead Letter Queue (DLQ) routing for failed heavy media tasks
+// OPTIMIZATION: Dead Letter Queue (DLQ) routing for failed heavy tasks
 const routeToDeadLetterQueue = async (taskType, payload, errorMsg) => {
     const redis = cacheUtils.getClient();
     if (redis) {
-        await redis.lpush('GAMUT_DEAD_LETTER_QUEUE', JSON.stringify({ taskType, payload, error: errorMsg, failedAt: Date.now() }));
+        await redis.lpush('DAILYPICK_DEAD_LETTER_QUEUE', JSON.stringify({ taskType, payload, error: errorMsg, failedAt: Date.now() }));
         console.error(`[DLQ] Task ${taskType} permanently failed and moved to Dead Letter Queue.`);
     }
 };
@@ -58,18 +58,6 @@ exports.processTask = async (taskType, payload, retryCount = 0) => {
                 [{ filename: 'orders_export.csv', content: csvContent }]
             );
         }
-        
-        // THE GAMUT ENTERPRISE: Advanced handlers for heavy media pipelines
-        else if (taskType === 'ARTICLE_NARRATION_SYNC') {
-            // Placeholder for the external audio synthesis API integration
-            console.log(`[MEDIA WORKER] Generating narration for article: ${payload.articleId}`);
-            // If the audio generation API times out here, the catch block will trigger the retry mechanism.
-        }
-        else if (taskType === 'RADIO_STUDIO_ENCODE') {
-            console.log(`[MEDIA WORKER] Encoding studio stream for channel: ${payload.channelId}`);
-            // Heavy FFMPEG or Cloudinary upload processing handled here off the main thread.
-        }
-
     } catch (e) {
         console.error(`[BACKGROUND WORKER] Task ${taskType} Failed on attempt ${retryCount + 1}:`, e);
         
@@ -80,7 +68,7 @@ exports.processTask = async (taskType, payload, retryCount = 0) => {
             setTimeout(() => {
                 const redis = cacheUtils.getClient();
                 if (redis) {
-                    redis.lpush('GAMUT_JOBS_QUEUE', JSON.stringify({ taskType, payload, timestamp: Date.now(), retryCount: retryCount + 1 }));
+                    redis.lpush('DAILYPICK_JOBS_QUEUE', JSON.stringify({ taskType, payload, timestamp: Date.now(), retryCount: retryCount + 1 }));
                 } else {
                     exports.processTask(taskType, payload, retryCount + 1);
                 }
@@ -99,7 +87,7 @@ setTimeout(() => {
     const processNext = async () => {
         try {
             // Block for up to 5 seconds waiting for a job to avoid CPU spinning
-            const result = await redis.brpop('GAMUT_JOBS_QUEUE', 5);
+            const result = await redis.brpop('DAILYPICK_JOBS_QUEUE', 5);
             if (result) {
                 const job = JSON.parse(result[1]);
                 await exports.processTask(job.taskType, job.payload, job.retryCount || 0);
