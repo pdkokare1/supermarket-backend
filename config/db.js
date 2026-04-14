@@ -1,10 +1,14 @@
 /* config/db.js */
+'use strict';
 
 const mongoose = require('mongoose');
 
 const connectDB = async (fastify) => {
     if (mongoose.connection.readyState === 1 || mongoose.connection.readyState === 2) return true;
+    
     let retries = 5;
+    const logger = fastify && fastify.log ? fastify.log : console;
+
     while (retries) {
         try {
             await mongoose.connect(process.env.MONGO_URI, {
@@ -14,10 +18,10 @@ const connectDB = async (fastify) => {
                 minPoolSize: parseInt(process.env.MONGO_MIN_POOL_SIZE, 10) || 10, 
                 // OPTIMIZATION: Fail fast (5s) to trigger the retry logic instead of hanging
                 serverSelectionTimeoutMS: 5000,
-                
+                // OPTIMIZATION: Prevent performance hits on container restart by disabling autoIndex in production
+                autoIndex: process.env.NODE_ENV !== 'production',
                 // OPTIMIZATION: (Serverless Protection) Automatically sweep and close idle connections 
-                // to prevent MongoDB Atlas from hitting max connection limits during scale-down events
-                maxIdleTimeMS: 30000, // 30 seconds
+                maxIdleTimeMS: 30000, 
                 // OPTIMIZATION: Ensure network drops are detected quickly by Mongoose
                 socketTimeoutMS: 45000, 
                 // OPTIMIZATION: Ping the database periodically so active connections aren't dropped by firewalls
@@ -27,19 +31,21 @@ const connectDB = async (fastify) => {
 
             // OPTIMIZATION: Better Observability for dropped connections
             mongoose.connection.on('disconnected', () => {
-                if (fastify && fastify.log) fastify.log.warn('MongoDB connection dropped. Awaiting automatic reconnection...');
+                logger.warn('MongoDB connection dropped. Awaiting automatic reconnection...');
             });
 
-            if (fastify && fastify.log) {
-                fastify.log.info(`Successfully connected to MongoDB Atlas by Process ${process.pid}`);
-            } else {
-                console.log(`Successfully connected to MongoDB Atlas by Process ${process.pid}`);
-            }
+            logger.info(`Successfully connected to MongoDB Atlas by Process ${process.pid}`);
+            
             return true;
         } catch (err) {
-            console.error(`CRITICAL ERROR CONNECTING TO MONGODB. Retries left: ${retries - 1}`, err.message);
+            logger.error(`CRITICAL ERROR CONNECTING TO MONGODB. Retries left: ${retries - 1} - ${err.message}`);
             retries -= 1;
-            if (retries === 0) process.exit(1);
+            
+            if (retries === 0) {
+                logger.error('Database connection failed entirely. Triggering container restart.');
+                process.exit(1);
+            }
+            
             await new Promise(res => setTimeout(res, 5000));
         }
     }
