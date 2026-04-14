@@ -25,7 +25,7 @@ const broadcastEvent = (eventName, payload) => {
     // Broadcast to other Railway instances via Redis
     const redis = cacheUtils.getClient();
     if (redis) {
-        redis.publish('GAMUT_ORDER_EVENTS', JSON.stringify({ eventName, payload })).catch(() => {});
+        redis.publish('DAILYPICK_ORDER_EVENTS', JSON.stringify({ eventName, payload })).catch(() => {});
     }
 };
 
