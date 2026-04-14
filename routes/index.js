@@ -1,26 +1,17 @@
 /* routes/index.js */
+'use strict';
+
+const path = require('path');
+const autoLoad = require('@fastify/autoload');
 
 async function apiRoutes(fastify, options) {
-    // Explicit registration for performance and maintainability.
-    // This avoids dynamic file scanning at runtime.
-    
-    fastify.register(require('./authRoutes'));
-    fastify.register(require('./customerRoutes'));
-    fastify.register(require('./productRoutes'));
-    fastify.register(require('./productOpsRoutes'));
-    fastify.register(require('./orderRoutes'));
-    fastify.register(require('./analyticsRoutes'));
-    fastify.register(require('./storeRoutes'));
-    fastify.register(require('./staffRoutes'));
-    fastify.register(require('./shiftRoutes'));
-    fastify.register(require('./promotionRoutes'));
-    fastify.register(require('./expenseRoutes'));
-    fastify.register(require('./distributorRoutes'));
-    fastify.register(require('./categoryRoutes'));
-    fastify.register(require('./brandRoutes'));
-    fastify.register(require('./auditRoutes'));
-    fastify.register(require('./registerRoutes'));
-    fastify.register(require('./settingsRoutes'));
+    // OPTIMIZATION: Enterprise Auto-loading routes
+    // Dynamically registers all route files in this directory automatically
+    fastify.register(autoLoad, {
+        dir: path.join(__dirname),
+        ignorePattern: /index\.js/, // Ignore this index file to prevent looping
+        options: Object.assign({}, options)
+    });
 }
 
 module.exports = apiRoutes;
