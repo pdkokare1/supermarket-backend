@@ -16,11 +16,11 @@ const respondWithCache = async (reply, cacheKey, ttl, fetchFn) => {
     return responseData;
 };
 
-// THE GAMUT ENTERPRISE: Endpoint to retrieve core platform growth metrics
+// ENTERPRISE OPTIMIZATION: Endpoint to retrieve core platform growth metrics
 exports.getPlatformGrowthMetrics = catchAsync(async (request, reply) => {
-    const cacheKey = 'analytics:gamut:growth_metrics';
+    const cacheKey = 'analytics:dailypick:growth_metrics';
     return await respondWithCache(reply, cacheKey, 3600, () => 
-        analyticsService.getGamutGrowthMetrics()
+        analyticsService.getDailyPickGrowthMetrics()
     );
 }, 'calculating strategic growth metrics');
 
