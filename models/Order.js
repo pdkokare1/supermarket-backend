@@ -101,4 +101,7 @@ orderSchema.index({ customerPhone: 1, status: 1, createdAt: -1 });
 // NEW: Compound index for Financial EOD aggregations
 orderSchema.index({ paymentMethod: 1, createdAt: -1 });
 
+// ENTERPRISE OPTIMIZATION: Deep Compound Index for Materialized View Rollups
+orderSchema.index({ storeId: 1, status: 1, createdAt: -1 });
+
 module.exports = mongoose.model('Order', orderSchema);
