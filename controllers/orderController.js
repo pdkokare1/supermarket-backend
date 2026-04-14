@@ -2,6 +2,7 @@
 
 const orderService = require('../services/orderService'); 
 const checkoutService = require('../services/checkoutService'); 
+const jobsService = require('../services/jobsService'); 
 const catchAsync = require('../utils/catchAsync');
 const { sendCsvResponse } = require('../utils/csvUtils'); 
 const { handleOrderResponse } = require('../utils/responseUtils');
@@ -75,28 +76,21 @@ exports.getOrders = catchAsync(async (request, reply) => {
 }, 'fetching orders');
 
 exports.exportOrders = catchAsync(async (request, reply) => {
-    // OPTIMIZATION: Bypassing static sendCsvResponse to directly pipe the data stream 
+    // DEPRECATION CONSULTATION: Synchronous streaming blocked the active connection until finish
+    /*
     const dataStream = orderService.getAllOrdersForExport();
-    
-    reply.header('Content-Type', 'text/csv');
-    reply.header('Content-Disposition', 'attachment; filename="orders_export.csv"');
+    const csvTransform = new Transform({ ... });
+    return reply.send(dataStream.pipe(csvTransform));
+    */
 
-    let isFirst = true;
-    const csvTransform = new Transform({
-        objectMode: true,
-        transform(chunk, encoding, callback) {
-            if (isFirst) {
-                const headers = Object.keys(chunk).join(',');
-                this.push(headers + '\n');
-                isFirst = false;
-            }
-            const row = Object.values(chunk).map(v => `"${String(v).replace(/"/g, '""')}"`).join(',');
-            this.push(row + '\n');
-            callback();
-        }
+    // OPTIMIZATION: Asynchronous Task Queuing. Offloads heavy CSV generation to background worker.
+    await jobsService.enqueueTask('EXPORT_ORDERS', { 
+        email: request.user?.email || process.env.TARGET_EMAIL,
+        query: request.query 
     });
 
-    return reply.send(dataStream.pipe(csvTransform));
+    reply.code(202);
+    return { success: true, message: 'Export job queued securely. You will receive the CSV via email shortly.' };
 }, 'exporting orders');
 
 exports.getOrderById = catchAsync(async (request, reply) => {
