@@ -1,3 +1,5 @@
+/* models/Product.js */
+
 const mongoose = require('mongoose');
 
 const purchaseHistorySchema = new mongoose.Schema({
@@ -73,5 +75,8 @@ productSchema.index({ "variants.locationInventory.storeId": 1 });
 
 // NEW: Compound Index strictly for the Daily Inventory Cron Job (Velocity)
 productSchema.index({ isActive: 1, "variants.stock": 1 });
+
+// ENTERPRISE OPTIMIZATION: Front-end Catalog Pre-computation Index
+productSchema.index({ isArchived: 1, isActive: 1, category: 1, "variants.price": 1 });
 
 module.exports = mongoose.model('Product', productSchema);
