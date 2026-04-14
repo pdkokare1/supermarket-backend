@@ -46,8 +46,17 @@ module.exports = function(fastify) {
                 
                 const cursor = mongoose.connection.db.collection(colName).find({});
                 let isFirstDoc = true;
+                let docCount = 0; // Tracking for event loop protection
                 
                 for await (const doc of cursor) {
+                    docCount++;
+                    
+                    // OPTIMIZATION: Yield the Node.js event loop every 500 documents.
+                    // This ensures high-priority checkout API requests are processed instantly without lagging during heavy backups.
+                    if (docCount % 500 === 0) {
+                        await new Promise(resolve => setImmediate(resolve));
+                    }
+
                     if (!isFirstDoc) {
                         // OPTIMIZED: Implemented Stream Backpressure handling.
                         // Prevents Out-Of-Memory (OOM) crashes by pausing the database read 
