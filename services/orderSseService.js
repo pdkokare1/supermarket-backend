@@ -9,8 +9,15 @@ let customerConnections = {};
 try {
     const Redis = require('ioredis');
     if (process.env.REDIS_URL) {
-        redisPub = new Redis(process.env.REDIS_URL);
-        redisSub = new Redis(process.env.REDIS_URL);
+        
+        // OPTIMIZATION: Applied resilient connection parameters for SSE Redis links
+        const redisConfig = {
+            maxRetriesPerRequest: null,
+            retryStrategy: (times) => Math.min(times * 100, 3000)
+        };
+        
+        redisPub = new Redis(process.env.REDIS_URL, redisConfig);
+        redisSub = new Redis(process.env.REDIS_URL, redisConfig);
         
         // OPTIMIZATION: Subscribe to both the legacy stream channel and the new horizontally-scaled operations channel
         redisSub.subscribe('ORDER_STREAM_EVENT', 'GAMUT_ORDER_EVENTS');
@@ -38,6 +45,8 @@ try {
                 });
             }
         });
+        
+        redisSub.on('error', (err) => console.error("Redis Sub SSE Error:", err.message));
     }
 } catch (e) {
     console.error("Redis Initialization Error in SSE Service:", e);
@@ -103,7 +112,7 @@ const removeCustomerConnection = (orderId, conn) => {
 
 const publishEvent = (target, payload, additionalData = {}) => {
     if (redisPub) {
-        redisPub.publish('ORDER_STREAM_EVENT', JSON.stringify({ target, payload, ...additionalData }));
+        redisPub.publish('ORDER_STREAM_EVENT', JSON.stringify({ target, payload, ...additionalData })).catch(() => {});
     } else {
         if (target === 'admin') {
             adminConnections.forEach(conn => {
