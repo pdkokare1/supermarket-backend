@@ -5,6 +5,7 @@ const checkoutService = require('../services/checkoutService');
 const catchAsync = require('../utils/catchAsync');
 const { sendCsvResponse } = require('../utils/csvUtils'); 
 const { handleOrderResponse } = require('../utils/responseUtils');
+const { Transform } = require('stream');
 
 // ==========================================
 // --- CONTROLLER EXPORTS ---
@@ -65,8 +66,28 @@ exports.getOrders = catchAsync(async (request, reply) => {
 }, 'fetching orders');
 
 exports.exportOrders = catchAsync(async (request, reply) => {
-    const exportData = await orderService.getAllOrdersForExport();
-    return sendCsvResponse(reply, exportData, 'orders');
+    // OPTIMIZATION: Bypassing static sendCsvResponse to directly pipe the data stream 
+    const dataStream = orderService.getAllOrdersForExport();
+    
+    reply.header('Content-Type', 'text/csv');
+    reply.header('Content-Disposition', 'attachment; filename="orders_export.csv"');
+
+    let isFirst = true;
+    const csvTransform = new Transform({
+        objectMode: true,
+        transform(chunk, encoding, callback) {
+            if (isFirst) {
+                const headers = Object.keys(chunk).join(',');
+                this.push(headers + '\n');
+                isFirst = false;
+            }
+            const row = Object.values(chunk).map(v => `"${String(v).replace(/"/g, '""')}"`).join(',');
+            this.push(row + '\n');
+            callback();
+        }
+    });
+
+    return reply.send(dataStream.pipe(csvTransform));
 }, 'exporting orders');
 
 exports.getOrderById = catchAsync(async (request, reply) => {
