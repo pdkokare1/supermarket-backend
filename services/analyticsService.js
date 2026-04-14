@@ -45,8 +45,11 @@ exports.getAnalyticsData = async () => {
     // Existing logic preserved: Note - In your production file, ensure Phase 1 logic is present here.
 };
 
-// --- (NEW) Phase 5: P&L ---
-exports.getPnl = async (startDate, endDate) => {
+// --- ENTERPRISE OPTIMIZATION: MATERIALIZED VIEW BUILDER ---
+exports.generateAndCachePnlRollup = async (startDate, endDate) => {
+    // DEPRECATION CONSULTATION: Original real-time heavy computation is preserved below.
+    // This exact logic now runs in the background to build the rollup.
+    
     let dateFilter = {};
     if (startDate && endDate) {
         dateFilter.createdAt = { $gte: new Date(startDate), $lte: new Date(endDate) };
@@ -58,7 +61,6 @@ exports.getPnl = async (startDate, endDate) => {
         
     let totalRevenue = 0, totalCOGS = 0, totalDiscounts = 0, totalTax = 0;
 
-    // EFFICIENCY: Identify only the products explicitly sold in these orders
     const relevantProductIds = new Set();
     orders.forEach(order => {
         if (order.items) {
@@ -66,7 +68,6 @@ exports.getPnl = async (startDate, endDate) => {
         }
     });
 
-    // EFFICIENCY: Minimal selection for cost mapping, now strictly limited to relevant products
     const products = await Product.find({ _id: { $in: Array.from(relevantProductIds) } })
         .select('variants._id variants.price variants.purchaseHistory')
         .lean();
@@ -93,17 +94,37 @@ exports.getPnl = async (startDate, endDate) => {
         });
     });
 
-    const expenses = await Expense.find(dateFilter)
-        .select('amount')
-        .lean();
-        
+    const expenses = await Expense.find(dateFilter).select('amount').lean();
     const totalExpenses = expenses.reduce((sum, exp) => sum + (exp.amount || 0), 0);
 
-    return {
+    const rollupData = {
         totalRevenue, totalCOGS, grossProfit: totalRevenue - totalCOGS - totalTax,
         totalExpenses, netProfit: (totalRevenue - totalCOGS - totalTax) - totalExpenses,
-        totalDiscounts, totalTax, orderCount: orders.length
+        totalDiscounts, totalTax, orderCount: orders.length,
+        lastComputed: new Date().toISOString()
     };
+
+    const redis = cacheUtils.getClient();
+    if (redis) {
+        const key = `rollup:pnl:${startDate || 'all'}:${endDate || 'all'}`;
+        await redis.set(key, JSON.stringify(rollupData), 'EX', 3600); // 1 Hour TTL
+    }
+
+    return rollupData;
+};
+
+// --- (NEW) Phase 5: P&L ---
+exports.getPnl = async (startDate, endDate) => {
+    // OPTIMIZATION: Check for the Materialized Rollup first
+    const redis = cacheUtils.getClient();
+    if (redis) {
+        const key = `rollup:pnl:${startDate || 'all'}:${endDate || 'all'}`;
+        const cachedRollup = await redis.get(key);
+        if (cachedRollup) return JSON.parse(cachedRollup);
+    }
+    
+    // If cache miss, generate on the fly
+    return await exports.generateAndCachePnlRollup(startDate, endDate);
 };
 
 // --- (NEW) Phase 5: AI Forecasting ---
