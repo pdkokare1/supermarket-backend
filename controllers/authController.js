@@ -31,7 +31,16 @@ exports.refresh = catchAsync(async (request, reply) => {
 
     const decoded = request.server.jwt.verify(currentRefreshToken);
     
-    const { user, token } = await authService.refreshSession(decoded.id, decoded.tokenVersion, request.server);
+    // OPTIMIZATION: Extract the newly rotated refresh token alongside the standard token
+    const { user, token, refreshToken } = await authService.refreshSession(decoded.id, decoded.tokenVersion, request.server);
+
+    // OPTIMIZATION: Perform explicit Refresh Token Rotation mapping to the cookie
+    if (refreshToken) {
+        reply.setCookie('refreshToken', refreshToken, {
+            path: '/', httpOnly: true, secure: process.env.NODE_ENV === 'production',
+            sameSite: 'strict', maxAge: 7 * 24 * 60 * 60 
+        });
+    }
 
     return { success: true, token: token, data: user };
 }, 'Auth Refresh');
