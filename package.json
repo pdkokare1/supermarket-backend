@@ -1,13 +1,17 @@
 {
-  "name": "supermarket-backend",
+  "name": "dailypick-backend",
   "version": "1.0.0",
-  "description": "Backend for Supermarket Delivery Ecosystem",
+  "description": "Enterprise Backend for DailyPick Ecosystem",
   "main": "server.js",
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "scripts": {
-    "start": "node server.js",
-    "dev": "nodemon server.js"
+    "start": "NODE_ENV=production node server.js",
+    "dev": "NODE_ENV=development nodemon server.js"
   },
   "dependencies": {
+    "@fastify/autoload": "^5.8.0",
     "@fastify/compress": "^7.0.3",
     "@fastify/cookie": "^9.3.1",
     "@fastify/cors": "^9.0.1",
