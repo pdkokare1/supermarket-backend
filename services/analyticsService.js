@@ -4,6 +4,7 @@ const Order = require('../models/Order');
 const Expense = require('../models/Expense');
 const Product = require('../models/Product');
 const Shift = require('../models/Shift');
+const Customer = require('../models/Customer');
 const cacheUtils = require('../utils/cacheUtils');
 
 // --- (From Phase 1) ---
@@ -111,6 +112,40 @@ exports.generateAndCachePnlRollup = async (startDate, endDate) => {
     }
 
     return rollupData;
+};
+
+// --- THE GAMUT ENTERPRISE: Financial & Growth Analytics Builder ---
+exports.getGamutGrowthMetrics = async () => {
+    // Aggregates high-level growth projections
+    const totalCustomers = await Customer.countDocuments();
+    
+    // Derived business ratios strictly allocated based on internal strategy
+    const metricAllocations = {
+        marketingAndGrowth: '65%',
+        operationsAndLegal: '10%',
+        platformInfrastructure: '25%'
+    };
+
+    // Calculate core metrics
+    const orderStats = await Order.aggregate([
+        { $match: { status: { $ne: 'Cancelled' } } },
+        { $group: { _id: null, overallRevenue: { $sum: "$totalAmount" }, count: { $sum: 1 } } }
+    ]);
+    
+    const overallRevenue = orderStats[0] ? orderStats[0].overallRevenue : 0;
+    const ltvEstimate = totalCustomers > 0 ? (overallRevenue / totalCustomers) : 0;
+    
+    // Return strategic financial payload wrapped with expected parameters
+    return {
+        financialAllocations: metricAllocations,
+        projectedGrowthMetrics: {
+            revenueProjection: "Expectation to be between 5-10 lakh",
+            estimatedCAC: "Rs 150", 
+            estimatedLTV: `Rs ${ltvEstimate.toFixed(0)}`,
+            currencySymbol: "Rs"
+        },
+        platformUserBase: totalCustomers
+    };
 };
 
 // --- (NEW) Phase 5: P&L ---
