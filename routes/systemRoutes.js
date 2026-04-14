@@ -2,9 +2,13 @@
 
 const os = require('os');
 const mongoose = require('mongoose');
+const { monitorEventLoopDelay } = require('perf_hooks');
+
+// OPTIMIZATION: Initialize Native Event Loop Monitor to catch CPU choking
+const hld = monitorEventLoopDelay({ resolution: 10 });
+hld.enable();
 
 module.exports = async function (fastify, options) {
-    // OPTIMIZED: Sourcing redisClient directly from Fastify context instead of options parameter.
     const redisClient = fastify.redis;
 
     fastify.get('/api/inventory/report', async (request, reply) => {
@@ -18,12 +22,30 @@ module.exports = async function (fastify, options) {
                 fastify.log.error('Redis Cache Read Error:', e);
             }
         }
-
-        // Fallback structure if Redis is empty or down
         return { success: true, data: { lowStock: [], deadStock: [], lastGenerated: null }, cached: false };
     });
 
+    // DEPRECATION CONSULTATION: Standard health checks lack CPU/Event Loop visibility.
+    /*
     fastify.get('/api/health', async (request, reply) => {
+        const dbStatus = mongoose.connection.readyState === 1 ? 'Connected' : 'Disconnected';
+        let redisStatus = 'Not Configured';
+        // ... older memory usage logic
+    });
+    */
+
+    // OPTIMIZATION: Advanced Readiness & Liveness Probes for Auto-Healing
+    fastify.get('/api/health', async (request, reply) => {
+        // 1. Check if server is marked for graceful shutdown
+        if (fastify.isShuttingDown) {
+            return reply.status(503).send({ status: 'Shutting Down', message: 'Container is draining traffic.' });
+        }
+
+        // 2. Measure Event Loop Lag (CPU Health)
+        const eventLoopLag = hld.mean / 1e6; // Convert nanoseconds to milliseconds
+        const isCpuOverloaded = eventLoopLag > 100; // If lag > 100ms, Node is struggling
+
+        // 3. Database & Cache Health
         const dbStatus = mongoose.connection.readyState === 1 ? 'Connected' : 'Disconnected';
         let redisStatus = 'Not Configured';
         
@@ -38,10 +60,11 @@ module.exports = async function (fastify, options) {
         
         const memoryUsage = process.memoryUsage();
         const systemHealth = {
-            status: dbStatus === 'Connected' ? 'Healthy' : 'Error',
+            status: (dbStatus === 'Connected' && !isCpuOverloaded) ? 'Healthy' : 'Degraded',
             database: dbStatus,
             redis: redisStatus,
             uptime: process.uptime(),
+            eventLoopLag: `${eventLoopLag.toFixed(2)} ms`,
             memory: {
                 free: `${(os.freemem() / 1024 / 1024).toFixed(2)} MB`,
                 total: `${(os.totalmem() / 1024 / 1024).toFixed(2)} MB`,
@@ -50,7 +73,8 @@ module.exports = async function (fastify, options) {
             cpuLoad: os.loadavg()
         };
         
-        if (dbStatus !== 'Connected') {
+        if (systemHealth.status !== 'Healthy') {
+            // Signal to Railway to pull this instance out of the load balancer
             reply.status(503).send(systemHealth);
         } else {
             reply.send(systemHealth);
