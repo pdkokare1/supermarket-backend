@@ -1,6 +1,7 @@
 /* routes/systemRoutes.js */
 
 const os = require('os');
+const v8 = require('v8'); // OPTIMIZATION: Core V8 engine metrics
 const mongoose = require('mongoose');
 const { monitorEventLoopDelay } = require('perf_hooks');
 
@@ -45,7 +46,12 @@ module.exports = async function (fastify, options) {
         const eventLoopLag = hld.mean / 1e6; // Convert nanoseconds to milliseconds
         const isCpuOverloaded = eventLoopLag > 100; // If lag > 100ms, Node is struggling
 
-        // 3. Database & Cache Health
+        // 3. Measure Deep V8 Memory Limits (OOM Prevention)
+        const heapStats = v8.getHeapStatistics();
+        const heapUsedPercentage = (heapStats.used_heap_size / heapStats.heap_size_limit) * 100;
+        const isMemoryOverloaded = heapUsedPercentage > 85; // Warning threshold at 85% utilization
+
+        // 4. Database & Cache Health
         const dbStatus = mongoose.connection.readyState === 1 ? 'Connected' : 'Disconnected';
         let redisStatus = 'Not Configured';
         
@@ -60,7 +66,7 @@ module.exports = async function (fastify, options) {
         
         const memoryUsage = process.memoryUsage();
         const systemHealth = {
-            status: (dbStatus === 'Connected' && !isCpuOverloaded) ? 'Healthy' : 'Degraded',
+            status: (dbStatus === 'Connected' && !isCpuOverloaded && !isMemoryOverloaded) ? 'Healthy' : 'Degraded',
             database: dbStatus,
             redis: redisStatus,
             uptime: process.uptime(),
@@ -68,7 +74,10 @@ module.exports = async function (fastify, options) {
             memory: {
                 free: `${(os.freemem() / 1024 / 1024).toFixed(2)} MB`,
                 total: `${(os.totalmem() / 1024 / 1024).toFixed(2)} MB`,
-                rss: `${(memoryUsage.rss / 1024 / 1024).toFixed(2)} MB`
+                rss: `${(memoryUsage.rss / 1024 / 1024).toFixed(2)} MB`,
+                v8HeapUsed: `${(heapStats.used_heap_size / 1024 / 1024).toFixed(2)} MB`,
+                v8HeapLimit: `${(heapStats.heap_size_limit / 1024 / 1024).toFixed(2)} MB`,
+                heapUsagePercent: `${heapUsedPercentage.toFixed(2)}%`
             },
             cpuLoad: os.loadavg()
         };
