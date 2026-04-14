@@ -179,24 +179,29 @@ exports.getAllOrdersForExport = () => {
     return Readable.from(generateRows());
 };
 
-exports.assignDriverToOrder = async (orderId, driverName, driverPhone) => {
-    const order = await Order.findByIdAndUpdate(orderId, { deliveryDriverName: driverName, driverPhone: driverPhone || '' }, { new: true });
+// OPTIMIZATION: Added optional 'session' parameter to allow these functions to be wrapped in larger transactions if needed
+exports.assignDriverToOrder = async (orderId, driverName, driverPhone, session = null) => {
+    const options = { new: true };
+    if (session) options.session = session;
+    const order = await Order.findByIdAndUpdate(orderId, { deliveryDriverName: driverName, driverPhone: driverPhone || '' }, options);
     if (order) {
         broadcastEvent('ORDER_UPDATED', { orderId: order._id, storeId: order.storeId });
     }
     return order;
 };
 
-exports.updateOrderStatus = async (orderId, status) => {
-    const order = await Order.findByIdAndUpdate(orderId, { status: status }, { new: true });
+exports.updateOrderStatus = async (orderId, status, session = null) => {
+    const options = { new: true };
+    if (session) options.session = session;
+    const order = await Order.findByIdAndUpdate(orderId, { status: status }, options);
     if (order) {
         broadcastEvent('ORDER_STATUS_UPDATED', { orderId: order._id, status: status, storeId: order.storeId });
     }
     return order;
 };
 
-exports.dispatchOrder = async (orderId) => {
-    return await exports.updateOrderStatus(orderId, 'Dispatched');
+exports.dispatchOrder = async (orderId, session = null) => {
+    return await exports.updateOrderStatus(orderId, 'Dispatched', session);
 };
 
 exports.getOrderById = async (orderId) => {
