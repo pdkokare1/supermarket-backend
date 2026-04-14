@@ -25,6 +25,7 @@ exports.getPaginatedProducts = async (queryParams) => {
     const sortQuery = getSortQuery(queryParams.sort);
     
     // OPTIMIZATION: Single-pass aggregation replacing find() and countDocuments()
+    // ENTERPRISE FIX: allowDiskUse(true) prevents the 100MB RAM limit crash on large collections utilizing $facet
     const result = await Product.aggregate([
         { $match: filter },
         { $facet: {
@@ -36,7 +37,7 @@ exports.getPaginatedProducts = async (queryParams) => {
                 { $project: { "variants.purchaseHistory": 0, "variants.returnHistory": 0 } }
             ]
         }}
-    ]);
+    ]).allowDiskUse(true);
 
     const products = result[0].data;
     const total = result[0].metadata[0]?.total || 0;
