@@ -92,6 +92,10 @@ const orderSchema = new mongoose.Schema({
 // --- OPTIMIZED INDEXES FOR HIGH-SPEED QUERIES ---
 orderSchema.index({ status: 1, createdAt: -1 }); 
 orderSchema.index({ deliveryType: 1, status: 1 }); 
+
+// OPTIMIZATION: Covered index specifically for the getOrdersList aggregation
+orderSchema.index({ deliveryType: 1, status: 1, createdAt: -1 }); 
+
 orderSchema.index({ storeId: 1, createdAt: -1 });
 orderSchema.index({ registerId: 1, createdAt: -1 });
 
