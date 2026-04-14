@@ -79,26 +79,32 @@ async function finalizeAndSaveOrder(session, items, storeId, orderPrefix, orderD
 // --- CHECKOUT OPERATIONS ---
 // ==========================================
 
-exports.processExternalCheckout = async (payload) => {
+// OPTIMIZATION: Added externalSession to prevent nested transaction deadlocks when called by Controller
+exports.processExternalCheckout = async (payload, externalSession = null) => {
     return await withIdempotency(payload.idempotencyKey, async () => {
-        const newOrder = await withTransaction(async (session) => {
+        
+        const coreLogic = async (session) => {
             const { source, externalOrderId, customerName, customerPhone, deliveryAddress, items, totalAmount, paymentMethod, notes, storeId } = payload;
             const orderPrefix = `EXT-${source.toUpperCase().substring(0, 3)}`;
             const formattedNotes = `[${source.toUpperCase()}] Ext ID: ${externalOrderId || 'N/A'}. ${notes || ''}`;
             const orderData = { notes: formattedNotes, customerName: customerName || `${source} Customer`, customerPhone: customerPhone || '', deliveryAddress: deliveryAddress || `${source} Pickup`, totalAmount, paymentMethod: paymentMethod || 'Prepaid External', deliveryType: 'Instant', status: 'Order Placed' };
             return await finalizeAndSaveOrder(session, items, storeId, orderPrefix, orderData);
-        });
+        };
+
+        // OPTIMIZATION: Seamlessly hook into outer controller session or create a new one if standalone
+        const newOrder = externalSession ? await coreLogic(externalSession) : await withTransaction(coreLogic);
 
         appEvents.emit('NEW_ORDER', { order: newOrder, storeId: payload.storeId, source: payload.source });
         return newOrder;
     });
 };
 
-exports.processOnlineCheckout = async (payload) => {
+// OPTIMIZATION: Added externalSession to prevent nested transaction deadlocks when called by Controller
+exports.processOnlineCheckout = async (payload, externalSession = null) => {
     return await withIdempotency(payload.idempotencyKey, async () => {
         const { customerName, customerPhone, deliveryAddress, items, totalAmount, deliveryType, scheduleTime, paymentMethod, notes, storeId } = payload;
         
-        const newOrder = await withTransaction(async (session) => {
+        const coreLogic = async (session) => {
             
             // DEPRECATION CONSULTATION: Read-then-write creates race conditions causing Duplicate Key crashes.
             /*
@@ -134,7 +140,10 @@ exports.processOnlineCheckout = async (payload) => {
 
             const orderData = { notes: notes || '', customerName, customerPhone, deliveryAddress, totalAmount, paymentMethod: paymentMethod || 'Cash on Delivery', deliveryType: deliveryType || 'Instant', scheduleTime: scheduleTime || 'ASAP' };
             return await finalizeAndSaveOrder(session, items, storeId, 'ORD', orderData);
-        });
+        };
+
+        // OPTIMIZATION: Seamlessly hook into outer controller session or create a new one if standalone
+        const newOrder = externalSession ? await coreLogic(externalSession) : await withTransaction(coreLogic);
 
         appEvents.emit('NEW_ORDER', { order: newOrder, storeId, source: 'Online' });
 
@@ -145,11 +154,12 @@ exports.processOnlineCheckout = async (payload) => {
     });
 };
 
-exports.processPosCheckout = async (payload) => {
+// OPTIMIZATION: Added externalSession to prevent nested transaction deadlocks when called by Controller
+exports.processPosCheckout = async (payload, externalSession = null) => {
     return await withIdempotency(payload.idempotencyKey, async () => {
         const { customerPhone, items, totalAmount, taxAmount, discountAmount, paymentMethod, splitDetails, pointsRedeemed, notes, storeId, registerId } = payload;
         
-        const newOrder = await withTransaction(async (session) => {
+        const coreLogic = async (session) => {
             let finalCustomerName = 'Walk-in Guest';
 
             if (customerPhone) {
@@ -175,7 +185,10 @@ exports.processPosCheckout = async (payload) => {
 
             const orderData = { registerId: registerId || null, notes: notes || '', customerName: finalCustomerName, customerPhone: customerPhone || '', deliveryAddress: 'In-Store Purchase', totalAmount, taxAmount: taxAmount || 0, discountAmount: discountAmount || 0, paymentMethod, splitDetails: splitDetails || { cash: 0, upi: 0 }, deliveryType: 'Instant', status: 'Completed' };
             return await finalizeAndSaveOrder(session, items, storeId, 'ORD', orderData);
-        });
+        };
+
+        // OPTIMIZATION: Seamlessly hook into outer controller session or create a new one if standalone
+        const newOrder = externalSession ? await coreLogic(externalSession) : await withTransaction(coreLogic);
 
         appEvents.emit('NEW_ORDER', { order: newOrder, storeId, source: 'POS' });
 
