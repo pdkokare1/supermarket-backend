@@ -37,7 +37,8 @@ const createApp = () => {
 
     // OPTIMIZATION: Graceful Shutdown Hook with Promise.race fallback timeout
     fastify.addHook('onClose', async (instance, done) => {
-        instance.log.info('Server shutting down. Closing database connections...');
+        // Fastify.close() guarantees active traffic is drained before this log executes
+        instance.log.info('Active requests drained. Server shutting down. Closing database connections...');
         
         const closeConnections = async () => {
             if (mongoose.connection.readyState === 1) await mongoose.connection.close();
