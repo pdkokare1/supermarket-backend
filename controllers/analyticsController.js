@@ -17,6 +17,7 @@ const respondWithCache = async (reply, cacheKey, ttl, fetchFn) => {
 };
 
 exports.getPnl = catchAsync(async (request, reply) => {
+    // OPTIMIZATION: Relies on the underlying Materialized View inside the Service layer
     const cacheKey = cacheUtils.generateKey('analytics:pnl', request.query);
     return await respondWithCache(reply, cacheKey, 900, () => 
         analyticsService.getPnl(request.query.startDate, request.query.endDate)
