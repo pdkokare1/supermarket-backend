@@ -7,10 +7,11 @@ const initRedis = require('./config/redis');
 const cacheUtils = require('./utils/cacheUtils');
 const mongoose = require('mongoose'); 
 
-const createApp = () => {
+const createApp = (opts = {}) => {
     const fastify = Fastify({
         logger: process.env.NODE_ENV === 'production' ? { level: 'info' } : true,
-        trustProxy: true 
+        trustProxy: true,
+        ...opts
     });
 
     const redisClient = initRedis();
@@ -19,7 +20,7 @@ const createApp = () => {
     cacheUtils.setClient(redisClient);
     
     // OPTIMIZATION: Wrapped decorator in fastify-plugin to ensure global scope across all encapsulated routes/plugins
-    fastify.register(fp(async (instance, opts) => {
+    fastify.register(fp(async (instance) => {
         instance.decorate('redis', redisClient);
     }));
 
