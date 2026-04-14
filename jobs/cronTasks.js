@@ -32,7 +32,23 @@ const CronLock = mongoose.models.CronLock || mongoose.model('CronLock', lockSche
 // ==========================================
 
 async function runWithLock(jobName, fastify, task) {
+    // OPTIMIZATION: Enterprise Redis Distributed Lock
+    // Uses atomic SET NX (Not eXists) to guarantee only ONE core in the cluster acquires the lock.
+    const lockKey = `cron_lock:${jobName}`;
+    const lockTTLSeconds = 10 * 60; // 10 minutes max lock time
+    
     try {
+        const acquired = await fastify.redis.set(lockKey, 'LOCKED', 'EX', lockTTLSeconds, 'NX');
+        
+        if (!acquired) {
+            fastify.log.info(`[CRON] ${jobName} skipped (locked by another cluster worker via Redis).`);
+            return;
+        }
+
+        // DEPRECATION CONSULTATION:
+        // The MongoDB locking logic below has been replaced by the Redis lock above for faster, atomic operations.
+        // It is commented out rather than deleted per your strict requirements.
+        /*
         await CronLock.updateOne({ jobName }, { $setOnInsert: { jobName, lockedAt: null } }, { upsert: true }).catch(() => true);
 
         const tenMinsAgo = new Date(Date.now() - 10 * 60 * 1000);
@@ -45,12 +61,20 @@ async function runWithLock(jobName, fastify, task) {
             fastify.log.info(`[CRON] ${jobName} skipped (locked by another server instance).`);
             return; 
         }
+        */
 
         await task();
-        await CronLock.updateOne({ jobName }, { $set: { lockedAt: null } });
+        
+        // MongoDB lock release (Commented out)
+        // await CronLock.updateOne({ jobName }, { $set: { lockedAt: null } });
+
     } catch (error) {
         fastify.log.error(`[CRON] Lock Error in ${jobName}:`, error);
-        if (CronLock) await CronLock.updateOne({ jobName }, { $set: { lockedAt: null } }).catch(() => true);
+        // MongoDB error fallback (Commented out)
+        // if (CronLock) await CronLock.updateOne({ jobName }, { $set: { lockedAt: null } }).catch(() => true);
+    } finally {
+        // OPTIMIZATION: Guarantee lock release via Redis even if the task fails
+        await fastify.redis.del(lockKey).catch(() => true);
     }
 }
 
