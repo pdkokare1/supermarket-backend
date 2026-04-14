@@ -5,6 +5,7 @@ const crypto = require('crypto');
 const AppError = require('../utils/AppError'); 
 const auditService = require('./auditService'); 
 const securityService = require('./securityService'); 
+const cacheUtils = require('../utils/cacheUtils');
 
 // MODULARITY: Standardized helper for all Auth-related audit logs
 const logAuthAudit = async (server, action, targetId, username, details = {}, userId = null) => {
@@ -49,11 +50,26 @@ exports.setupDefaultAdmin = async (envSetupKey, queryKey, isProduction) => {
 };
 
 exports.authenticateUser = async (username, pin, ip, server) => {
+    
+    // ENTERPRISE OPTIMIZATION: Edge IP Lockout Defense
+    const redis = cacheUtils.getClient();
+    let ipFails = 0;
+    if (redis) {
+        ipFails = await redis.get(`lockout:ip:${ip}`);
+        if (ipFails && parseInt(ipFails) > 10) {
+            await logAuthAudit(server, 'EDGE_THREAT_BLOCKED', 'IP', ip, { reason: 'IP brute-force block triggered' });
+            throw new AppError('Too many failed requests from this IP. Blocked globally for 30 minutes.', 403);
+        }
+    }
+
     const safeUsername = username.trim(); 
     const user = await User.findOne({ $or: [{ username: safeUsername }, { name: safeUsername }] })
                            .collation({ locale: 'en', strength: 2 }); 
     
     if (!user) {
+        if (redis) await redis.incr(`lockout:ip:${ip}`);
+        if (redis && !ipFails) await redis.expire(`lockout:ip:${ip}`, 1800); // 30 min lock
+        
         await logAuthAudit(server, 'FAILED_LOGIN_ATTEMPT', 'Login', safeUsername || 'Unknown', { ip, reason: 'User not found' });
         throw new AppError('Invalid Username or PIN.', 401, { safeUsername, reason: 'User not found' });
     }
@@ -91,6 +107,9 @@ exports.authenticateUser = async (username, pin, ip, server) => {
     }
 
     if (!isValid) {
+        if (redis) await redis.incr(`lockout:ip:${ip}`);
+        if (redis && !ipFails) await redis.expire(`lockout:ip:${ip}`, 1800);
+
         user.failedLoginAttempts = (user.failedLoginAttempts || 0) + 1;
         if (user.failedLoginAttempts >= 5) user.lockUntil = Date.now() + 15 * 60 * 1000; 
         await user.save();
@@ -99,6 +118,8 @@ exports.authenticateUser = async (username, pin, ip, server) => {
 
         throw new AppError('Invalid Username or PIN.', 401, { user, reason: 'Invalid PIN' });
     }
+    
+    if (redis) await redis.del(`lockout:ip:${ip}`); // Clear IP block on successful credential verification
     
     user.failedLoginAttempts = 0;
     user.lockUntil = undefined;
@@ -116,13 +137,13 @@ exports.refreshSession = async (decodedId, decodedVersion, server) => {
         throw new AppError('Invalid or revoked session', 401);
     }
     const tokens = securityService.generateTokens(server, user);
-    return { user, token: tokens.token };
+    return { user, token: tokens.token, refreshToken: tokens.refreshToken };
 };
 
 exports.revokeSession = async (userId, server) => {
     const user = await User.findById(userId);
     if (user) {
-        user.tokenVersion = (user.tokenVersion || 0) + 1;
+        user.tokenVersion = (user.tokenVersion || 0) + 1; // Explicit invalidation of all old refresh/access tokens
         await user.save();
         
         await logAuthAudit(server, 'LOGOUT', user._id.toString(), user.username, {}, user._id);
