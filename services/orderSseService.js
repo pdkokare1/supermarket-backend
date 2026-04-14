@@ -20,7 +20,7 @@ try {
         redisSub = new Redis(process.env.REDIS_URL, redisConfig);
         
         // OPTIMIZATION: Subscribe to both the legacy stream channel and the new horizontally-scaled operations channel
-        redisSub.subscribe('ORDER_STREAM_EVENT', 'GAMUT_ORDER_EVENTS');
+        redisSub.subscribe('ORDER_STREAM_EVENT', 'DAILYPICK_ORDER_EVENTS');
         
         redisSub.on('message', (channel, message) => {
             if (channel === 'ORDER_STREAM_EVENT') {
@@ -36,7 +36,7 @@ try {
                 }
             } 
             // OPTIMIZATION: Bridge core service updates directly to Admin SSE streams
-            else if (channel === 'GAMUT_ORDER_EVENTS') {
+            else if (channel === 'DAILYPICK_ORDER_EVENTS') {
                 const parsed = JSON.parse(message);
                 const bridgePayload = JSON.stringify({ type: parsed.eventName, ...parsed.payload });
                 
