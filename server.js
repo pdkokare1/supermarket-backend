@@ -32,6 +32,21 @@ process.on('uncaughtException', (err) => {
     process.exit(1);
 });
 
+// OPTIMIZATION: Catch container termination signals (Railway/Vercel) to trigger graceful server drain.
+const shutdownSignalHandler = async (signal) => {
+    fastify.log.info(`Received ${signal}. Stopping new traffic and completing active checkouts...`);
+    try {
+        await fastify.close(); // Triggers the onClose hook in app.js natively after draining
+        process.exit(0);
+    } catch (err) {
+        fastify.log.error(`Error during graceful shutdown: ${err.message}`);
+        process.exit(1);
+    }
+};
+
+process.on('SIGINT', () => shutdownSignalHandler('SIGINT'));
+process.on('SIGTERM', () => shutdownSignalHandler('SIGTERM'));
+
 // ==========================================
 // --- INITIALIZATION HELPERS ---
 // ==========================================
