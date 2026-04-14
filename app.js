@@ -15,6 +15,13 @@ const createApp = (opts = {}) => {
     });
 
     const redisClient = initRedis();
+
+    // OPTIMIZATION: Enterprise Redis lifecycle monitoring to prevent silent cache failures
+    if (redisClient) {
+        redisClient.on('error', (err) => fastify.log.error(`Redis Client Error: ${err.message}`));
+        redisClient.on('connect', () => fastify.log.info('Redis Client successfully connected'));
+        redisClient.on('reconnecting', () => fastify.log.warn('Redis Client is reconnecting to the server'));
+    }
     
     // SYNC: Use the same Redis client for caching to save memory.
     cacheUtils.setClient(redisClient);
