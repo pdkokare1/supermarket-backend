@@ -2,6 +2,11 @@
 
 const AppError = require('./AppError'); 
 
+// DEPRECATION CONSULTATION: Original utility
+/*
+exports.handleControllerError = (request, reply, error, contextMessage) => { ... }
+*/
+
 exports.handleControllerError = (request, reply, error, contextMessage) => {
     // OPTIMIZATION: Intercept MongoDB-specific errors automatically to prevent unhandled rejections
     if (error.name === 'CastError') {
@@ -16,20 +21,24 @@ exports.handleControllerError = (request, reply, error, contextMessage) => {
         return reply.status(400).send({ success: false, message: `Duplicate field value: ${value}. Please use another value.` });
     }
 
-    // 1. Handle our new standardized AppError
+    // OPTIMIZATION: Operational Error Classification
+    // Safe to return directly to the user because we explicitly wrote these strings.
     if (error instanceof AppError) {
         return reply.status(error.statusCode).send({ success: false, message: error.message });
     }
 
-    // 2. Legacy fallbacks to ensure nothing breaks during transition
-    if (error.status) {
+    // Legacy fallbacks to ensure nothing breaks during transition
+    if (error.status && error.status < 500) {
         return reply.status(error.status).send({ success: false, message: error.message });
     }
-    if (error.statusCode) {
+    if (error.statusCode && error.statusCode < 500) {
         return reply.status(error.statusCode).send({ success: false, message: error.message });
     }
 
-    // 3. Default 500 Server Error
-    request.server.log.error(`[${contextMessage}] Error:`, error);
-    reply.status(500).send({ success: false, message: `Server Error: ${contextMessage.toLowerCase()}` });
+    // OPTIMIZATION: Programming Error Containment
+    // DO NOT send stack traces or core database crash strings to the client. Route to global handler.
+    request.server.log.error(`[${contextMessage}] Fatal Stack Trace:`, error);
+    
+    // Explicitly throw so the global errorHandler.js can trigger the Circuit Breaker APM
+    throw error; 
 };
