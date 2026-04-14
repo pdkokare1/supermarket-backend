@@ -2,6 +2,8 @@
 
 const AuditLog = require('../models/AuditLog');
 
+let auditBatch = [];
+
 // OPTIMIZED: Added structured pagination and strict memory projection specifically to handle fetching large audit logs
 exports.getAuditLogs = async (queryParams) => {
     const page = parseInt(queryParams.page) || 1;
@@ -49,18 +51,32 @@ exports.logEvent = async ({ action, targetType, targetId, username, details = {}
     if (Object.keys(details).length > 0) logEntry.details = details;
     if (userId) logEntry.userId = userId;
 
+    // DEPRECATION CONSULTATION: Awaiting synchronous database inserts slows down administrative operations
+    /*
     try {
         if (session) {
             await AuditLog.create([logEntry], { session });
         } else {
             await AuditLog.create(logEntry);
         }
+    } catch (error) { ... }
+    */
+
+    // OPTIMIZATION: Push to non-blocking memory array. Fastify's onResponse hook flushes this automatically.
+    auditBatch.push(logEntry);
+};
+
+exports.flushAuditBatch = async () => {
+    if (auditBatch.length === 0) return;
+    
+    // Copy and immediately clear the batch to prevent duplicate writes during concurrency
+    const batchToInsert = [...auditBatch];
+    auditBatch = []; 
+    
+    try {
+        await AuditLog.insertMany(batchToInsert, { ordered: false });
     } catch (error) {
-        if (logError) {
-            logError('AuditLog Error:', error);
-        } else {
-            console.error('AuditLog Error:', error);
-        }
+        console.error('[SECURITY] AuditLog Batch Insert Error:', error);
     }
 };
 
