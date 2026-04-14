@@ -31,4 +31,14 @@ const getSortQuery = (sortType, defaultSort = { createdAt: -1 }) => {
     return sortMap[sortType] || defaultSort;
 };
 
-module.exports = { getPaginationOptions, getSortQuery };
+// OPTIMIZATION: Enterprise Cursor Filter generation for O(1) pagination
+const getCursorFilter = (cursor, sortOrder = -1) => {
+    if (!cursor) return {};
+    
+    // Using the last seen document _id as the anchor point.
+    // If sorting newest to oldest (-1), we want items older ($lt) than the cursor.
+    // If sorting oldest to newest (1), we want items newer ($gt) than the cursor.
+    return sortOrder === -1 ? { _id: { $lt: cursor } } : { _id: { $gt: cursor } };
+};
+
+module.exports = { getPaginationOptions, getSortQuery, getCursorFilter };
