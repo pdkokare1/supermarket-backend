@@ -18,7 +18,10 @@ const PORT = process.env.PORT || 3000;
 
 process.on('unhandledRejection', (err) => {
     fastify.log.error(`UNHANDLED REJECTION: ${err.message}`);
-    // In production, you might want process.exit(1) here to let the cloud provider restart a clean container
+    if (fastify.log.flushSync) {
+        fastify.log.flushSync();
+    }
+    process.exit(1);
 });
 
 process.on('uncaughtException', (err) => {
@@ -35,6 +38,14 @@ process.on('uncaughtException', (err) => {
 // OPTIMIZATION: Catch container termination signals (Railway/Vercel) to trigger graceful server drain.
 const shutdownSignalHandler = async (signal) => {
     fastify.log.info(`Received ${signal}. Stopping new traffic and completing active checkouts...`);
+    
+    // Failsafe: Prevent container orchestration platforms from executing a hard unlogged kill.
+    setTimeout(() => {
+        fastify.log.error('Graceful shutdown drain timeout exceeded. Forcing process exit.');
+        if (fastify.log.flushSync) fastify.log.flushSync();
+        process.exit(1);
+    }, 10000).unref();
+
     try {
         await fastify.close(); // Triggers the onClose hook in app.js natively after draining
         process.exit(0);
