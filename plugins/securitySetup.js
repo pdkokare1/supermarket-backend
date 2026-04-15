@@ -31,13 +31,15 @@ module.exports = function(fastify) {
         maxAge: 86400 
     });
 
+    // OPTIMIZATION: Dynamic CSP based on environment. Allows Swagger UI in dev, locks down in production.
+    const isProd = process.env.NODE_ENV === 'production';
     fastify.register(require('@fastify/helmet'), {
         crossOriginResourcePolicy: { policy: "cross-origin" },
         crossOriginOpenerPolicy: { policy: "unsafe-none" },
         contentSecurityPolicy: {
             directives: {
                 defaultSrc: ["'self'"],
-                scriptSrc: ["'self'"],
+                scriptSrc: isProd ? ["'self'"] : ["'self'", "'unsafe-inline'"],
                 objectSrc: ["'none'"],
                 upgradeInsecureRequests: [],
             },
@@ -54,7 +56,11 @@ module.exports = function(fastify) {
         // Blocks IPs completely if they violate the rate limit 3 consecutive times.
         ban: 3, 
         keyGenerator: function (request) {
-            return request.ip;
+            // OPTIMIZATION: Check trusted proxy headers first to prevent IP spoofing bypasses
+            return request.headers['cf-connecting-ip'] || 
+                   request.headers['x-forwarded-for']?.split(',')[0].trim() || 
+                   request.headers['x-real-ip'] || 
+                   request.ip;
         },
         errorResponseBuilder: function (request, context) {
             return {
