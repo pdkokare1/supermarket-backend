@@ -14,38 +14,65 @@ exports.setupAdmin = async (request, reply) => {
 exports.login = async (request, reply) => {
     const { username, pin } = request.body;
     
-    const { user, token, refreshToken } = await authService.authenticateUser(username, pin, request.ip, request.server);
+    try {
+        const { user, token, refreshToken } = await authService.authenticateUser(username, pin, request.ip, request.server);
 
-    reply.setCookie('refreshToken', refreshToken, {
-        path: '/', httpOnly: true, secure: process.env.NODE_ENV === 'production',
-        sameSite: 'strict', maxAge: 7 * 24 * 60 * 60 
-    });
-    
-    return { success: true, message: 'Login successful', data: user, token: token };
+        reply.setCookie('refreshToken', refreshToken, {
+            path: '/', httpOnly: true, secure: process.env.NODE_ENV === 'production',
+            sameSite: 'strict', maxAge: 7 * 24 * 60 * 60 
+        });
+        
+        return { success: true, message: 'Login successful', data: user, token: token };
+    } catch (error) {
+        // OPTIMIZATION: Uniform response for login failures to prevent timing and enumeration attacks
+        return reply.status(401).send({ success: false, message: 'Invalid credentials or inactive account.' });
+    }
 };
 
 exports.refresh = async (request, reply) => {
     const currentRefreshToken = request.cookies.refreshToken;
     if (!currentRefreshToken) return reply.status(401).send({ success: false, message: 'No refresh token provided' });
 
-    const decoded = request.server.jwt.verify(currentRefreshToken);
-    
-    // OPTIMIZATION: Extract the newly rotated refresh token alongside the standard token
-    const { user, token, refreshToken } = await authService.refreshSession(decoded.id, decoded.tokenVersion, request.server);
+    try {
+        const decoded = request.server.jwt.verify(currentRefreshToken);
+        
+        // OPTIMIZATION: Extract the newly rotated refresh token alongside the standard token
+        const { user, token, refreshToken } = await authService.refreshSession(decoded.id, decoded.tokenVersion, request.server);
 
-    // OPTIMIZATION: Perform explicit Refresh Token Rotation mapping to the cookie
-    if (refreshToken) {
-        reply.setCookie('refreshToken', refreshToken, {
-            path: '/', httpOnly: true, secure: process.env.NODE_ENV === 'production',
-            sameSite: 'strict', maxAge: 7 * 24 * 60 * 60 
-        });
+        // OPTIMIZATION: Perform explicit Refresh Token Rotation mapping to the cookie
+        if (refreshToken) {
+            reply.setCookie('refreshToken', refreshToken, {
+                path: '/', httpOnly: true, secure: process.env.NODE_ENV === 'production',
+                sameSite: 'strict', maxAge: 7 * 24 * 60 * 60 
+            });
+        }
+
+        return { success: true, token: token, data: user };
+    } catch (error) {
+        // OPTIMIZATION: Catch bad signatures securely
+        return reply.status(401).send({ success: false, message: 'Invalid or expired refresh token.' });
     }
-
-    return { success: true, token: token, data: user };
 };
 
 exports.logout = async (request, reply) => {
     await authService.revokeSession(request.user.id, request.server);
+
+    // OPTIMIZATION: Extract current access token and blacklist it in Redis to immediately kill active in-memory sessions
+    const authHeader = request.headers.authorization;
+    if (authHeader && authHeader.startsWith('Bearer ') && request.server.redis) {
+        const token = authHeader.split(' ')[1];
+        try {
+            const decoded = request.server.jwt.decode(token);
+            if (decoded && decoded.exp) {
+                const ttl = decoded.exp - Math.floor(Date.now() / 1000);
+                if (ttl > 0) {
+                    await request.server.redis.set(`bl_${token}`, 'blacklisted', 'EX', ttl);
+                }
+            }
+        } catch (err) {
+            request.server.log.warn(`Failed to blacklist token during logout: ${err.message}`);
+        }
+    }
 
     reply.clearCookie('refreshToken', { path: '/' });
     return { success: true, message: 'Logged out successfully globally.' };
