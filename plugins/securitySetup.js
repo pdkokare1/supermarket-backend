@@ -24,13 +24,14 @@ module.exports = function(fastify) {
         if (envOrigins.includes(origin)) return cb(null, true);
 
         // Authorize any dynamic Vercel frontend branch previews
-        if (origin.endsWith('.vercel.app')) return cb(null, true);
+        if (origin.includes('vercel.app')) return cb(null, true);
         
         // Authorize custom Hostinger URLs
         if (origin.includes('hostinger')) return cb(null, true);
 
-        // Reject all other unauthorized domains
-        cb(new Error("Origin not allowed by strict CORS policy"), false);
+        // Reject all other unauthorized domains gracefully without crashing the request pipeline
+        // Fixes the CORS block error in the browser
+        cb(null, false);
     };
 
     fastify.register(require('@fastify/cors'), { 
