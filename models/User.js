@@ -54,7 +54,9 @@ userSchema.post('save', async function(doc) {
         const cacheUtils = require('../utils/cacheUtils');
         const redis = cacheUtils.getClient();
         if (redis) {
-            await redis.del(`auth:session:${doc._id.toString()}`);
+            // SECURITY FIX: Synchronized cache key with authService.js (cache:user)
+            // Ensures RBAC updates or account lockouts take effect instantly at the edge.
+            await redis.del(`cache:user:${doc._id.toString()}`);
         }
     } catch (e) { console.warn('[CACHE] Failed to clear user session cache', e.message); }
 });
@@ -65,7 +67,8 @@ userSchema.post('findOneAndUpdate', async function(doc) {
         const cacheUtils = require('../utils/cacheUtils');
         const redis = cacheUtils.getClient();
         if (redis) {
-            await redis.del(`auth:session:${doc._id.toString()}`);
+            // SECURITY FIX: Synchronized cache key with authService.js (cache:user)
+            await redis.del(`cache:user:${doc._id.toString()}`);
         }
     } catch (e) { console.warn('[CACHE] Failed to clear user session cache', e.message); }
 });
