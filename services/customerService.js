@@ -16,6 +16,16 @@ const formatCustomerForExport = (c) => ({
     JoinedDate: new Date(c.createdAt).toLocaleDateString()
 });
 
+function validateAndApplyPayLater(custProfile, amount) {
+    if (!custProfile || !custProfile.isCreditEnabled) {
+        throw new AppError('Pay Later is not enabled for this account.', 400);
+    }
+    if ((custProfile.creditUsed + amount) > custProfile.creditLimit) {
+        throw new AppError(`Credit limit exceeded. Available credit: Rs ${custProfile.creditLimit - custProfile.creditUsed}`, 400);
+    }
+    custProfile.creditUsed += amount;
+}
+
 exports.getAggregatedCustomers = async () => {
     // OPTIMIZATION: Cache the heavy CRM aggregation for 1 hour to save DB CPU
     const CACHE_KEY = 'crm:aggregated_customers';
@@ -94,7 +104,6 @@ exports.recordPayment = async (phone, amount) => {
     return cust;
 };
 
-// DOMAIN BOUNDARY OPTIMIZATION: Migrated from OrderService to maintain strict database isolation
 exports.refundPayLaterCredit = async (customerPhone, amount, session) => {
     // OPTIMIZATION: Replaced memory-heavy document fetch & save with an atomic database pipeline update.
     // This guarantees thread safety under high concurrency and reduces Node.js memory overhead.
@@ -103,4 +112,44 @@ exports.refundPayLaterCredit = async (customerPhone, amount, session) => {
         [ { $set: { creditUsed: { $max: [0, { $subtract: ["$creditUsed", amount] }] } } } ],
         { session }
     );
+};
+
+// DOMAIN BOUNDARY OPTIMIZATION: Migrated from checkoutService
+exports.processOnlineCheckoutProfile = async (customerPhone, customerName, totalAmount, paymentMethod, session) => {
+    let custProfile = await Customer.findOneAndUpdate(
+        { phone: customerPhone },
+        { 
+            $setOnInsert: { phone: customerPhone, loyaltyPoints: 0 },
+            $set: { name: customerName } 
+        },
+        { new: true, upsert: true, session }
+    ).select('name phone loyaltyPoints creditUsed creditLimit isCreditEnabled');
+
+    if (paymentMethod === 'Pay Later') validateAndApplyPayLater(custProfile, totalAmount);
+    await custProfile.save({ session }); 
+
+    appEvents.emit('CUSTOMER_UPDATED', { phone: custProfile.phone });
+    return custProfile;
+};
+
+// DOMAIN BOUNDARY OPTIMIZATION: Migrated from checkoutService
+exports.processPosCheckoutProfile = async (customerPhone, totalAmount, paymentMethod, pointsRedeemed, session) => {
+    let custProfile = await Customer.findOneAndUpdate(
+        { phone: customerPhone },
+        { $setOnInsert: { phone: customerPhone, name: 'In-Store Customer', loyaltyPoints: 0 } },
+        { new: true, upsert: true, session }
+    ).select('name phone loyaltyPoints creditUsed creditLimit isCreditEnabled');
+        
+    let finalCustomerName = custProfile.name;
+    
+    if (pointsRedeemed && pointsRedeemed > 0) {
+        custProfile.loyaltyPoints = Math.max(0, (custProfile.loyaltyPoints || 0) - pointsRedeemed);
+    }
+    custProfile.loyaltyPoints = (custProfile.loyaltyPoints || 0) + Math.floor(totalAmount / 100);
+    
+    if (paymentMethod === 'Pay Later') validateAndApplyPayLater(custProfile, totalAmount);
+    await custProfile.save({ session });
+    
+    appEvents.emit('CUSTOMER_UPDATED', { phone: custProfile.phone });
+    return finalCustomerName;
 };
