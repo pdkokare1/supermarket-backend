@@ -1,8 +1,8 @@
 /* services/inventoryService.js */
 
 const Product = require('../models/Product');
-const Distributor = require('../models/Distributor');
 const Order = require('../models/Order'); 
+const distributorService = require('./distributorService'); // DOMAIN INTEGRATION
 const { withTransaction } = require('../utils/dbUtils'); 
 const AppError = require('../utils/AppError'); 
 const auditService = require('./auditService'); 
@@ -42,9 +42,6 @@ const addLocationStockQuery = (updateQuery, arrayFilters, variant, storeId, quan
 // --- INVENTORY OPERATIONS ---
 // ==========================================
 
-/**
- * Restores stock back to inventory (used for refunds/cancellations).
- */
 exports.restoreInventory = async (items, storeId, session) => {
     const bulkOperations = [];
     for (const item of items) {
@@ -74,26 +71,6 @@ exports.restoreInventory = async (items, storeId, session) => {
 exports.deductInventory = async (items, storeId, session) => {
     const productIds = items.map(item => item.productId);
     
-    // DEPRECATION CONSULTATION: 
-    // The following Javascript-level memory check has been commented out to prevent race conditions. 
-    // By skipping this and relying purely on MongoDB's atomic bulkWrite with array filters below, 
-    // we guarantee that simultaneous checkouts cannot deduct stock below zero.
-    /*
-    const products = await Product.find({ _id: { $in: productIds } }).session(session).lean();
-    const productMap = {};
-    products.forEach(p => productMap[p._id.toString()] = p);
-
-    for (const item of items) {
-        const product = productMap[item.productId.toString()];
-        if (!product) return { success: false, message: `Product not found: ${item.name}` };
-
-        const variant = product.variants.find(v => v._id.toString() === item.variantId.toString());
-        if (!variant) return { success: false, message: `Variant not found for item: ${item.name}` };
-
-        if (variant.stock < item.qty) return { success: false, message: `Insufficient global stock for item: ${item.name}` };
-    }
-    */
-
     const bulkOperations = [];
 
     for (const item of items) {
@@ -263,11 +240,7 @@ exports.processRestock = async (productId, payload) => {
         
         if (paymentStatus === 'Credit' && updatedProduct.distributorName) {
             const totalCost = Number(addedQuantity) * Number(purchasingPrice);
-            await Distributor.findOneAndUpdate(
-                { name: updatedProduct.distributorName },
-                { $inc: { totalPendingAmount: totalCost } },
-                { upsert: true, session }
-            );
+            await distributorService.incrementPendingAmount(updatedProduct.distributorName, totalCost, session);
         }
 
         appEvents.emit('PRODUCT_UPDATED', { 
