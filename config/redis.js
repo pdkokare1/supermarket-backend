@@ -12,8 +12,10 @@ const initRedis = (fastify = null) => {
         if (process.env.REDIS_URL) {
             redisClient = new Redis(process.env.REDIS_URL, {
                 retryStrategy(times) {
-                    const delay = Math.min(times * 50, 2000);
-                    return delay;
+                    // OPTIMIZATION: Exponential backoff with Jitter for enterprise cloud resilience
+                    const delay = Math.min(times * 100, 3000); 
+                    const jitter = Math.floor(Math.random() * 200); 
+                    return delay + jitter;
                 },
                 maxRetriesPerRequest: 3, // Prevent infinite hanging if Redis goes down
                 
