@@ -57,3 +57,15 @@ exports.processPayment = async (distributorId, payload) => {
 
     return distributor;
 };
+
+// DOMAIN BOUNDARY OPTIMIZATION: Migrated from inventoryService to maintain strict database isolation
+exports.incrementPendingAmount = async (distributorName, amount, session) => {
+    await Distributor.findOneAndUpdate(
+        { name: distributorName },
+        { $inc: { totalPendingAmount: amount } },
+        { upsert: true, session }
+    );
+
+    // OPTIMIZATION: Invalidate cache because financial ledgers have been updated via credit restock
+    await cacheUtils.deleteKey('distributors:all');
+};
