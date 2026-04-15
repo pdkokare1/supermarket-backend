@@ -8,8 +8,10 @@ const cacheUtils = require('./utils/cacheUtils');
 const mongoose = require('mongoose'); 
 
 const createApp = (opts = {}) => {
+    const isProduction = process.env.NODE_ENV === 'production';
+    
     const fastify = Fastify({
-        logger: process.env.NODE_ENV === 'production' ? { level: 'info' } : {
+        logger: isProduction ? { level: 'info' } : {
             transport: {
                 target: 'pino-pretty',
                 options: {
@@ -19,10 +21,16 @@ const createApp = (opts = {}) => {
             }
         },
         trustProxy: true,
-        // ENTERPRISE SECURITY: Prevent payload memory exhaustion and slowloris attacks
-        bodyLimit: 1048576, // 1MB payload limit
-        connectionTimeout: 10000, 
-        keepAliveTimeout: 5000,
+        // OPTIMIZATION: Disables automatic logging of every single HTTP request to save heavy disk I/O in production.
+        disableRequestLogging: isProduction,
+        // OPTIMIZATION: Normalizes routes to prevent 404s on trailing slashes and speeds up radix tree routing.
+        ignoreTrailingSlash: true,
+        
+        // ENTERPRISE SECURITY: Dynamic payload and slowloris limits via env variables for zero-code deployments.
+        bodyLimit: process.env.BODY_LIMIT || 1048576, // 1MB fallback
+        connectionTimeout: process.env.CONNECTION_TIMEOUT || 10000, 
+        keepAliveTimeout: process.env.KEEP_ALIVE_TIMEOUT || 5000,
+        
         // OPTIMIZATION: Enterprise validation to strip malicious or unknown payload data automatically
         ajv: {
             customOptions: {
@@ -53,12 +61,12 @@ const createApp = (opts = {}) => {
 
     // ENTERPRISE STABILITY: Load Shedding. Prevents Event Loop collapse under DDoS/heavy traffic.
     fastify.register(require('@fastify/under-pressure'), {
-        maxEventLoopDelay: 1000,
-        maxHeapUsedBytes: 1000000000, // 1GB
-        maxRssBytes: 1000000000,
-        maxEventLoopUtilization: 0.98,
+        maxEventLoopDelay: process.env.MAX_EVENT_LOOP_DELAY || 1000,
+        maxHeapUsedBytes: process.env.MAX_HEAP_BYTES || 1000000000, // 1GB
+        maxRssBytes: process.env.MAX_RSS_BYTES || 1000000000,
+        maxEventLoopUtilization: process.env.MAX_EVENT_LOOP_UTIL || 0.98,
         message: 'Service Unavailable: DailyPick server is under heavy load. Please try again later.',
-        retryAfter: 50
+        retryAfter: process.env.RETRY_AFTER || 50
     });
 
     // --- Modularized Setups ---
@@ -83,8 +91,9 @@ const createApp = (opts = {}) => {
             if (redisClient) await redisClient.quit();
         };
 
+        const shutdownLimit = process.env.SHUTDOWN_TIMEOUT || 5000;
         const timeout = new Promise((_, reject) => 
-            setTimeout(() => reject(new Error('Shutdown operation timed out after 5000ms')), 5000)
+            setTimeout(() => reject(new Error(`Shutdown operation timed out after ${shutdownLimit}ms`)), shutdownLimit)
         );
 
         try {
