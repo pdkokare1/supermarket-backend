@@ -9,8 +9,24 @@ const mongoose = require('mongoose');
 
 const createApp = (opts = {}) => {
     const fastify = Fastify({
-        logger: process.env.NODE_ENV === 'production' ? { level: 'info' } : true,
+        logger: process.env.NODE_ENV === 'production' ? { level: 'info' } : {
+            transport: {
+                target: 'pino-pretty',
+                options: {
+                    translateTime: 'HH:MM:ss Z',
+                    ignore: 'pid,hostname'
+                }
+            }
+        },
         trustProxy: true,
+        // OPTIMIZATION: Enterprise validation to strip malicious or unknown payload data automatically
+        ajv: {
+            customOptions: {
+                removeAdditional: 'all',
+                coerceTypes: true,
+                useDefaults: true
+            }
+        },
         ...opts
     });
 
