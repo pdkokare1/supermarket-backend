@@ -78,6 +78,7 @@ module.exports = function(fastify) {
         /* ...(fastify.redis && { redis: fastify.redis }) */
         
         // OPTIMIZATION: Explicitly link global Redis to prevent Distributed DDOS attacks bypassing container RAM
-        redis: fastify.redis || null
+        redis: fastify.redis || null,
+        continueExceeding: true
     });
 };
