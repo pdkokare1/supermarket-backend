@@ -19,6 +19,10 @@ const createApp = (opts = {}) => {
             }
         },
         trustProxy: true,
+        // ENTERPRISE SECURITY: Prevent payload memory exhaustion and slowloris attacks
+        bodyLimit: 1048576, // 1MB payload limit
+        connectionTimeout: 10000, 
+        keepAliveTimeout: 5000,
         // OPTIMIZATION: Enterprise validation to strip malicious or unknown payload data automatically
         ajv: {
             customOptions: {
