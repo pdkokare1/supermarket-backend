@@ -19,22 +19,27 @@ const { Readable } = require('stream');
 
 // OPTIMIZATION: Helper to publish across horizontal instances via Redis Pub/Sub
 const broadcastEvent = (eventName, payload) => {
-    // Retain native Node emitter for single-instance listeners
-    appEvents.emit(eventName, payload);
-    
-    // Broadcast to other Railway instances via Redis
-    const redis = cacheUtils.getClient();
-    if (redis) {
-        redis.publish('DAILYPICK_ORDER_EVENTS', JSON.stringify({ eventName, payload })).catch(() => {});
-    }
+    // OPTIMIZATION: Wrapped in setImmediate to completely decouple from the main synchronous execution thread
+    setImmediate(() => {
+        // Retain native Node emitter for single-instance listeners
+        appEvents.emit(eventName, payload);
+        
+        // Broadcast to other Railway instances via Redis
+        const redis = cacheUtils.getClient();
+        if (redis) {
+            redis.publish('DAILYPICK_ORDER_EVENTS', JSON.stringify({ eventName, payload })).catch(() => {});
+        }
+    });
 };
 
 async function processPayLaterRefund(customerPhone, amount, session) {
-    const custProfile = await Customer.findOne({ phone: customerPhone }).session(session);
-    if (custProfile) {
-        custProfile.creditUsed = Math.max(0, custProfile.creditUsed - amount);
-        await custProfile.save({ session });
-    }
+    // OPTIMIZATION: Replaced memory-heavy document fetch & save with an atomic database pipeline update.
+    // This guarantees thread safety under high concurrency and reduces Node.js memory overhead.
+    await Customer.updateOne(
+        { phone: customerPhone },
+        [ { $set: { creditUsed: { $max: [0, { $subtract: ["$creditUsed", amount] }] } } } ],
+        { session }
+    );
 }
 
 const clearOrderAnalyticsCache = async () => {
@@ -81,7 +86,11 @@ exports.processPartialRefund = async (orderId, payload, user) => {
 
 exports.processCancelOrder = async (orderId, reason, user) => {
     return withTransaction(async (session) => {
-        const order = await Order.findById(orderId).session(session);
+        // OPTIMIZATION: Added .select() projection to significantly reduce BSON payload size during memory hydration
+        const order = await Order.findById(orderId)
+            .select('status paymentMethod customerPhone totalAmount items storeId')
+            .session(session);
+            
         if (!order) throw new AppError('Order not found', 404);
         
         order.status = 'Cancelled';
