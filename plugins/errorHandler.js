@@ -9,18 +9,26 @@ const checkCircuitBreaker = (fastify) => {
     consecutiveErrors++;
     if (consecutiveErrors > 15 && !circuitTripped) {
         circuitTripped = true;
-        fastify.log.fatal('[CIRCUIT BREAKER] Tripped due to cascading 500 errors. External interactions paused.');
+        fastify.log.fatal('[CIRCUIT Breaker] Tripped due to cascading 500 errors. External interactions paused.');
         
         breakerResetTimer = setTimeout(() => {
             circuitTripped = false;
             consecutiveErrors = 0;
-            fastify.log.info('[CIRCUIT BREAKER] Resetting state. Resuming normal operations.');
+            fastify.log.info('[CIRCUIT Breaker] Resetting state. Resuming normal operations.');
         }, 30000); // Wait 30 seconds before retrying broken services
     }
 };
 
 module.exports = function (fastify) {
     fastify.decorate('isCircuitTripped', () => circuitTripped);
+
+    // OPTIMIZATION: Natively reset the circuit breaker state on any successful response
+    fastify.addHook('onResponse', (request, reply, done) => {
+        if (reply.statusCode >= 200 && reply.statusCode < 400) {
+            consecutiveErrors = 0;
+        }
+        done();
+    });
 
     fastify.setErrorHandler(function (error, request, reply) {
         
@@ -62,7 +70,6 @@ module.exports = function (fastify) {
             checkCircuitBreaker(fastify); // Increment failure tracking
         } else {
             fastify.log.warn(`[CLIENT ERROR] ${error.statusCode} - ${error.message} - [REQ_ID: ${request.id}]`);
-            consecutiveErrors = Math.max(0, consecutiveErrors - 1); // Recover state on successes
         }
 
         // OPTIMIZATION: Never leak raw database strings to the frontend during a crash
