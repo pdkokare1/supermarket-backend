@@ -79,8 +79,17 @@ exports.processTask = async (taskType, payload, retryCount = 0) => {
     }
 };
 
-// OPTIMIZATION: Auto-starting the background worker to continuously poll for new queue items
+// OPTIMIZATION: Auto-starting the background worker to continuously poll for new queue items.
+// We check cluster.isPrimary to ensure only the primary node (or a dedicated worker flag) handles polling,
+// preventing worker thread starvation in clustered environments.
 setTimeout(() => {
+    const cluster = require('node:cluster');
+    
+    // Only run the poller on the primary process, OR if explicitly enabled via ENV to run on a specific worker.
+    if (!cluster.isPrimary && process.env.ENABLE_WORKER_POLLING !== 'true') {
+        return; 
+    }
+
     const redis = cacheUtils.getClient();
     if (!redis) return;
 
