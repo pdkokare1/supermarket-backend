@@ -2,7 +2,11 @@
 'use strict';
 
 const mongoose = require('mongoose');
-require('dotenv').config();
+
+// OPTIMIZATION: Only load dotenv in non-production environments to save disk I/O on deployment containers.
+if (process.env.NODE_ENV !== 'production') {
+    require('dotenv').config();
+}
 
 const connectDB = require('./config/db');
 const { handleInventoryReport } = require('./jobs/inventoryHandler'); 
