@@ -1,9 +1,8 @@
 /* controllers/expenseController.js */
 
 const expenseService = require('../services/expenseService');
-const catchAsync = require('../utils/catchAsync');
 
-exports.uploadReceipt = catchAsync(async (request, reply) => {
+exports.uploadReceipt = async (request, reply) => {
     const data = await request.file();
     if (!data) return reply.status(400).send({ success: false, message: 'No file uploaded' });
 
@@ -21,17 +20,17 @@ exports.uploadReceipt = catchAsync(async (request, reply) => {
             }
         }
     }
-}, 'Expense Receipt Upload');
+};
 
-exports.createExpense = catchAsync(async (request, reply) => {
+exports.createExpense = async (request, reply) => {
     const newExpense = await expenseService.createExpense(request.body);
     
     // REMOVED: request.server.broadcastToPOS (Now handled by Service events)
 
     return { success: true, message: 'Expense logged to cloud!', data: newExpense };
-}, 'saving expense');
+};
 
-exports.getExpenses = catchAsync(async (request, reply) => {
+exports.getExpenses = async (request, reply) => {
     const expenses = await expenseService.getExpenses(request.query.dateStr);
     return { success: true, data: expenses };
-}, 'fetching expenses');
+};
