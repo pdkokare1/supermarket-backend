@@ -51,6 +51,16 @@ const createApp = (opts = {}) => {
         instance.decorate('redis', redisClient);
     }));
 
+    // ENTERPRISE STABILITY: Load Shedding. Prevents Event Loop collapse under DDoS/heavy traffic.
+    fastify.register(require('@fastify/under-pressure'), {
+        maxEventLoopDelay: 1000,
+        maxHeapUsedBytes: 1000000000, // 1GB
+        maxRssBytes: 1000000000,
+        maxEventLoopUtilization: 0.98,
+        message: 'Service Unavailable: DailyPick server is under heavy load. Please try again later.',
+        retryAfter: 50
+    });
+
     // --- Modularized Setups ---
     require('./plugins/securitySetup')(fastify); 
     require('./plugins/serverUtilsSetup')(fastify); 
