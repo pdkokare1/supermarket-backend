@@ -2,11 +2,16 @@
 
 const cacheUtils = require('../utils/cacheUtils');
 
-let redisCache = null;
+// OPTIMIZATION: Addressed a connection leak. Bypassing local variable declaration.
+// We will dynamically fetch the shared client from cacheUtils to prevent database limits.
+/* let redisCache = null; */
 
 // OPTIMIZATION: In-memory promise map to mitigate Cache Stampedes / Thundering Herds
 const inFlightPromises = new Map();
 
+// DEPRECATION CONSULTATION: Initializing a new Redis client here causes severe connection leaks 
+// because it bypasses the global pool established in app.js. The logic has been commented out.
+/*
 try {
     const Redis = require('ioredis');
     if (process.env.REDIS_URL) {
@@ -15,6 +20,7 @@ try {
 } catch (e) {
     console.error("[CACHE SERVICE] Redis Initialization Error:", e.message);
 }
+*/
 
 // OPTIMIZATION: Promise Coalescing Wrapper. Use this in your controllers to safely fetch cacheable data.
 const fetchWithCoalescing = async (cacheKey, ttlSeconds, dbFetchFunction) => {
@@ -47,7 +53,8 @@ const invalidateProductCache = async () => {
 };
 
 module.exports = {
-    redisCache,
+    // Expose the dynamically fetched global cache client instead of the leaked local instance
+    get redisCache() { return cacheUtils.getClient(); },
     invalidateProductCache,
     fetchWithCoalescing
 };
