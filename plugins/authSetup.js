@@ -25,12 +25,11 @@ module.exports = function (fastify) {
             const decoded = await request.jwtVerify();
             let user;
             
-            // DEPRECATION CONSULTATION: Full hydration causes high CPU load on every single request.
-            /* const user = await User.findById(decoded.id).select('tokenVersion isActive'); */
-
             // OPTIMIZATION: High-speed Redis caching for session verification
             if (fastify.redis) {
-                const cacheKey = `auth:session:${decoded.id}`;
+                // SECURITY FIX: Synchronized cache key with authService.js (cache:user) 
+                // Prevents revoked tokens from surviving in mismatched cache silos.
+                const cacheKey = `cache:user:${decoded.id}`;
                 const cachedSession = await fastify.redis.get(cacheKey);
                 
                 if (cachedSession) {
