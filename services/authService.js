@@ -67,8 +67,13 @@ exports.authenticateUser = async (username, pin, ip, server) => {
                            .collation({ locale: 'en', strength: 2 }); 
     
     if (!user) {
-        if (redis) await redis.incr(`lockout:ip:${ip}`);
-        if (redis && !ipFails) await redis.expire(`lockout:ip:${ip}`, 1800); // 30 min lock
+        if (redis) {
+            // PERFORMANCE: Pipelined Redis commands reduce I/O cost and latency
+            const pipeline = redis.multi();
+            pipeline.incr(`lockout:ip:${ip}`);
+            if (!ipFails) pipeline.expire(`lockout:ip:${ip}`, 1800);
+            await pipeline.exec();
+        }
         
         await logAuthAudit(server, 'FAILED_LOGIN_ATTEMPT', 'Login', safeUsername || 'Unknown', { ip, reason: 'User not found' });
         throw new AppError('Invalid Username or PIN.', 401, { safeUsername, reason: 'User not found' });
@@ -85,14 +90,6 @@ exports.authenticateUser = async (username, pin, ip, server) => {
     if (isHashed) {
         isValid = await securityService.comparePassword(pin, user.pin);
     } else {
-        // DEPRECATION CONSULTATION: Plain text string comparison is vulnerable to timing attacks
-        /*
-        if (user.pin === pin) {
-            isValid = true;
-            user.pin = await securityService.hashPassword(pin);
-        }
-        */
-
         // OPTIMIZATION: Timing-safe buffer comparison to prevent character-by-character brute forcing
         try {
             const bufUserPin = Buffer.from(user.pin);
@@ -107,8 +104,13 @@ exports.authenticateUser = async (username, pin, ip, server) => {
     }
 
     if (!isValid) {
-        if (redis) await redis.incr(`lockout:ip:${ip}`);
-        if (redis && !ipFails) await redis.expire(`lockout:ip:${ip}`, 1800);
+        if (redis) {
+            // PERFORMANCE: Pipelined Redis commands reduce I/O cost and latency
+            const pipeline = redis.multi();
+            pipeline.incr(`lockout:ip:${ip}`);
+            if (!ipFails) pipeline.expire(`lockout:ip:${ip}`, 1800);
+            await pipeline.exec();
+        }
 
         user.failedLoginAttempts = (user.failedLoginAttempts || 0) + 1;
         if (user.failedLoginAttempts >= 5) user.lockUntil = Date.now() + 15 * 60 * 1000; 
@@ -152,5 +154,6 @@ exports.revokeSession = async (userId, server) => {
 };
 
 exports.getUserById = async (id) => {
-    return await User.findById(id);
+    // PERFORMANCE: .lean() skips Mongoose document instantiation, making read queries up to 3x faster
+    return await User.findById(id).lean();
 };
