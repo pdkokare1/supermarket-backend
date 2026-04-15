@@ -18,11 +18,8 @@ exports.generateKey = (prefix, queryObj) => {
     let stringifiedData;
     
     if (queryObj && typeof queryObj === 'object') {
-        const sortedObj = {};
-        Object.keys(queryObj).sort().forEach(key => {
-            sortedObj[key] = queryObj[key];
-        });
-        stringifiedData = JSON.stringify(sortedObj);
+        // OPTIMIZATION: Native replacer array handles deterministic stringification faster than an intermediate object loop
+        stringifiedData = JSON.stringify(queryObj, Object.keys(queryObj).sort());
     } else {
         stringifiedData = String(queryObj); 
     }
