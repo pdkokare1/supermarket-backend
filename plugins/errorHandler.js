@@ -22,6 +22,18 @@ const checkCircuitBreaker = (fastify) => {
 module.exports = function (fastify) {
     fastify.decorate('isCircuitTripped', () => circuitTripped);
 
+    // OPTIMIZATION: Circuit Breaker Interceptor. Aborts incoming requests instantly if the system is overloaded.
+    fastify.addHook('onRequest', (request, reply, done) => {
+        if (circuitTripped) {
+            // Immediately reply with 503, preventing the request from executing controller or DB logic
+            return reply.status(503).send({
+                success: false,
+                message: 'Service Unavailable: DailyPick systems are temporarily paused to prevent cascading failures. Please try again in 30 seconds.'
+            });
+        }
+        done();
+    });
+
     // OPTIMIZATION: Natively reset the circuit breaker state on any successful response
     fastify.addHook('onResponse', (request, reply, done) => {
         if (reply.statusCode >= 200 && reply.statusCode < 400) {
