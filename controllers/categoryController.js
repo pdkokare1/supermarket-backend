@@ -1,13 +1,12 @@
 /* controllers/categoryController.js */
 
 const categoryService = require('../services/categoryService');
-const catchAsync = require('../utils/catchAsync');
 
-exports.getCategories = catchAsync(async (request, reply) => {
+exports.getCategories = async (request, reply) => {
     return await categoryService.getAllCategories();
-}, 'fetching categories');
+};
 
-exports.createCategory = catchAsync(async (request, reply) => {
+exports.createCategory = async (request, reply) => {
     const newCategory = await categoryService.createCategory(request.body.name);
     
     if (request.server.broadcastToPOS) {
@@ -15,4 +14,4 @@ exports.createCategory = catchAsync(async (request, reply) => {
     }
 
     return { success: true, message: 'Category added', data: newCategory };
-}, 'creating category');
+};
