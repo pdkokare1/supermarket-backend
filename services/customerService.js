@@ -4,9 +4,8 @@ const Customer = require('../models/Customer');
 const Order = require('../models/Order');
 const AppError = require('../utils/AppError'); 
 const appEvents = require('../utils/eventEmitter'); 
-const cacheUtils = require('../utils/cacheUtils'); // NEW: Added cache utility
+const cacheUtils = require('../utils/cacheUtils'); 
 
-// --- MOVED FROM CONTROLLER ---
 const formatCustomerForExport = (c) => ({
     Name: c.name,
     Phone: c.phone,
@@ -40,7 +39,7 @@ exports.getAggregatedCustomers = async () => {
         { $project: { _id: 0 } } 
     ]);
 
-    await cacheUtils.setCachedData(CACHE_KEY, data, 3600); // 3600 seconds = 1 hour
+    await cacheUtils.setCachedData(CACHE_KEY, data, 3600); 
     return data;
 };
 
@@ -78,7 +77,6 @@ exports.updateCustomerLimit = async (phone, name, isCreditEnabled, creditLimit) 
     cust.creditLimit = Number(creditLimit);
     await cust.save();
 
-    // EVENT: Notify system of profile change
     appEvents.emit('CUSTOMER_UPDATED', { phone: cust.phone });
 
     return cust;
@@ -91,8 +89,18 @@ exports.recordPayment = async (phone, amount) => {
     cust.creditUsed = Math.max(0, cust.creditUsed - Number(amount));
     await cust.save();
 
-    // EVENT: Notify system of payment
     appEvents.emit('CUSTOMER_PAYMENT_RECORDED', { phone: cust.phone });
 
     return cust;
+};
+
+// DOMAIN BOUNDARY OPTIMIZATION: Migrated from OrderService to maintain strict database isolation
+exports.refundPayLaterCredit = async (customerPhone, amount, session) => {
+    // OPTIMIZATION: Replaced memory-heavy document fetch & save with an atomic database pipeline update.
+    // This guarantees thread safety under high concurrency and reduces Node.js memory overhead.
+    await Customer.updateOne(
+        { phone: customerPhone },
+        [ { $set: { creditUsed: { $max: [0, { $subtract: ["$creditUsed", amount] }] } } } ],
+        { session }
+    );
 };
