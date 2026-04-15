@@ -10,32 +10,39 @@ module.exports = function(fastify) {
         : true; 
     */
 
-    // OPTIMIZATION: Enterprise CORS allowing the production Hostinger URL + Vercel dynamic previews
+    // DEPRECATED: Callback method sometimes drops headers during preflight (OPTIONS) behind Railway Proxy.
+    /*
     const dynamicOriginAuth = (origin, cb) => {
-        // Allow requests with no origin (e.g., mobile apps, curl, server-to-server)
         if (!origin) return cb(null, true);
-        
-        // Fallback for local development
         if (process.env.NODE_ENV !== 'production') return cb(null, true);
-
         const envOrigins = process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : [];
-        
-        // Authorize explicitly whitelisted origins
         if (envOrigins.includes(origin)) return cb(null, true);
-
-        // Authorize any dynamic Vercel frontend branch previews
         if (origin.includes('vercel.app')) return cb(null, true);
-        
-        // Authorize custom Hostinger URLs
         if (origin.includes('hostinger')) return cb(null, true);
-
-        // Reject all other unauthorized domains gracefully without crashing the request pipeline
-        // Fixes the CORS block error in the browser
         cb(null, false);
     };
+    */
+
+    // OPTIMIZATION: Bulletproof Regex Array for native Fastify CORS resolution
+    // This allows Fastify to immediately send Access-Control-Allow-Origin without async callback overhead
+    const allowedOriginsRegex = [
+        /localhost/,
+        /127\.0\.0\.1/,
+        /vercel\.app/,    // Matches any Vercel domain dynamically
+        /hostinger/       // Matches custom Hostinger setups
+    ];
+
+    // Read static origins from ENV if they exist
+    if (process.env.ALLOWED_ORIGINS) {
+        const envOrigins = process.env.ALLOWED_ORIGINS.split(',');
+        envOrigins.forEach(o => {
+            // Push static strings dynamically mapped from your environment variables
+            allowedOriginsRegex.push(new RegExp(o.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+        });
+    }
 
     fastify.register(require('@fastify/cors'), { 
-        origin: dynamicOriginAuth,
+        origin: allowedOriginsRegex,
         methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
         credentials: true,
         allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'Origin', 'X-Requested-With', 'x-api-key', 'Idempotency-Key'],
