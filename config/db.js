@@ -43,7 +43,10 @@ const connectDB = async (fastify) => {
                 process.exit(1);
             }
             
-            await new Promise(res => setTimeout(res, 5000));
+            // OPTIMIZATION: Exponential backoff instead of a flat 5000ms delay.
+            // Spacing grows sequentially to allow MongoDB cloud clusters to restart gracefully.
+            const backoffDelay = 5000 * Math.pow(2, (4 - retries));
+            await new Promise(res => setTimeout(res, backoffDelay));
         }
     }
 };
