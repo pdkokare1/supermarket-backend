@@ -23,10 +23,7 @@ const connectDB = async (fastify) => {
                 // OPTIMIZATION: (Serverless Protection) Automatically sweep and close idle connections 
                 maxIdleTimeMS: 30000, 
                 // OPTIMIZATION: Ensure network drops are detected quickly by Mongoose
-                socketTimeoutMS: 45000, 
-                // OPTIMIZATION: Ping the database periodically so active connections aren't dropped by firewalls
-                keepAlive: true,
-                keepAliveInitialDelay: 300000 
+                socketTimeoutMS: 45000
             });
 
             // OPTIMIZATION: Better Observability for dropped connections
