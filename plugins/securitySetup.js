@@ -3,21 +3,21 @@
 
 module.exports = function(fastify) {
     
-    // OPTIMIZATION: Bulletproof Regex Array for native Fastify CORS resolution
-    // This allows Fastify to immediately send Access-Control-Allow-Origin without async callback overhead
+    // ENTERPRISE SECURITY FIX: Strict Regex boundaries prevent DNS spoofing bypasses.
+    // The '^' ensures it starts with http/https, and '$' ensures exact suffix matching.
     const allowedOriginsRegex = [
-        /localhost/,
-        /127\.0\.0\.1/,
-        /vercel\.app/,    // Matches any Vercel domain dynamically
-        /hostinger/       // Matches custom Hostinger setups
+        /^https?:\/\/localhost(:\d+)?$/,
+        /^https?:\/\/127\.0\.0\.1(:\d+)?$/,
+        /^https?:\/\/.*\.vercel\.app$/,     
+        /^https?:\/\/.*\.hostinger\.com$/    // Adjusted for Hostinger TLD
     ];
 
-    // Read static origins from ENV if they exist
     if (process.env.ALLOWED_ORIGINS) {
         const envOrigins = process.env.ALLOWED_ORIGINS.split(',');
         envOrigins.forEach(o => {
-            // Push static strings dynamically mapped from your environment variables
-            allowedOriginsRegex.push(new RegExp(o.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+            const cleanOrigin = o.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            // Ensure dynamic env origins are strictly bound to prevent partial matching
+            allowedOriginsRegex.push(new RegExp(`^${cleanOrigin}$`));
         });
     }
 
@@ -26,13 +26,14 @@ module.exports = function(fastify) {
         methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
         credentials: true,
         allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'Origin', 'X-Requested-With', 'x-api-key', 'Idempotency-Key'],
-        optionsSuccessStatus: 204 
+        optionsSuccessStatus: 204,
+        // PERFORMANCE: Cache CORS preflight responses for 24 hours to halve OPTIONS request spam
+        maxAge: 86400 
     });
 
     fastify.register(require('@fastify/helmet'), {
         crossOriginResourcePolicy: { policy: "cross-origin" },
         crossOriginOpenerPolicy: { policy: "unsafe-none" },
-        // ENTERPRISE COMPLIANCE: Strict CSP and HSTS injected
         contentSecurityPolicy: {
             directives: {
                 defaultSrc: ["'self'"],
@@ -41,18 +42,20 @@ module.exports = function(fastify) {
                 upgradeInsecureRequests: [],
             },
         },
-        hsts: { maxAge: 31536000, includeSubDomains: true, preload: true }
+        hsts: { maxAge: 31536000, includeSubDomains: true, preload: true },
+        // ENTERPRISE SECURITY: Conceal your underlying technology stack from automated scanners
+        hidePoweredBy: true
     });
 
     fastify.register(require('@fastify/rate-limit'), {
         max: 100,
         timeWindow: '1 minute',
-        // OPTIMIZATION: DDOS Protection - Correctly resolve IPs behind load balancers
+        // ENTERPRISE SECURITY: Progressive Edge Banning. 
+        // Blocks IPs completely if they violate the rate limit 3 consecutive times.
+        ban: 3, 
         keyGenerator: function (request) {
-            // Because trustProxy is true in app.js, Fastify safely parses the correct client IP.
             return request.ip;
         },
-        // Global error message customization for rate limits
         errorResponseBuilder: function (request, context) {
             return {
                 statusCode: 429,
@@ -60,7 +63,6 @@ module.exports = function(fastify) {
                 message: `Rate limit exceeded. Try again in ${context.after}.`
             };
         },
-        // OPTIMIZATION: Explicitly link global Redis to prevent Distributed DDOS attacks bypassing container RAM
         redis: fastify.redis || null,
         continueExceeding: true
     });
