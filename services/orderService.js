@@ -11,36 +11,12 @@ const cacheUtils = require('../utils/cacheUtils');
 const { getPaginationOptions, getCursorFilter } = require('../utils/paginationUtils');
 const { getFilterDates } = require('../utils/dateUtils');
 const appEvents = require('../utils/eventEmitter'); 
+const customerService = require('./customerService'); // DOMAIN INTEGRATION
 const { Readable } = require('stream');
 
 // ==========================================
 // --- HELPER FUNCTIONS ---
 // ==========================================
-
-// OPTIMIZATION: Helper to publish across horizontal instances via Redis Pub/Sub
-const broadcastEvent = (eventName, payload) => {
-    // OPTIMIZATION: Wrapped in setImmediate to completely decouple from the main synchronous execution thread
-    setImmediate(() => {
-        // Retain native Node emitter for single-instance listeners
-        appEvents.emit(eventName, payload);
-        
-        // Broadcast to other Railway instances via Redis
-        const redis = cacheUtils.getClient();
-        if (redis) {
-            redis.publish('DAILYPICK_ORDER_EVENTS', JSON.stringify({ eventName, payload })).catch(() => {});
-        }
-    });
-};
-
-async function processPayLaterRefund(customerPhone, amount, session) {
-    // OPTIMIZATION: Replaced memory-heavy document fetch & save with an atomic database pipeline update.
-    // This guarantees thread safety under high concurrency and reduces Node.js memory overhead.
-    await Customer.updateOne(
-        { phone: customerPhone },
-        [ { $set: { creditUsed: { $max: [0, { $subtract: ["$creditUsed", amount] }] } } } ],
-        { session }
-    );
-}
 
 const clearOrderAnalyticsCache = async () => {
     await cacheUtils.deleteKey('orders:analytics');
@@ -69,7 +45,7 @@ exports.processPartialRefund = async (orderId, payload, user) => {
 
         if (order.paymentMethod === 'Pay Later') {
             const diff = order.totalAmount - newTotalAmount;
-            if (diff > 0) await processPayLaterRefund(order.customerPhone, diff, session);
+            if (diff > 0) await customerService.refundPayLaterCredit(order.customerPhone, diff, session);
         }
         
         order.totalAmount = newTotalAmount;
@@ -78,7 +54,7 @@ exports.processPartialRefund = async (orderId, payload, user) => {
         await auditService.logEvent({ action: 'PARTIAL_REFUND', targetType: 'Order', targetId: order._id.toString(), username: user.username, userId: user.id, details: { refundedItem: productId, qty: qtyToRefund }, session });
         await clearOrderAnalyticsCache();
 
-        broadcastEvent('ORDER_REFUNDED', { orderId: order._id, storeId: order.storeId });
+        appEvents.broadcastEvent('ORDER_REFUNDED', { orderId: order._id, storeId: order.storeId });
         
         return order;
     });
@@ -94,7 +70,7 @@ exports.processCancelOrder = async (orderId, reason, user) => {
         if (!order) throw new AppError('Order not found', 404);
         
         order.status = 'Cancelled';
-        if (order.paymentMethod === 'Pay Later') await processPayLaterRefund(order.customerPhone, order.totalAmount, session);
+        if (order.paymentMethod === 'Pay Later') await customerService.refundPayLaterCredit(order.customerPhone, order.totalAmount, session);
 
         await inventoryService.restoreInventory(order.items, order.storeId, session);
         await order.save({ session });
@@ -102,7 +78,7 @@ exports.processCancelOrder = async (orderId, reason, user) => {
         await auditService.logEvent({ action: 'CANCEL_ORDER', targetType: 'Order', targetId: order._id.toString(), username: user ? user.username : 'System', userId: user ? user.id : null, details: { reason: reason || 'Not provided', amountRefunded: order.totalAmount }, session });
         await clearOrderAnalyticsCache();
 
-        broadcastEvent('ORDER_STATUS_UPDATED', { orderId: order._id, status: 'Cancelled', storeId: order.storeId });
+        appEvents.broadcastEvent('ORDER_STATUS_UPDATED', { orderId: order._id, status: 'Cancelled', storeId: order.storeId });
 
         return order;
     });
@@ -194,7 +170,7 @@ exports.assignDriverToOrder = async (orderId, driverName, driverPhone, session =
     if (session) options.session = session;
     const order = await Order.findByIdAndUpdate(orderId, { deliveryDriverName: driverName, driverPhone: driverPhone || '' }, options);
     if (order) {
-        broadcastEvent('ORDER_UPDATED', { orderId: order._id, storeId: order.storeId });
+        appEvents.broadcastEvent('ORDER_UPDATED', { orderId: order._id, storeId: order.storeId });
     }
     return order;
 };
@@ -204,7 +180,7 @@ exports.updateOrderStatus = async (orderId, status, session = null) => {
     if (session) options.session = session;
     const order = await Order.findByIdAndUpdate(orderId, { status: status }, options);
     if (order) {
-        broadcastEvent('ORDER_STATUS_UPDATED', { orderId: order._id, status: status, storeId: order.storeId });
+        appEvents.broadcastEvent('ORDER_STATUS_UPDATED', { orderId: order._id, status: status, storeId: order.storeId });
     }
     return order;
 };
