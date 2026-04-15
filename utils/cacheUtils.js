@@ -50,7 +50,15 @@ exports.getCachedData = async (key) => {
 exports.setCachedData = async (key, data, ttlSeconds = 3600) => {
     if (!redisCache || !key) return;
     try {
-        await redisCache.set(key, JSON.stringify(data), 'EX', ttlSeconds);
+        const stringified = JSON.stringify(data);
+        
+        // OPTIMIZATION: Memory Protection. Do not cache payloads larger than ~500KB to prevent Redis OOM errors on cheap tiers.
+        if (Buffer.byteLength(stringified, 'utf8') > 500000) {
+            console.warn(`[CACHE UTILS] Payload too large for key ${key}. Bypassing Redis cache to protect memory.`);
+            return;
+        }
+
+        await redisCache.set(key, stringified, 'EX', ttlSeconds);
     } catch (e) {
         console.error("[CACHE UTILS] Set Error:", e.message);
     }
