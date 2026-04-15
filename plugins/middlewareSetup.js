@@ -52,9 +52,12 @@ module.exports = function(fastify) {
     });
 
     let cookieSecret = process.env.COOKIE_SECRET;
+    
+    // ENTERPRISE SECURITY: Fail-Fast configuration. 
+    // Never allow the container to boot with a hardcoded public string in production.
     if (process.env.NODE_ENV === 'production' && !cookieSecret) {
-        fastify.log.warn("CRITICAL SECURITY ALERT: Missing COOKIE_SECRET in production. Using fallback secret, but please configure this in Railway!");
-        cookieSecret = 'production-fallback-secret-1234567890'; 
+        fastify.log.fatal("CRITICAL SECURITY ALERT: Missing COOKIE_SECRET in production. Server shutting down to prevent session hijacking vulnerabilities.");
+        process.exit(1);
     } else if (!cookieSecret) {
         cookieSecret = 'dev-fallback-secret-123';
     }
