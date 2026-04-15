@@ -14,6 +14,14 @@ exports.setClient = (client) => {
     redisCache = client;
 };
 
+/**
+ * Retrieves the global Redis client.
+ * @returns {Object|null} The Redis client instance or null.
+ */
+exports.getClient = () => {
+    return redisCache;
+};
+
 exports.generateKey = (prefix, queryObj) => {
     let stringifiedData;
     
