@@ -85,7 +85,9 @@ module.exports = function (fastify) {
                     if (!token) throw new Error('No token provided');
                     
                     const decoded = fastify.jwt.verify(token);
-                    const user = await User.findById(decoded.id).select('role isActive tokenVersion storeId');
+                    
+                    // OPTIMIZATION: .lean() applied to bypass Mongoose hydration for faster connection handshakes
+                    const user = await User.findById(decoded.id).select('role isActive tokenVersion storeId').lean();
                     
                     if (!user || !user.isActive || user.tokenVersion !== decoded.tokenVersion) {
                         throw new Error('Invalid session');
@@ -122,7 +124,8 @@ module.exports = function (fastify) {
             })();
         });
 
-        setInterval(() => {
+        // OPTIMIZATION: Capture the interval ID to prevent process-blocking memory leaks
+        const pingInterval = setInterval(() => {
             if (!fastify.websocketServer) return;
             fastify.websocketServer.clients.forEach((client) => {
                 if (client.isAlive === false) return client.terminate();
@@ -130,5 +133,11 @@ module.exports = function (fastify) {
                 client.send(JSON.stringify({ type: 'PING' })); 
             });
         }, 30000);
+
+        // OPTIMIZATION: Clean up the dangling interval when the server shuts down gracefully
+        instance.addHook('onClose', (appInstance, done) => {
+            clearInterval(pingInterval);
+            done();
+        });
     });
 };
