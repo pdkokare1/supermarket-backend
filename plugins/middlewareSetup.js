@@ -42,18 +42,8 @@ module.exports = function(fastify) {
     });
     */
 
-    // --- HELMET SETUP ---
-    fastify.register(require('@fastify/helmet'), {
-        crossOriginResourcePolicy: { policy: "cross-origin" },
-        crossOriginOpenerPolicy: { policy: "unsafe-none" },
-        contentSecurityPolicy: false 
-    });
-
-    fastify.register(require('@fastify/rate-limit'), {
-        max: 100,
-        timeWindow: '1 minute',
-        ...(fastify.redis && { redis: fastify.redis })
-    });
+    // DELETED: Helmet and Rate-Limit were removed here to prevent fatal duplicate plugin 
+    // registration errors. They are fully managed in plugins/securitySetup.js.
 
     fastify.register(require('@fastify/compress'), { global: true });
 
