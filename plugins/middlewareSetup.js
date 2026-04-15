@@ -30,6 +30,9 @@ module.exports = function(fastify) {
         : true; 
 
     // --- CORS SETUP ---
+    // DISABLED: To prevent conflicts. CORS is already correctly handled and registered 
+    // dynamically inside plugins/securitySetup.js
+    /*
     fastify.register(require('@fastify/cors'), { 
         origin: allowedOrigins,
         methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
@@ -37,6 +40,7 @@ module.exports = function(fastify) {
         allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'Origin', 'X-Requested-With', 'x-api-key', 'x-correlation-id'],
         optionsSuccessStatus: 204 
     });
+    */
 
     // --- HELMET SETUP ---
     fastify.register(require('@fastify/helmet'), {
