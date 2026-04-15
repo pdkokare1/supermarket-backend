@@ -1,14 +1,13 @@
 /* controllers/brandController.js */
 
 const brandService = require('../services/brandService');
-const catchAsync = require('../utils/catchAsync');
 
-exports.getBrands = catchAsync(async (request, reply) => {
+exports.getBrands = async (request, reply) => {
     const brands = await brandService.getAllBrands();
     return { success: true, count: brands.length, data: brands };
-}, 'fetching brands');
+};
 
-exports.createBrand = catchAsync(async (request, reply) => {
+exports.createBrand = async (request, reply) => {
     const newBrand = await brandService.createBrand(request.body.name);
 
     if (request.server.broadcastToPOS) {
@@ -16,4 +15,4 @@ exports.createBrand = catchAsync(async (request, reply) => {
     }
 
     return { success: true, message: 'Brand added', data: newBrand };
-}, 'creating brand');
+};
