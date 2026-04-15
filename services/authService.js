@@ -45,33 +45,47 @@ exports.setupDefaultAdmin = async (envSetupKey, queryKey, isProduction) => {
         admin.isActive = true;
         admin.tokenVersion = (admin.tokenVersion || 0) + 1;
         await admin.save();
+        
+        // CACHE INVALIDATION: Clear admin cache if forcibly reset
+        const redis = cacheUtils.getClient();
+        if (redis) await redis.del(`cache:user:${admin._id.toString()}`);
+
         return { message: `Existing Admin FORCE RESET. All old sessions revoked. Username: 'admin', PIN: '${defaultPin}'` };
     }
 };
 
 exports.authenticateUser = async (username, pin, ip, server) => {
-    
-    // ENTERPRISE OPTIMIZATION: Edge IP Lockout Defense
     const redis = cacheUtils.getClient();
+    const safeUsername = username.trim(); 
     let ipFails = 0;
+    let userFails = 0;
+
+    // ENTERPRISE OPTIMIZATION: Edge IP & Distributed Account Lockout Defense
     if (redis) {
         ipFails = await redis.get(`lockout:ip:${ip}`);
+        userFails = await redis.get(`lockout:user:${safeUsername}`);
+
         if (ipFails && parseInt(ipFails) > 10) {
             await logAuthAudit(server, 'EDGE_THREAT_BLOCKED', 'IP', ip, { reason: 'IP brute-force block triggered' });
             throw new AppError('Too many failed requests from this IP. Blocked globally for 30 minutes.', 403);
         }
+        // Prevents distributed botnet attacks targeting a single account
+        if (userFails && parseInt(userFails) > 10) {
+            await logAuthAudit(server, 'EDGE_THREAT_BLOCKED', 'Username', safeUsername, { ip, reason: 'Distributed account brute-force block' });
+            throw new AppError('Too many failed requests for this account. Blocked for 15 minutes.', 403);
+        }
     }
 
-    const safeUsername = username.trim(); 
     const user = await User.findOne({ $or: [{ username: safeUsername }, { name: safeUsername }] })
                            .collation({ locale: 'en', strength: 2 }); 
     
     if (!user) {
         if (redis) {
-            // PERFORMANCE: Pipelined Redis commands reduce I/O cost and latency
             const pipeline = redis.multi();
             pipeline.incr(`lockout:ip:${ip}`);
+            pipeline.incr(`lockout:user:${safeUsername}`);
             if (!ipFails) pipeline.expire(`lockout:ip:${ip}`, 1800);
+            if (!userFails) pipeline.expire(`lockout:user:${safeUsername}`, 900);
             await pipeline.exec();
         }
         
@@ -90,7 +104,6 @@ exports.authenticateUser = async (username, pin, ip, server) => {
     if (isHashed) {
         isValid = await securityService.comparePassword(pin, user.pin);
     } else {
-        // OPTIMIZATION: Timing-safe buffer comparison to prevent character-by-character brute forcing
         try {
             const bufUserPin = Buffer.from(user.pin);
             const bufPin = Buffer.from(pin);
@@ -99,16 +112,17 @@ exports.authenticateUser = async (username, pin, ip, server) => {
                 user.pin = await securityService.hashPassword(pin);
             }
         } catch (e) {
-            isValid = false; // Buffer lengths mismatched or invalid encoding
+            isValid = false; 
         }
     }
 
     if (!isValid) {
         if (redis) {
-            // PERFORMANCE: Pipelined Redis commands reduce I/O cost and latency
             const pipeline = redis.multi();
             pipeline.incr(`lockout:ip:${ip}`);
+            pipeline.incr(`lockout:user:${safeUsername}`);
             if (!ipFails) pipeline.expire(`lockout:ip:${ip}`, 1800);
+            if (!userFails) pipeline.expire(`lockout:user:${safeUsername}`, 900);
             await pipeline.exec();
         }
 
@@ -117,11 +131,17 @@ exports.authenticateUser = async (username, pin, ip, server) => {
         await user.save();
         
         await logAuthAudit(server, 'FAILED_LOGIN_ATTEMPT', user._id.toString(), user.username, { ip, reason: 'Invalid PIN' });
-
         throw new AppError('Invalid Username or PIN.', 401, { user, reason: 'Invalid PIN' });
     }
     
-    if (redis) await redis.del(`lockout:ip:${ip}`); // Clear IP block on successful credential verification
+    if (redis) {
+        // Clear IP/User blocks and cache on successful login
+        const pipeline = redis.multi();
+        pipeline.del(`lockout:ip:${ip}`);
+        pipeline.del(`lockout:user:${safeUsername}`);
+        pipeline.del(`cache:user:${user._id.toString()}`);
+        await pipeline.exec();
+    }
     
     user.failedLoginAttempts = 0;
     user.lockUntil = undefined;
@@ -134,7 +154,7 @@ exports.authenticateUser = async (username, pin, ip, server) => {
 };
 
 exports.refreshSession = async (decodedId, decodedVersion, server) => {
-    const user = await User.findById(decodedId);
+    const user = await exports.getUserById(decodedId);
     if (!user || !user.isActive || user.tokenVersion !== decodedVersion) {
         throw new AppError('Invalid or revoked session', 401);
     }
@@ -148,12 +168,30 @@ exports.revokeSession = async (userId, server) => {
         user.tokenVersion = (user.tokenVersion || 0) + 1; // Explicit invalidation of all old refresh/access tokens
         await user.save();
         
+        const redis = cacheUtils.getClient();
+        if (redis) await redis.del(`cache:user:${userId.toString()}`);
+
         await logAuthAudit(server, 'LOGOUT', user._id.toString(), user.username, {}, user._id);
     }
     return user;
 };
 
 exports.getUserById = async (id) => {
-    // PERFORMANCE: .lean() skips Mongoose document instantiation, making read queries up to 3x faster
-    return await User.findById(id).lean();
+    const redis = cacheUtils.getClient();
+    const cacheKey = `cache:user:${id}`;
+    
+    // PERFORMANCE: Intercept read queries with memory caching to reduce DB Load
+    if (redis) {
+        const cachedUser = await redis.get(cacheKey);
+        if (cachedUser) return JSON.parse(cachedUser);
+    }
+
+    // .lean() skips Mongoose document instantiation, making read queries up to 3x faster
+    const user = await User.findById(id).lean();
+    
+    if (redis && user) {
+        await redis.set(cacheKey, JSON.stringify(user), 'EX', 300); // Cache user state for 5 minutes
+    }
+    
+    return user;
 };
