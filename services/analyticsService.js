@@ -48,60 +48,82 @@ exports.getAnalyticsData = async () => {
 
 // --- ENTERPRISE OPTIMIZATION: MATERIALIZED VIEW BUILDER ---
 exports.generateAndCachePnlRollup = async (startDate, endDate) => {
-    // DEPRECATION CONSULTATION: Original real-time heavy computation is preserved below.
-    // This exact logic now runs in the background to build the rollup.
+    // OPTIMIZATION: Javascript memory loops deleted and entirely replaced with native MongoDB pipelines.
     
     let dateFilter = {};
     if (startDate && endDate) {
         dateFilter.createdAt = { $gte: new Date(startDate), $lte: new Date(endDate) };
     }
 
-    const orders = await Order.find({ ...dateFilter, status: { $nin: ['Cancelled'] } })
-        .select('totalAmount discountAmount taxAmount items')
-        .lean();
-        
-    let totalRevenue = 0, totalCOGS = 0, totalDiscounts = 0, totalTax = 0;
+    const [orderStats, expenseStats] = await Promise.all([
+        Order.aggregate([
+            { $match: { ...dateFilter, status: { $nin: ['Cancelled'] } } },
+            { $unwind: "$items" },
+            { $lookup: {
+                from: "products", // Joins product collection natively in the DB layer
+                localField: "items.productId",
+                foreignField: "_id",
+                as: "productDoc"
+            }},
+            { $unwind: { path: "$productDoc", preserveNullAndEmptyArrays: true } },
+            { $addFields: {
+                matchedVariant: {
+                    $arrayElemAt: [
+                        { $filter: { input: "$productDoc.variants", as: "v", cond: { $eq: ["$$v._id", "$items.variantId"] } } },
+                        0
+                    ]
+                }
+            }},
+            { $addFields: {
+                estimatedCost: {
+                    $let: {
+                        vars: {
+                            lastPurchase: { $arrayElemAt: ["$matchedVariant.purchaseHistory", -1] }
+                        },
+                        in: {
+                            $cond: {
+                                if: { $and: [ { $ne: ["$$lastPurchase", null] }, { $gt: ["$$lastPurchase.purchasingPrice", 0] } ] },
+                                then: "$$lastPurchase.purchasingPrice",
+                                else: { $multiply: [{ $ifNull: ["$matchedVariant.price", "$items.price"] }, 0.7] }
+                            }
+                        }
+                    }
+                }
+            }},
+            { $group: {
+                _id: "$_id", // Re-group to the order level to correctly sum order totals
+                totalAmount: { $first: "$totalAmount" },
+                discountAmount: { $first: "$discountAmount" },
+                taxAmount: { $first: "$taxAmount" },
+                orderCOGS: { $sum: { $multiply: ["$estimatedCost", "$items.qty"] } }
+            }},
+            { $group: {
+                _id: null,
+                totalRevenue: { $sum: "$totalAmount" },
+                totalDiscounts: { $sum: "$discountAmount" },
+                totalTax: { $sum: "$taxAmount" },
+                totalCOGS: { $sum: "$orderCOGS" },
+                orderCount: { $sum: 1 }
+            }}
+        ]).allowDiskUse(true), // Prevents OOM crashes inside the database if the dataset is massive
+        Expense.aggregate([
+            { $match: dateFilter },
+            { $group: { _id: null, totalExpenses: { $sum: "$amount" } } }
+        ])
+    ]);
 
-    const relevantProductIds = new Set();
-    orders.forEach(order => {
-        if (order.items) {
-            order.items.forEach(item => relevantProductIds.add(item.productId.toString()));
-        }
-    });
-
-    const products = await Product.find({ _id: { $in: Array.from(relevantProductIds) } })
-        .select('variants._id variants.price variants.purchaseHistory')
-        .lean();
-        
-    const costMap = {};
-    products.forEach(p => {
-        p.variants.forEach(v => {
-            let avgCost = v.price * 0.7; 
-            if (v.purchaseHistory && v.purchaseHistory.length > 0) {
-                const recent = v.purchaseHistory[v.purchaseHistory.length - 1];
-                if (recent.purchasingPrice > 0) avgCost = recent.purchasingPrice;
-            }
-            costMap[`${p._id}_${v._id}`] = avgCost;
-        });
-    });
-
-    orders.forEach(order => {
-        totalRevenue += (order.totalAmount || 0);
-        totalDiscounts += (order.discountAmount || 0);
-        totalTax += (order.taxAmount || 0);
-        order.items.forEach(item => {
-            const estimatedCost = costMap[`${item.productId}_${item.variantId}`] || (item.price * 0.7);
-            totalCOGS += (estimatedCost * item.qty);
-        });
-    });
-
-    const expenses = await Expense.find(dateFilter).select('amount').lean();
-    const totalExpenses = expenses.reduce((sum, exp) => sum + (exp.amount || 0), 0);
+    const oStats = orderStats[0] || { totalRevenue: 0, totalDiscounts: 0, totalTax: 0, totalCOGS: 0, orderCount: 0 };
+    const eStats = expenseStats[0] || { totalExpenses: 0 };
 
     const rollupData = {
-        totalRevenue, totalCOGS, grossProfit: totalRevenue - totalCOGS - totalTax,
-        totalExpenses, netProfit: (totalRevenue - totalCOGS - totalTax) - totalExpenses,
-        totalDiscounts, totalTax, orderCount: orders.length,
+        totalRevenue: oStats.totalRevenue,
+        totalCOGS: oStats.totalCOGS,
+        grossProfit: oStats.totalRevenue - oStats.totalCOGS - oStats.totalTax,
+        totalExpenses: eStats.totalExpenses,
+        netProfit: (oStats.totalRevenue - oStats.totalCOGS - oStats.totalTax) - eStats.totalExpenses,
+        totalDiscounts: oStats.totalDiscounts,
+        totalTax: oStats.totalTax,
+        orderCount: oStats.orderCount,
         lastComputed: new Date().toISOString()
     };
 
