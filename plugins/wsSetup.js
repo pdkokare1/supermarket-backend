@@ -98,6 +98,14 @@ module.exports = function (fastify) {
                     ws.isAlive = true; 
 
                     ws.on('message', message => {
+                        // OPTIMIZATION: Memory Exhaustion Defense
+                        // Instantly drop frames larger than 5KB to prevent the Event Loop from freezing during synchronous JSON parsing
+                        if (Buffer.byteLength(message) > 5120) {
+                            fastify.log.warn(`[WS Store: ${ws.storeId || 'Global'}] Disconnected client for exceeding maximum frame size limit.`);
+                            ws.terminate();
+                            return;
+                        }
+
                         try {
                             const parsed = JSON.parse(message.toString());
                             if (parsed.type === 'PONG') {
