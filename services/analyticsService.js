@@ -21,11 +21,11 @@ exports.getDailyFinancialTotals = async (today, tomorrow, todayStr) => {
                 upi: { $sum: { $cond: [{ $eq: ["$paymentMethod", "UPI"] }, "$totalAmount", { $cond: [{ $eq: ["$paymentMethod", "Split"] }, { $ifNull: ["$splitDetails.upi", 0] }, 0] }] } },
                 payLater: { $sum: { $cond: [{ $eq: ["$paymentMethod", "Pay Later"] }, "$totalAmount", 0] } }
             }}
-        ]),
+        ]).allowDiskUse(true), // OPTIMIZATION: Prevents memory exhaustion on heavy sales days
         Expense.aggregate([
             { $match: { dateStr: todayStr } },
             { $group: { _id: null, totalExpenses: { $sum: "$amount" } } }
-        ])
+        ]).allowDiskUse(true)
     ]);
 
     const oStats = orderStats[0] || { totalOrderCount: 0, totalRevenue: 0, cash: 0, upi: 0, payLater: 0 };
@@ -109,7 +109,7 @@ exports.generateAndCachePnlRollup = async (startDate, endDate) => {
         Expense.aggregate([
             { $match: dateFilter },
             { $group: { _id: null, totalExpenses: { $sum: "$amount" } } }
-        ])
+        ]).allowDiskUse(true)
     ]);
 
     const oStats = orderStats[0] || { totalRevenue: 0, totalDiscounts: 0, totalTax: 0, totalCOGS: 0, orderCount: 0 };
@@ -237,5 +237,5 @@ exports.getLeaderboard = async () => {
         { $match: { status: 'Closed' } },
         { $group: { _id: "$userName", totalShifts: { $sum: 1 }, totalRevenueHandled: { $sum: "$actualCash" }, netDiscrepancy: { $sum: "$discrepancy" } } },
         { $sort: { totalRevenueHandled: -1 } }
-    ]);
+    ]).allowDiskUse(true); // OPTIMIZATION: Ensure large employee histories don't bottleneck RAM
 };
