@@ -17,7 +17,10 @@ exports.login = async (request, reply) => {
     try {
         const { user, token, refreshToken } = await authService.authenticateUser(username, pin, request.ip, request.server);
 
-        reply.setCookie('refreshToken', refreshToken, {
+        // OPTIMIZATION: Lock cookie to domain via __Host- prefix in production
+        const cookieName = process.env.NODE_ENV === 'production' ? '__Host-refreshToken' : 'refreshToken';
+
+        reply.setCookie(cookieName, refreshToken, {
             path: '/', httpOnly: true, secure: process.env.NODE_ENV === 'production',
             sameSite: 'strict', maxAge: 7 * 24 * 60 * 60 
         });
@@ -30,7 +33,11 @@ exports.login = async (request, reply) => {
 };
 
 exports.refresh = async (request, reply) => {
-    const currentRefreshToken = request.cookies.refreshToken;
+    // Check for enterprise Host-locked cookie first, fallback to legacy name during transition
+    const legacyCookieName = 'refreshToken';
+    const secureCookieName = '__Host-refreshToken';
+    const currentRefreshToken = request.cookies[secureCookieName] || request.cookies[legacyCookieName];
+    
     if (!currentRefreshToken) return reply.status(401).send({ success: false, message: 'No refresh token provided' });
 
     try {
@@ -41,7 +48,9 @@ exports.refresh = async (request, reply) => {
 
         // OPTIMIZATION: Perform explicit Refresh Token Rotation mapping to the cookie
         if (refreshToken) {
-            reply.setCookie('refreshToken', refreshToken, {
+            const cookieName = process.env.NODE_ENV === 'production' ? secureCookieName : legacyCookieName;
+            
+            reply.setCookie(cookieName, refreshToken, {
                 path: '/', httpOnly: true, secure: process.env.NODE_ENV === 'production',
                 sameSite: 'strict', maxAge: 7 * 24 * 60 * 60 
             });
@@ -74,7 +83,14 @@ exports.logout = async (request, reply) => {
         }
     }
 
-    reply.clearCookie('refreshToken', { path: '/' });
+    const cookieName = process.env.NODE_ENV === 'production' ? '__Host-refreshToken' : 'refreshToken';
+    reply.clearCookie(cookieName, { path: '/' });
+    
+    // Also clear the legacy one to be absolutely certain it's wiped on old sessions
+    if (process.env.NODE_ENV === 'production') {
+        reply.clearCookie('refreshToken', { path: '/' });
+    }
+
     return { success: true, message: 'Logged out successfully globally.' };
 };
 
