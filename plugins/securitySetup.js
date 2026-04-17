@@ -3,26 +3,40 @@
 
 module.exports = function(fastify) {
     
-    // ENTERPRISE SECURITY FIX: Switch to a hybrid array of exact strings and regexes for flawless CORS matching.
-    let corsOrigins = [
-        /^https?:\/\/localhost(:\d+)?$/,
-        /^https?:\/\/127\.0\.0\.1(:\d+)?$/,
-        /^https?:\/\/.*\.vercel\.app$/,     
-        /^https?:\/\/.*\.hostinger\.com$/
-    ];
-
-    // OPTIMIZATION: Push exact strings directly into the allowed array instead of converting to RegExp.
-    // Fastify CORS natively supports matching against mixed arrays of Strings and RegExps perfectly.
-    if (process.env.ALLOWED_ORIGINS) {
-        const envOrigins = process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim());
-        corsOrigins = corsOrigins.concat(envOrigins);
-    }
-
+    // ENTERPRISE SECURITY FIX: Bulletproof Origin Resolution Function
+    // This explicitly checks the incoming request against your Railway environment variables safely.
     fastify.register(require('@fastify/cors'), { 
-        origin: corsOrigins,
+        origin: function (origin, cb) {
+            // 1. Allow internal server requests and mobile app fetches (no origin)
+            if (!origin) return cb(null, true);
+
+            // 2. Exact match against allowed environment strings (Your Railway VIP list)
+            if (process.env.ALLOWED_ORIGINS) {
+                const allowedList = process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim());
+                if (allowedList.includes(origin)) {
+                    return cb(null, true);
+                }
+            }
+
+            // 3. Fallback to Regex for dynamic Vercel branches and local development
+            const regexes = [
+                /^https?:\/\/localhost(:\d+)?$/,
+                /^https?:\/\/127\.0\.0\.1(:\d+)?$/,
+                /^https?:\/\/.*\.vercel\.app$/,     
+                /^https?:\/\/.*\.hostinger\.com$/
+            ];
+
+            for (let reg of regexes) {
+                if (reg.test(origin)) {
+                    return cb(null, true);
+                }
+            }
+
+            // 4. Reject anything else to protect the database
+            cb(new Error("Not allowed by CORS"), false);
+        },
         methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
         credentials: true,
-        // OPTIMIZATION: Explicitly whitelisting all custom enterprise headers used by the PWA and Edge Network
         allowedHeaders: [
             'Content-Type', 
             'Authorization', 
@@ -34,18 +48,14 @@ module.exports = function(fastify) {
             'x-correlation-id',
             'Cache-Control'
         ],
-        // OPTIMIZATION: Expose headers so the frontend Vercel app can natively read them
         exposedHeaders: ['x-correlation-id', 'Idempotency-Key'],
         optionsSuccessStatus: 204,
-        // PERFORMANCE: Cache CORS preflight responses for 24 hours to halve OPTIONS request spam
         maxAge: 86400 
     });
 
-    // OPTIMIZATION: Dynamic CSP based on environment. Allows Swagger UI in dev, locks down in production.
     const isProd = process.env.NODE_ENV === 'production';
     fastify.register(require('@fastify/helmet'), {
         crossOriginResourcePolicy: { policy: "cross-origin" },
-        // OPTIMIZATION: Upgraded from "unsafe-none" to secure Firebase Auth popup flows
         crossOriginOpenerPolicy: { policy: "same-origin-allow-popups" },
         contentSecurityPolicy: {
             directives: {
@@ -56,18 +66,14 @@ module.exports = function(fastify) {
             },
         },
         hsts: { maxAge: 31536000, includeSubDomains: true, preload: true },
-        // ENTERPRISE SECURITY: Conceal your underlying technology stack from automated scanners
         hidePoweredBy: true
     });
 
     fastify.register(require('@fastify/rate-limit'), {
         max: 100,
         timeWindow: '1 minute',
-        // ENTERPRISE SECURITY: Progressive Edge Banning. 
-        // Blocks IPs completely if they violate the rate limit 3 consecutive times.
         ban: 3, 
         keyGenerator: function (request) {
-            // OPTIMIZATION: Check trusted proxy headers first to prevent IP spoofing bypasses
             return request.headers['cf-connecting-ip'] || 
                    request.headers['x-forwarded-for']?.split(',')[0].trim() || 
                    request.headers['x-real-ip'] || 
