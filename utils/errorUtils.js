@@ -13,12 +13,13 @@ exports.handleControllerError = (request, reply, error, contextMessage) => {
         return reply.status(400).send({ success: false, message: `Invalid ${error.path}: ${error.value}` });
     }
     if (error.name === 'ValidationError') {
-        const messages = Object.values(error.errors).map(val => val.message);
+        const messages = Object.values(error.errors || {}).map(val => val.message);
         return reply.status(400).send({ success: false, message: `Invalid input data. ${messages.join('. ')}` });
     }
     if (error.code === 11000) {
-        const value = error.errmsg ? error.errmsg.match(/(["'])(\\?.)*?\1/)[0] : 'Duplicate field';
-        return reply.status(400).send({ success: false, message: `Duplicate field value: ${value}. Please use another value.` });
+        // OPTIMIZATION (SECURITY): Replaced specific value extraction with a generic string.
+        // Prevents User Enumeration Attacks where an attacker guesses phone numbers/emails to see who is registered.
+        return reply.status(400).send({ success: false, message: `A record with this unique information already exists. Please verify your data.` });
     }
 
     // OPTIMIZATION: Operational Error Classification
