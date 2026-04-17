@@ -20,7 +20,11 @@ exports.uploadReceiptToCloud = async (fileStream) => {
 
 exports.createExpense = async (payload) => {
     const { desc, amount, dateStr, timeStr, receiptUrl } = payload;
-    const newExpense = new Expense({ desc, amount, dateStr, timeStr, receiptUrl });
+    
+    // OPTIMIZATION: Floating Point Protection to ensure perfect accounting
+    const safeAmount = Number(Number(amount).toFixed(2));
+    
+    const newExpense = new Expense({ desc, amount: safeAmount, dateStr, timeStr, receiptUrl });
     await newExpense.save();
 
     // EVENT: Notify admin real-time tracking of new expense
