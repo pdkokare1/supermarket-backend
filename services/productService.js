@@ -6,6 +6,7 @@ const cacheUtils = require('../utils/cacheUtils');
 const appEvents = require('../utils/eventEmitter');
 const { buildProductQuery } = require('../utils/queryBuilderUtils');
 const { getPaginationOptions, getSortQuery } = require('../utils/paginationUtils');
+const { fetchWithCoalescing } = require('./productCacheService'); // DOMAIN INTEGRATION
 
 // CONFIGURATION: Centralized Cache TTL (1 hour)
 const CACHE_TTL = 3600;
@@ -17,35 +18,34 @@ const triggerProductUpdates = async (productId) => {
 
 exports.getPaginatedProducts = async (queryParams) => {
     const cacheKey = cacheUtils.generateKey('products', queryParams);
-    const cachedData = await cacheUtils.getCachedData(cacheKey);
-    if (cachedData) return cachedData;
-
-    const filter = buildProductQuery(queryParams); 
-    const { limit, skip } = getPaginationOptions(queryParams);
-    const sortQuery = getSortQuery(queryParams.sort);
     
-    // OPTIMIZATION: Single-pass aggregation replacing find() and countDocuments()
-    // ENTERPRISE FIX: allowDiskUse(true) prevents the 100MB RAM limit crash on large collections utilizing $facet
-    const result = await Product.aggregate([
-        { $match: filter },
-        { $facet: {
-            metadata: [ { $count: "total" } ],
-            data: [
-                { $sort: sortQuery || { createdAt: -1 } },
-                { $skip: skip },
-                { $limit: limit || 50 },
-                { $project: { "variants.purchaseHistory": 0, "variants.returnHistory": 0 } }
-            ]
-        }}
-    ]).allowDiskUse(true);
+    // OPTIMIZATION: Cold Start / Cache Stampede Protection
+    // Wraps the heavy DB aggregation in the coalescing engine to ensure concurrent traffic spikes only trigger 1 database read.
+    return await fetchWithCoalescing(cacheKey, CACHE_TTL, async () => {
+        const filter = buildProductQuery(queryParams); 
+        const { limit, skip } = getPaginationOptions(queryParams);
+        const sortQuery = getSortQuery(queryParams.sort);
+        
+        // OPTIMIZATION: Single-pass aggregation replacing find() and countDocuments()
+        // ENTERPRISE FIX: allowDiskUse(true) prevents the 100MB RAM limit crash on large collections utilizing $facet
+        const result = await Product.aggregate([
+            { $match: filter },
+            { $facet: {
+                metadata: [ { $count: "total" } ],
+                data: [
+                    { $sort: sortQuery || { createdAt: -1 } },
+                    { $skip: skip },
+                    { $limit: limit || 50 },
+                    { $project: { "variants.purchaseHistory": 0, "variants.returnHistory": 0 } }
+                ]
+            }}
+        ]).allowDiskUse(true);
 
-    const products = result[0].data;
-    const total = result[0].metadata[0]?.total || 0;
+        const products = result[0].data;
+        const total = result[0].metadata[0]?.total || 0;
 
-    const responseData = { success: true, message: 'Products fetched successfully', count: products.length, total: total, data: products };
-    await cacheUtils.setCachedData(cacheKey, responseData, CACHE_TTL);
-    
-    return responseData;
+        return { success: true, message: 'Products fetched successfully', count: products.length, total: total, data: products };
+    });
 };
 
 exports.createProduct = async (productData) => {
