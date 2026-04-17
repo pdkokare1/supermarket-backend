@@ -143,6 +143,8 @@ exports.getAllOrdersForExport = () => {
     const cursor = Order.find()
         .select('orderNumber createdAt customerName customerPhone totalAmount status paymentMethod deliveryType')
         .sort({ createdAt: -1 })
+        // OPTIMIZATION: Added explicit batch size to prevent DB Cursor exhaustion on large enterprise exports
+        .batchSize(100)
         .cursor();
 
     // OPTIMIZATION: Async Generator stream pipeline ensures O(1) memory footprint for enterprise-scale exports
