@@ -39,4 +39,7 @@ const customerSchema = new mongoose.Schema({
 customerSchema.index({ phone: 1 });
 customerSchema.index({ name: 1 });
 
+// ENTERPRISE OPTIMIZATION: Compound index to instantly sort and filter CRM lists
+customerSchema.index({ phone: 1, name: 1, createdAt: -1 });
+
 module.exports = mongoose.model('Customer', customerSchema);
