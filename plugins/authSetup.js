@@ -22,6 +22,16 @@ module.exports = function (fastify) {
 
     fastify.decorate("authenticate", async function (request, reply) {
         try {
+            // OPTIMIZATION: Explicit Blacklist check to instantly block tokens revoked via the /logout route
+            const authHeader = request.headers.authorization;
+            if (authHeader && authHeader.startsWith('Bearer ') && fastify.redis) {
+                const token = authHeader.split(' ')[1];
+                const isBlacklisted = await fastify.redis.get(`bl_${token}`);
+                if (isBlacklisted) {
+                    throw new Error('Token explicitly revoked via logout.');
+                }
+            }
+
             const decoded = await request.jwtVerify();
             let user;
             
