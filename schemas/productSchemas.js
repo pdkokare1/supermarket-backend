@@ -16,14 +16,14 @@ const productSchema = {
             additionalProperties: false,
             required: ['name', 'category'],
             properties: {
-                name: { type: 'string' },
-                category: { type: 'string' },
-                brand: { type: 'string' },
-                distributorName: { type: 'string' },
-                imageUrl: { type: 'string' },
-                searchTags: { type: 'string' },
-                hsnCode: { type: 'string' },
-                taxRate: { type: 'number' },
+                name: { type: 'string', maxLength: 200 },
+                category: { type: 'string', maxLength: 100 },
+                brand: { type: 'string', maxLength: 100 },
+                distributorName: { type: 'string', maxLength: 100 },
+                imageUrl: { type: 'string', maxLength: 1000 },
+                searchTags: { type: 'string', maxLength: 500 },
+                hsnCode: { type: 'string', maxLength: 50 },
+                taxRate: { type: 'number', minimum: 0, maximum: 100 },
                 taxType: { type: 'string', enum: ['Inclusive', 'Exclusive'] }
             }
         }
@@ -37,13 +37,13 @@ const restockSchema = {
             additionalProperties: false,
             required: ['variantId', 'addedQuantity', 'purchasingPrice', 'newSellingPrice'],
             properties: {
-                variantId: { type: 'string' },
-                invoiceNumber: { type: 'string' },
-                addedQuantity: { type: 'number', minimum: 1 },
-                purchasingPrice: { type: 'number', minimum: 0 },
-                newSellingPrice: { type: 'number', minimum: 0 },
+                variantId: { type: 'string', maxLength: 50 },
+                invoiceNumber: { type: 'string', maxLength: 100 },
+                addedQuantity: { type: 'number', minimum: 1, maximum: 1000000 },
+                purchasingPrice: { type: 'number', minimum: 0, maximum: 10000000 },
+                newSellingPrice: { type: 'number', minimum: 0, maximum: 10000000 },
                 paymentStatus: { type: 'string', enum: ['Paid', 'Credit'] }, 
-                storeId: { type: 'string' } 
+                storeId: { type: 'string', maxLength: 50 } 
             }
         }
     }
@@ -56,12 +56,12 @@ const rtvSchema = {
             additionalProperties: false,
             required: ['variantId', 'returnedQuantity', 'refundAmount'],
             properties: {
-                variantId: { type: 'string' },
-                distributorName: { type: 'string' },
-                returnedQuantity: { type: 'number', minimum: 1 },
-                refundAmount: { type: 'number', minimum: 0 },
-                reason: { type: 'string' },
-                storeId: { type: 'string' } 
+                variantId: { type: 'string', maxLength: 50 },
+                distributorName: { type: 'string', maxLength: 100 },
+                returnedQuantity: { type: 'number', minimum: 1, maximum: 1000000 },
+                refundAmount: { type: 'number', minimum: 0, maximum: 10000000 },
+                reason: { type: 'string', maxLength: 500 },
+                storeId: { type: 'string', maxLength: 50 } 
             }
         }
     }
@@ -73,16 +73,16 @@ const getProductsSchema = {
             type: 'object',
             additionalProperties: false,
             properties: {
-                all: { type: 'string' },
-                search: { type: 'string' },
-                category: { type: 'string' },
-                brand: { type: 'string' },
-                distributor: { type: 'string' },
-                stockStatus: { type: 'string' },
-                page: { type: 'string' },
-                limit: { type: 'string' },
-                sort: { type: 'string' },
-                cursor: { type: 'string' }
+                all: { type: 'string', maxLength: 10 },
+                search: { type: 'string', maxLength: 200 },
+                category: { type: 'string', maxLength: 100 },
+                brand: { type: 'string', maxLength: 100 },
+                distributor: { type: 'string', maxLength: 100 },
+                stockStatus: { type: 'string', maxLength: 20 },
+                page: { type: 'string', maxLength: 10 },
+                limit: { type: 'string', maxLength: 10 },
+                sort: { type: 'string', maxLength: 50 },
+                cursor: { type: 'string', maxLength: 100 }
             }
         }
     }
