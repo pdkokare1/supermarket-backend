@@ -1,0 +1,40 @@
+# load-test.yml
+config:
+  # Targets your live Railway backend
+  target: "https://dailypick-backend-production-05d6.up.railway.app"
+  phases:
+    - duration: 30
+      arrivalRate: 5
+      name: "Warm up phase"
+    - duration: 60
+      arrivalRate: 20
+      name: "Sustained load phase"
+    - duration: 10
+      arrivalRate: 50
+      name: "Spike / Cache Stampede phase"
+  defaults:
+    headers:
+      Content-Type: "application/json"
+      # Simulating a frontend request
+      Origin: "https://supermarket-frontend.vercel.app"
+
+scenarios:
+  - name: "Concurrent Checkout Simulation"
+    flow:
+      - post:
+          url: "/api/orders"
+          headers:
+            # Simulating network stutter by reusing the same Idempotency key
+            Idempotency-Key: "TEST-LOAD-{{ $randomNumber(1000, 9999) }}"
+          json:
+            customerName: "Stress Test User"
+            customerPhone: "9999999999"
+            deliveryAddress: "Test Sector 4"
+            items:
+              - productId: "60d5f9b52f8fb814b56fa181" # Replace with a real staging product ID
+                variantId: "60d5f9b52f8fb814b56fa182"
+                qty: 1
+                price: 150
+            totalAmount: 170
+            deliveryType: "Instant"
+            scheduleTime: "ASAP"
