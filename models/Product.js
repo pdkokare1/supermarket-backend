@@ -82,4 +82,10 @@ productSchema.index({ isArchived: 1, isActive: 1, category: 1, "variants.price":
 // OPTIMIZATION: Zero-latency sort index matching the productService's default { createdAt: -1 } fallback
 productSchema.index({ isArchived: 1, isActive: 1, createdAt: -1 });
 
+// ENTERPRISE OPTIMIZATION: Weighted Text Index. Replaces O(N) Regex scans with O(1) B-Tree lookups, ranking exact name matches higher than tags.
+productSchema.index(
+    { name: 'text', searchTags: 'text', brand: 'text' }, 
+    { weights: { name: 10, searchTags: 5, brand: 2 }, name: "DailyPick_Catalog_TextSearch" }
+);
+
 module.exports = mongoose.model('Product', productSchema);
