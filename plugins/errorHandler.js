@@ -52,7 +52,8 @@ module.exports = function (fastify) {
         // OPTIMIZATION: Gracefully handle standard MongoDB user-input errors without causing 500s
         if (error.name === 'ValidationError') {
             error.statusCode = 400;
-            error.message = Object.values(error.errors).map(val => val.message).join(', ');
+            // OPTIMIZATION: Added fallback empty object to prevent process crashes on malformed error objects
+            error.message = Object.values(error.errors || {}).map(val => val.message).join(', ');
         } else if (error.name === 'CastError') {
             error.statusCode = 400;
             error.message = `Invalid ${error.path}: ${error.value}.`;
