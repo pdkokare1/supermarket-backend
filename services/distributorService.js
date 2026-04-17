@@ -36,15 +36,19 @@ exports.createDistributor = async (name) => {
 
 exports.processPayment = async (distributorId, payload) => {
     const { amount, paymentMode, referenceNote } = payload;
+    
+    // OPTIMIZATION: Floating Point Protection. Forces exact 2-decimal rounding to prevent binary drift in financial ledgers.
+    const safeAmount = Number(Number(amount).toFixed(2));
+    
     const distributor = await Distributor.findById(distributorId);
     if (!distributor) throw new AppError('Distributor not found', 404);
 
-    const actualDeduction = Math.min(distributor.totalPendingAmount, amount);
-    distributor.totalPendingAmount -= actualDeduction;
-    distributor.totalPaidAmount += amount;
+    const actualDeduction = Number(Math.min(distributor.totalPendingAmount, safeAmount).toFixed(2));
+    distributor.totalPendingAmount = Number((distributor.totalPendingAmount - actualDeduction).toFixed(2));
+    distributor.totalPaidAmount = Number((distributor.totalPaidAmount + safeAmount).toFixed(2));
     
     distributor.paymentHistory.push({
-        amount, paymentMode: paymentMode || 'Cash', referenceNote: referenceNote || 'Manual Payment Logged'
+        amount: safeAmount, paymentMode: paymentMode || 'Cash', referenceNote: referenceNote || 'Manual Payment Logged'
     });
 
     await distributor.save();
@@ -60,9 +64,12 @@ exports.processPayment = async (distributorId, payload) => {
 
 // DOMAIN BOUNDARY OPTIMIZATION: Migrated from inventoryService to maintain strict database isolation
 exports.incrementPendingAmount = async (distributorName, amount, session) => {
+    // OPTIMIZATION: Floating Point Protection.
+    const safeAmount = Number(Number(amount).toFixed(2));
+    
     await Distributor.findOneAndUpdate(
         { name: distributorName },
-        { $inc: { totalPendingAmount: amount } },
+        { $inc: { totalPendingAmount: safeAmount } },
         { upsert: true, session }
     );
 
