@@ -52,7 +52,8 @@ try {
     console.error("Redis Initialization Error in SSE Service:", e);
 }
 
-setInterval(() => {
+// OPTIMIZATION: Captured interval in a variable so it can be explicitly destroyed during container shutdown to prevent Memory Leaks
+const heartbeatInterval = setInterval(() => {
     adminConnections = adminConnections.filter(conn => {
         if (conn.destroyed || !conn.writable) {
             
@@ -182,6 +183,9 @@ const notifyStatusUpdate = (request, orderId, status, storeId) => {
 };
 
 const closeAllConnections = () => {
+    // OPTIMIZATION: Native interval termination to prevent "Zombie" background loops during worker reloads
+    clearInterval(heartbeatInterval);
+    
     adminConnections.forEach(conn => { if (!conn.destroyed) conn.end(); });
     for (const orderId in customerConnections) {
         customerConnections[orderId].forEach(conn => { if (!conn.destroyed) conn.end(); });
