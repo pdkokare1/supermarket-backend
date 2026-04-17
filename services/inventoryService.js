@@ -73,6 +73,7 @@ exports.deductInventory = async (items, storeId, session) => {
     
     const bulkOperations = [];
 
+    // OPTIMIZATION (Existing): Explicit $gte checks paired with $inc ensures an atomic constraint, preventing race conditions from dropping inventory below 0.
     for (const item of items) {
         if (storeId) {
             bulkOperations.push({
@@ -131,7 +132,7 @@ exports.getExpiringProducts = async (days = 7) => {
             stock: "$variants.stock",
             expiryDate: "$variants.expiryDate"
         }}
-    ]);
+    ]).allowDiskUse(true); // OPTIMIZATION: Prevents OOM during massive CRON scans
 };
 
 exports.calculateSalesVelocityAndStock = async (velocityDays, lowStockThreshold, deadStockQty, deadStockDays) => {
@@ -142,7 +143,7 @@ exports.calculateSalesVelocityAndStock = async (velocityDays, lowStockThreshold,
         { $match: { createdAt: { $gte: dateAgo }, status: { $in: ['Completed', 'Dispatched'] } } },
         { $unwind: "$items" },
         { $group: { _id: "$items.variantId", totalSold: { $sum: "$items.qty" } } }
-    ]);
+    ]).allowDiskUse(true); // OPTIMIZATION: Allow heavy order history scanning without crashing server RAM
 
     let variantSales = {};
     velocityAgg.forEach(v => {
