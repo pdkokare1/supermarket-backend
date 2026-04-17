@@ -3,29 +3,39 @@
 
 module.exports = function(fastify) {
     
-    // ENTERPRISE SECURITY FIX: Strict Regex boundaries prevent DNS spoofing bypasses.
-    // The '^' ensures it starts with http/https, and '$' ensures exact suffix matching.
-    const allowedOriginsRegex = [
+    // ENTERPRISE SECURITY FIX: Switch to a hybrid array of exact strings and regexes for flawless CORS matching.
+    let corsOrigins = [
         /^https?:\/\/localhost(:\d+)?$/,
         /^https?:\/\/127\.0\.0\.1(:\d+)?$/,
         /^https?:\/\/.*\.vercel\.app$/,     
-        /^https?:\/\/.*\.hostinger\.com$/    // Adjusted for Hostinger TLD
+        /^https?:\/\/.*\.hostinger\.com$/
     ];
 
+    // OPTIMIZATION: Push exact strings directly into the allowed array instead of converting to RegExp.
+    // Fastify CORS natively supports matching against mixed arrays of Strings and RegExps perfectly.
     if (process.env.ALLOWED_ORIGINS) {
-        const envOrigins = process.env.ALLOWED_ORIGINS.split(',');
-        envOrigins.forEach(o => {
-            const cleanOrigin = o.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-            // Ensure dynamic env origins are strictly bound to prevent partial matching
-            allowedOriginsRegex.push(new RegExp(`^${cleanOrigin}$`));
-        });
+        const envOrigins = process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim());
+        corsOrigins = corsOrigins.concat(envOrigins);
     }
 
     fastify.register(require('@fastify/cors'), { 
-        origin: allowedOriginsRegex,
+        origin: corsOrigins,
         methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
         credentials: true,
-        allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'Origin', 'X-Requested-With', 'x-api-key', 'Idempotency-Key'],
+        // OPTIMIZATION: Explicitly whitelisting all custom enterprise headers used by the PWA and Edge Network
+        allowedHeaders: [
+            'Content-Type', 
+            'Authorization', 
+            'Accept', 
+            'Origin', 
+            'X-Requested-With', 
+            'x-api-key', 
+            'Idempotency-Key',
+            'x-correlation-id',
+            'Cache-Control'
+        ],
+        // OPTIMIZATION: Expose headers so the frontend Vercel app can natively read them
+        exposedHeaders: ['x-correlation-id', 'Idempotency-Key'],
         optionsSuccessStatus: 204,
         // PERFORMANCE: Cache CORS preflight responses for 24 hours to halve OPTIONS request spam
         maxAge: 86400 
