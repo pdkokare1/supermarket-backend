@@ -35,7 +35,8 @@ module.exports = function(fastify) {
     const isProd = process.env.NODE_ENV === 'production';
     fastify.register(require('@fastify/helmet'), {
         crossOriginResourcePolicy: { policy: "cross-origin" },
-        crossOriginOpenerPolicy: { policy: "unsafe-none" },
+        // OPTIMIZATION: Upgraded from "unsafe-none" to secure Firebase Auth popup flows
+        crossOriginOpenerPolicy: { policy: "same-origin-allow-popups" },
         contentSecurityPolicy: {
             directives: {
                 defaultSrc: ["'self'"],
