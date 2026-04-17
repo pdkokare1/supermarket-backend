@@ -3,6 +3,9 @@
 
 const mongoose = require('mongoose');
 
+// OPTIMIZATION: Enforce strict schema filtering globally to prevent NoSQL Injection attacks.
+mongoose.set('strictQuery', true);
+
 const connectDB = async (fastify) => {
     if (mongoose.connection.readyState === 1 || mongoose.connection.readyState === 2) return true;
     
@@ -23,7 +26,9 @@ const connectDB = async (fastify) => {
                 // OPTIMIZATION: (Serverless Protection) Automatically sweep and close idle connections 
                 maxIdleTimeMS: 30000, 
                 // OPTIMIZATION: Ensure network drops are detected quickly by Mongoose
-                socketTimeoutMS: 45000
+                socketTimeoutMS: 45000,
+                // OPTIMIZATION: Force IPv4 resolution to eliminate 2-3s cold-start latency in cloud environments
+                family: 4
             });
 
             // OPTIMIZATION: Better Observability for dropped connections
