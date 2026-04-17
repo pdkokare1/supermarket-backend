@@ -52,8 +52,8 @@ exports.setCachedData = async (key, data, ttlSeconds = 3600) => {
     try {
         const stringified = JSON.stringify(data);
         
-        // OPTIMIZATION: Memory Protection. Do not cache payloads larger than ~500KB to prevent Redis OOM errors on cheap tiers.
-        if (Buffer.byteLength(stringified, 'utf8') > 500000) {
+        // OPTIMIZATION: Memory Protection using O(1) string length instead of O(n) Buffer.byteLength to prevent Event Loop blocking on massive payloads.
+        if (stringified.length > 500000) {
             console.warn(`[CACHE UTILS] Payload too large for key ${key}. Bypassing Redis cache to protect memory.`);
             return;
         }
