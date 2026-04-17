@@ -108,4 +108,7 @@ orderSchema.index({ paymentMethod: 1, createdAt: -1 });
 // ENTERPRISE OPTIMIZATION: Deep Compound Index for Materialized View Rollups
 orderSchema.index({ storeId: 1, status: 1, createdAt: -1 });
 
+// ENTERPRISE OPTIMIZATION: Text Index for instant Admin search without regex COLLSCANs
+orderSchema.index({ orderNumber: 'text', customerPhone: 'text', customerName: 'text' });
+
 module.exports = mongoose.model('Order', orderSchema);
