@@ -11,7 +11,11 @@ const createApp = (opts = {}) => {
     const isProduction = process.env.NODE_ENV === 'production';
     
     const fastify = Fastify({
-        logger: isProduction ? { level: 'info' } : {
+        logger: isProduction ? { 
+            level: 'info',
+            // OPTIMIZATION: Redact sensitive credential headers to prevent them from hitting cloud log streams
+            redact: ['req.headers.authorization', 'req.headers.cookie'] 
+        } : {
             transport: {
                 target: 'pino-pretty',
                 options: {
