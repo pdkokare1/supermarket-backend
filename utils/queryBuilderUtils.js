@@ -1,14 +1,21 @@
 /* utils/queryBuilderUtils.js */
 
+// OPTIMIZATION: Helper function to neutralize regex control characters and prevent ReDoS attacks.
+const escapeRegex = (string) => {
+    return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+};
+
 const buildProductQuery = (queryObj) => {
     let filter = queryObj.all === 'true' 
         ? { isArchived: { $ne: true } } 
         : { isActive: true, isArchived: { $ne: true } };
     
     if (queryObj.search) { 
+        // OPTIMIZATION: Applied escapeRegex to the user input before executing the database scan
+        const safeSearch = escapeRegex(queryObj.search);
         filter.$or = [ 
-            { name: { $regex: queryObj.search, $options: 'i' } }, 
-            { searchTags: { $regex: queryObj.search, $options: 'i' } } 
+            { name: { $regex: safeSearch, $options: 'i' } }, 
+            { searchTags: { $regex: safeSearch, $options: 'i' } } 
         ]; 
     }
     
