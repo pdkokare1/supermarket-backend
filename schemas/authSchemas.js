@@ -6,8 +6,9 @@ const loginSchema = {
             type: 'object',
             required: ['username', 'pin'],
             properties: {
-                username: { type: 'string' },
-                pin: { type: 'string' }
+                // OPTIMIZATION: Strict constraints to prevent DoS attacks through excessive payload hashing times
+                username: { type: 'string', maxLength: 50 },
+                pin: { type: 'string', maxLength: 255 }
             }
         }
     },
@@ -25,7 +26,7 @@ const verifySchema = {
             type: 'object',
             required: ['id'],
             properties: {
-                id: { type: 'string' }
+                id: { type: 'string', maxLength: 100 }
             }
         }
     }
