@@ -11,10 +11,10 @@ exports.generateTokens = (server, user) => {
         { expiresIn: '7d' }
     );
 
-    // Access Token: Short-lived (15 Minutes). Inherits the '15m' strict config from authSetup.js.
-    // OPTIMIZATION FIX: Removed manual 7d override to prevent XSS hijacking vulnerabilities.
+    // FIX: Increased Access Token lifespan to 7 days to prevent cashiers from being logged out mid-shift.
     const token = server.jwt.sign(
-        { id: user._id, role: user.role, username: user.username, tokenVersion }
+        { id: user._id, role: user.role, username: user.username, tokenVersion },
+        { expiresIn: '7d' }
     );
 
     return { token, refreshToken };
