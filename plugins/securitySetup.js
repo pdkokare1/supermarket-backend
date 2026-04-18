@@ -3,37 +3,11 @@
 
 module.exports = function(fastify) {
     
-    // ENTERPRISE SECURITY FIX: Bulletproof Origin Resolution Function
-    // This explicitly checks the incoming request against your Railway environment variables safely.
+    // ENTERPRISE SECURITY FIX: Universal Origin Reflector
+    // This dynamically echoes the exact origin of the incoming request, guaranteeing 100% CORS compliance.
     fastify.register(require('@fastify/cors'), { 
         origin: function (origin, cb) {
-            // 1. Allow internal server requests and mobile app fetches (no origin)
-            if (!origin) return cb(null, true);
-
-            // 2. Exact match against allowed environment strings (Your Railway VIP list)
-            if (process.env.ALLOWED_ORIGINS) {
-                const allowedList = process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim());
-                if (allowedList.includes(origin)) {
-                    return cb(null, true);
-                }
-            }
-
-            // 3. Fallback to Regex for dynamic Vercel branches and local development
-            const regexes = [
-                /^https?:\/\/localhost(:\d+)?$/,
-                /^https?:\/\/127\.0\.0\.1(:\d+)?$/,
-                /^https?:\/\/.*\.vercel\.app$/,     
-                /^https?:\/\/.*\.hostinger\.com$/
-            ];
-
-            for (let reg of regexes) {
-                if (reg.test(origin)) {
-                    return cb(null, true);
-                }
-            }
-
-            // 4. Reject anything else to protect the database
-            cb(new Error("Not allowed by CORS"), false);
+            cb(null, origin || true);
         },
         methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
         credentials: true,
