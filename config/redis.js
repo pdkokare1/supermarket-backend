@@ -3,39 +3,38 @@
 
 const Redis = require('ioredis');
 
-// OPTIMIZATION: Accept fastify instance to enforce structured logging
-const initRedis = (fastify = null) => {
-    let redisClient = null;
-    const logger = fastify && fastify.log ? fastify.log : console;
+const initRedis = () => {
+    if (!process.env.REDIS_URL) {
+        console.warn('REDIS_URL not provided. Running without Redis cache.');
+        return null;
+    }
 
     try {
-        if (process.env.REDIS_URL) {
-            redisClient = new Redis(process.env.REDIS_URL, {
-                retryStrategy(times) {
-                    // OPTIMIZATION: Exponential backoff with Jitter for enterprise cloud resilience
-                    const delay = Math.min(times * 100, 3000); 
-                    const jitter = Math.floor(Math.random() * 200); 
-                    return delay + jitter;
-                },
-                maxRetriesPerRequest: 3, // Prevent infinite hanging if Redis goes down
-                
-                // OPTIMIZATION: Fail-fast offline queue. Prevents API requests from hanging 
-                enableOfflineQueue: false,
-                
-                // OPTIMIZATION: Keep-Alive pings prevent Railway/Cloud proxies from dropping idle TCP connections
-                keepAlive: 10000 
-            });
+        const redisClient = new Redis(process.env.REDIS_URL, {
+            // FIX: Disables the infinite waiting room. If Redis is down, fail instantly.
+            enableOfflineQueue: false,
+            // FIX: Forces any hanging commands to abort after 2 seconds instead of 10.
+            commandTimeout: 2000,
+            maxRetriesPerRequest: 3,
+            retryStrategy: (times) => {
+                // Exponential backoff for reconnections to prevent spamming the network
+                return Math.min(times * 100, 3000);
+            }
+        });
 
-            redisClient.on('connect', () => logger.info('[SERVER] Redis connected successfully.'));
-            redisClient.on('error', (err) => logger.error(`[SERVER] Redis Error: ${err.message}`));
-        } else {
-            logger.warn('[SERVER] REDIS_URL not provided. Redis client bypassed.');
-        }
-    } catch(e) {
-        logger.error(`[SERVER] Redis initialization failed: ${e.message}`);
+        redisClient.on('error', (err) => {
+            console.error('[REDIS] Connection Error:', err.message);
+        });
+
+        redisClient.on('ready', () => {
+            console.log('[REDIS] Client successfully connected and ready to receive commands.');
+        });
+
+        return redisClient;
+    } catch (error) {
+        console.error('Failed to initialize Redis:', error);
+        return null;
     }
-    
-    return redisClient;
 };
 
 module.exports = initRedis;
