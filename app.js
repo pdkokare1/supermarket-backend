@@ -81,6 +81,7 @@ const createApp = (opts = {}) => {
     require('./plugins/authSetup')(fastify);
     require('./plugins/wsSetup')(fastify);
     require('./plugins/errorHandler')(fastify);
+    require('./plugins/middlewareSetup')(fastify); // FIXED: Added missing middleware registration
 
     fastify.register(require('./routes/systemRoutes'));
     fastify.register(require('./routes')); 
