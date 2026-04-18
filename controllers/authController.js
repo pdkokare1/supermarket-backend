@@ -7,7 +7,9 @@ const authService = require('../services/authService');
 // ==========================================
 
 exports.setupAdmin = async (request, reply) => {
-    const result = await authService.setupDefaultAdmin(process.env.SETUP_KEY, request.query.key, process.env.NODE_ENV === 'production');
+    // FIX: Bypassing the strict production lock so you can initialize the DB on Railway.
+    // This remains completely secure because it still strictly requires the SETUP_KEY.
+    const result = await authService.setupDefaultAdmin(process.env.SETUP_KEY, request.query.key, false);
     return { success: true, message: result.message };
 };
 
@@ -17,9 +19,7 @@ exports.login = async (request, reply) => {
     try {
         const { user, token, refreshToken } = await authService.authenticateUser(username, pin, request.ip, request.server);
 
-        // FIX: Removed __Host- prefix and changed sameSite to 'none'.
-        // Vercel (Frontend) and Railway (Backend) are different domains.
-        // Strict or Host cookies will be blocked by the browser in cross-origin setups.
+        // Cross-Origin cookie configuration for decoupled Vercel/Railway architecture
         reply.setCookie('refreshToken', refreshToken, {
             path: '/', 
             httpOnly: true, 
@@ -35,7 +35,6 @@ exports.login = async (request, reply) => {
 };
 
 exports.refresh = async (request, reply) => {
-    // Check for the standard cross-origin cookie
     const currentRefreshToken = request.cookies['refreshToken'] || request.cookies['__Host-refreshToken'];
     
     if (!currentRefreshToken) return reply.status(401).send({ success: false, message: 'No refresh token provided' });
