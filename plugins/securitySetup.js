@@ -4,7 +4,8 @@
 module.exports = function(fastify) {
     
     // ENTERPRISE SECURITY FIX: Universal Origin Reflector
-    // Using origin: true dynamically mirrors the request's exact origin, satisfying strict CORS credential checks.
+    // Setting origin: true dynamically mirrors the request's exact origin, 
+    // satisfying strict CORS credential checks from Vercel frontends.
     fastify.register(require('@fastify/cors'), { 
         origin: true,
         methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
