@@ -1,4 +1,5 @@
 /* plugins/middlewareSetup.js */
+'use strict';
 
 const auditService = require('../services/auditService');
 const crypto = require('crypto'); // OPTIMIZATION: Natively generate correlation IDs
@@ -24,12 +25,14 @@ module.exports = function(fastify) {
         await auditService.flushAuditBatch();
     });
 
-    // CORS & Helmet are disabled here as they are correctly managed in securitySetup.js.
-
     fastify.register(require('@fastify/compress'), { global: true });
 
+    // OPTIMIZATION: Hardened Multipart limits to drop hanging connections and prevent slow-loris/multipart DDoS
     fastify.register(require('@fastify/multipart'), {
-        limits: { fileSize: 5 * 1024 * 1024 }
+        limits: { 
+            fileSize: 5 * 1024 * 1024, // 5MB Limit
+            files: 1 // Enterprise Hardening: Prevent multipart-bomb attacks by restricting to 1 file per payload
+        }
     });
 
     let cookieSecret = process.env.COOKIE_SECRET;
@@ -47,10 +50,4 @@ module.exports = function(fastify) {
         secret: cookieSecret,
         hook: 'onRequest'
     });
-
-    fastify.register(require('@fastify/websocket'));
-    
-    // OPTIMIZATION: Deleted duplicate @fastify/swagger and @fastify/swagger-ui 
-    // configurations to prevent fatal duplicate plugin crashes, as Swagger is
-    // correctly managed in plugins/apiDocsSetup.js.
 };
