@@ -75,13 +75,12 @@ const createApp = (opts = {}) => {
 
     // --- Modularized Setups ---
     require('./plugins/securitySetup')(fastify); 
-    require('./plugins/serverUtilsSetup')(fastify); 
+    require('./plugins/middlewareSetup')(fastify); 
     require('./plugins/apiDocsSetup')(fastify); 
     require('./plugins/eventsSetup')(fastify);
     require('./plugins/authSetup')(fastify);
     require('./plugins/wsSetup')(fastify);
     require('./plugins/errorHandler')(fastify);
-    require('./plugins/middlewareSetup')(fastify); // FIXED: Added missing middleware registration
 
     fastify.register(require('./routes/systemRoutes'));
     fastify.register(require('./routes')); 
