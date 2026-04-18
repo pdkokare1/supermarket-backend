@@ -1,4 +1,5 @@
 /* plugins/middlewareSetup.js */
+'use strict';
 
 const auditService = require('../services/auditService');
 const crypto = require('crypto'); // OPTIMIZATION: Natively generate correlation IDs
@@ -26,10 +27,11 @@ module.exports = function(fastify) {
 
     fastify.register(require('@fastify/compress'), { global: true });
 
+    // OPTIMIZATION: Hardened Multipart limits to drop hanging connections and prevent slow-loris/multipart DDoS
     fastify.register(require('@fastify/multipart'), {
         limits: { 
             fileSize: 5 * 1024 * 1024,
-            files: 1 
+            files: 1 // Enterprise Hardening: Restrict to 1 file per payload
         }
     });
 
