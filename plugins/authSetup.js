@@ -16,7 +16,7 @@ module.exports = function (fastify) {
         },
         sign: { 
             algorithm: 'RS256',
-            expiresIn: '15m' // Hardening primary access token lifespan to mitigate XSS interception
+            expiresIn: '7d' // FIX: Extended to 7 days for POS store efficiency
         }
     });
 
@@ -48,8 +48,8 @@ module.exports = function (fastify) {
                     // Fallback to .lean() which skips Mongoose object hydration, making this critical path faster
                     user = await User.findById(decoded.id).select('tokenVersion isActive role').lean();
                     if (user) {
-                        // Cache for 15 minutes to match token expiry
-                        await fastify.redis.set(cacheKey, JSON.stringify(user), 'EX', 900); 
+                        // FIX: Extended cache TTL to 7 days (604800 seconds) to match the new token expiry
+                        await fastify.redis.set(cacheKey, JSON.stringify(user), 'EX', 604800); 
                     }
                 }
             } else {
