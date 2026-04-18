@@ -35,8 +35,7 @@ const customerSchema = new mongoose.Schema({
     }
 }, { timestamps: true });
 
-// ENTERPRISE OPTIMIZATION: Immediate memory pointers for lightning-fast POS customer lookup
-customerSchema.index({ phone: 1 });
+// ENTERPRISE OPTIMIZATION: Immediate memory pointer for lightning-fast POS customer lookup
 customerSchema.index({ name: 1 });
 
 // ENTERPRISE OPTIMIZATION: Compound index to instantly sort and filter CRM lists
