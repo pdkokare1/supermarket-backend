@@ -24,26 +24,7 @@ module.exports = function(fastify) {
         await auditService.flushAuditBatch();
     });
 
-    // EFFICIENCY: Convert comma-separated string to an array for production lookups.
-    const allowedOrigins = process.env.ALLOWED_ORIGINS 
-        ? process.env.ALLOWED_ORIGINS.split(',') 
-        : true; 
-
-    // --- CORS SETUP ---
-    // DISABLED: To prevent conflicts. CORS is already correctly handled and registered 
-    // dynamically inside plugins/securitySetup.js
-    /*
-    fastify.register(require('@fastify/cors'), { 
-        origin: allowedOrigins,
-        methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-        credentials: true,
-        allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'Origin', 'X-Requested-With', 'x-api-key', 'x-correlation-id'],
-        optionsSuccessStatus: 204 
-    });
-    */
-
-    // DELETED: Helmet and Rate-Limit were removed here to prevent fatal duplicate plugin 
-    // registration errors. They are fully managed in plugins/securitySetup.js.
+    // CORS & Helmet are disabled here as they are correctly managed in securitySetup.js.
 
     fastify.register(require('@fastify/compress'), { global: true });
 
@@ -69,16 +50,7 @@ module.exports = function(fastify) {
 
     fastify.register(require('@fastify/websocket'));
     
-    fastify.register(require('@fastify/swagger'), {
-        swagger: {
-            info: { title: 'DailyPick API', description: 'Enterprise Backend API', version: '1.0.0' },
-            consumes: ['application/json'],
-            produces: ['application/json']
-        }
-    });
-    
-    fastify.register(require('@fastify/swagger-ui'), {
-        routePrefix: '/api/docs',
-        uiConfig: { docExpansion: 'none', deepLinking: false }
-    });
+    // OPTIMIZATION: Deleted duplicate @fastify/swagger and @fastify/swagger-ui 
+    // configurations to prevent fatal duplicate plugin crashes, as Swagger is
+    // correctly managed in plugins/apiDocsSetup.js.
 };
