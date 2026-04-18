@@ -3,6 +3,9 @@
 const User = require('../models/User');
 
 module.exports = function (fastify) {
+    // BUG FIX: Register the websocket plugin so Fastify knows how to handle the WS upgrade handshake
+    fastify.register(require('@fastify/websocket'));
+
     let redisPubWS = null;
     let redisSubWS = null;
 
