@@ -4,11 +4,9 @@
 module.exports = function(fastify) {
     
     // ENTERPRISE SECURITY FIX: Universal Origin Reflector
-    // This dynamically echoes the exact origin of the incoming request, guaranteeing 100% CORS compliance.
+    // Using origin: true dynamically mirrors the request's exact origin, satisfying strict CORS credential checks.
     fastify.register(require('@fastify/cors'), { 
-        origin: function (origin, cb) {
-            cb(null, origin || true);
-        },
+        origin: true,
         methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
         credentials: true,
         allowedHeaders: [
@@ -23,6 +21,7 @@ module.exports = function(fastify) {
             'Cache-Control'
         ],
         exposedHeaders: ['x-correlation-id', 'Idempotency-Key'],
+        preflightContinue: false,
         optionsSuccessStatus: 204,
         maxAge: 86400 
     });
