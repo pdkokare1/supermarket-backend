@@ -67,7 +67,8 @@ const heartbeatInterval = setInterval(() => {
             return false;
         }
         try {
-            conn.write(':\n\n');
+            // FIX: Explicitly send a named heartbeat comment to prevent HTTP/2 proxy drops
+            conn.write(': heartbeat\n\n');
             return true;
         } catch (e) {
             conn.removeAllListeners();
@@ -84,7 +85,8 @@ const heartbeatInterval = setInterval(() => {
                 return false;
             }
             try {
-                conn.write(':\n\n');
+                // FIX: Explicitly send a named heartbeat comment to prevent HTTP/2 proxy drops
+                conn.write(': heartbeat\n\n');
                 return true;
             } catch (e) {
                 conn.removeAllListeners();
@@ -131,9 +133,11 @@ const setSSEHeaders = (request, reply) => {
     reply.hijack(); 
     if (reply.raw.socket) reply.raw.socket.setTimeout(0); 
     
+    // FIX: Added 'Connection': 'keep-alive' required for proxy environments
     reply.raw.writeHead(200, {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
         'Access-Control-Allow-Origin': request.headers.origin || '*',  
         'Access-Control-Allow-Credentials': 'true',
         'X-Accel-Buffering': 'no'            
