@@ -15,26 +15,21 @@ const connectDB = async (fastify) => {
     while (retries) {
         try {
             await mongoose.connect(process.env.MONGO_URI, {
-                // OPTIMIZATION: Configurable pool size for clustered environments
                 maxPoolSize: parseInt(process.env.MONGO_MAX_POOL_SIZE, 10) || 50,
-                // OPTIMIZATION: Maintain a minimum baseline of connections to prevent cold-start latency spikes
                 minPoolSize: parseInt(process.env.MONGO_MIN_POOL_SIZE, 10) || 10, 
-                // OPTIMIZATION: Fail fast (5s) to trigger the retry logic instead of hanging
                 serverSelectionTimeoutMS: 5000,
-                // OPTIMIZATION: Prevent performance hits on container restart by disabling autoIndex in production
                 autoIndex: process.env.NODE_ENV !== 'production',
-                // OPTIMIZATION: (Serverless Protection) Automatically sweep and close idle connections 
                 maxIdleTimeMS: 30000, 
-                // OPTIMIZATION: Ensure network drops are detected quickly by Mongoose
                 socketTimeoutMS: 45000,
-                // OPTIMIZATION: Force IPv4 resolution to eliminate 2-3s cold-start latency in cloud environments
+                // OPTIMIZATION: Prevents load balancers from silently dropping idle TCP connections
+                keepAliveInitialDelay: 300000,
                 family: 4
             });
 
-            // OPTIMIZATION: Better Observability for dropped connections
-            mongoose.connection.on('disconnected', () => {
-                logger.warn('MongoDB connection dropped. Awaiting automatic reconnection...');
-            });
+            // OPTIMIZATION: Complete Lifecycle Observability
+            mongoose.connection.on('disconnected', () => logger.warn('MongoDB connection dropped. Awaiting automatic reconnection...'));
+            mongoose.connection.on('reconnected', () => logger.info('MongoDB successfully reconnected.'));
+            mongoose.connection.on('error', (err) => logger.error(`MongoDB Connection Error: ${err.message}`));
 
             logger.info(`Successfully connected to MongoDB Atlas by Process ${process.pid}`);
             
@@ -48,8 +43,6 @@ const connectDB = async (fastify) => {
                 process.exit(1);
             }
             
-            // OPTIMIZATION: Exponential backoff instead of a flat 5000ms delay.
-            // Spacing grows sequentially to allow MongoDB cloud clusters to restart gracefully.
             const backoffDelay = 5000 * Math.pow(2, (4 - retries));
             await new Promise(res => setTimeout(res, backoffDelay));
         }
