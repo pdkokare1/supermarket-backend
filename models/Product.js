@@ -64,10 +64,8 @@ const productSchema = new mongoose.Schema({
     variants: [variantSchema] 
 }, { timestamps: true });
 
-// Existing Indexes
-productSchema.index({ isActive: 1, category: 1 });
+// Existing Indexes (Consolidated and Optimized)
 productSchema.index({ "variants.sku": 1 });
-productSchema.index({ isArchived: 1 });
 productSchema.index({ "variants.stock": 1, "variants.lowStockThreshold": 1 });
 productSchema.index({ name: 1, brand: 1 });
 productSchema.index({ searchTags: 1 });
@@ -77,15 +75,10 @@ productSchema.index({ "variants.locationInventory.storeId": 1 });
 productSchema.index({ isActive: 1, "variants.stock": 1 });
 
 // ENTERPRISE OPTIMIZATION: Front-end Catalog Pre-computation Index
+// This also perfectly covers queries that just look for { isArchived: 1 } and { isArchived: 1, isActive: 1 }
 productSchema.index({ isArchived: 1, isActive: 1, category: 1, "variants.price": 1 });
 
 // OPTIMIZATION: Zero-latency sort index matching the productService's default { createdAt: -1 } fallback
-productSchema.index({ isArchived: 1, isActive: 1, createdAt: -1 });
-
-// ENTERPRISE OPTIMIZATION: Weighted Text Index. Replaces O(N) Regex scans with O(1) B-Tree lookups, ranking exact name matches higher than tags.
-productSchema.index(
-    { name: 'text', searchTags: 'text', brand: 'text' }, 
-    { weights: { name: 10, searchTags: 5, brand: 2 }, name: "DailyPick_Catalog_TextSearch" }
-);
+productSchema.index({ createdAt: -1 });
 
 module.exports = mongoose.model('Product', productSchema);
