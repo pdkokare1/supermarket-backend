@@ -7,10 +7,17 @@ const mongoose = require('mongoose');
 mongoose.set('strictQuery', true);
 
 const connectDB = async (fastify) => {
+    const logger = fastify && fastify.log ? fastify.log : console;
+
+    // OPTIMIZATION: Pre-flight check to prevent costly retry loops if config is missing
+    if (!process.env.MONGO_URI) {
+        logger.error('CRITICAL ERROR: MONGO_URI is missing from environment variables. Aborting database initialization.');
+        process.exit(1);
+    }
+
     if (mongoose.connection.readyState === 1 || mongoose.connection.readyState === 2) return true;
     
     let retries = 5;
-    const logger = fastify && fastify.log ? fastify.log : console;
 
     while (retries) {
         try {
