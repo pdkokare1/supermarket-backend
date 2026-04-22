@@ -10,6 +10,10 @@ const orderCounterSchema = new mongoose.Schema({
 // Attach to mongoose models cleanly so hot-reloads don't crash
 const OrderCounter = mongoose.models.OrderCounter || mongoose.model('OrderCounter', orderCounterSchema);
 
+// OPTIMIZATION: Schema wrapper to strip auto-generated _ids from cart items, saving Atlas storage size.
+// strict: false ensures no frontend payload data is ever lost or rejected.
+const orderItemSchema = new mongoose.Schema({}, { strict: false, _id: false });
+
 const orderSchema = new mongoose.Schema({
     // --- NEW: Human Readable Order Identifier ---
     orderNumber: { 
@@ -54,7 +58,7 @@ const orderSchema = new mongoose.Schema({
         default: ''
     },
     items: { 
-        type: Array, 
+        type: [orderItemSchema], 
         required: true 
     },
     totalAmount: { 
