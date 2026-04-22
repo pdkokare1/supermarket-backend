@@ -74,16 +74,11 @@ const createApp = (opts = {}) => {
     });
 
     // --- Modularized Setups ---
-    require('./plugins/securitySetup')(fastify); 
-    require('./plugins/middlewareSetup')(fastify); 
-    require('./plugins/apiDocsSetup')(fastify); 
-    require('./plugins/eventsSetup')(fastify);
-    require('./plugins/authSetup')(fastify);
-    require('./plugins/wsSetup')(fastify);
-    require('./plugins/errorHandler')(fastify);
+    const corePlugins = ['securitySetup', 'middlewareSetup', 'apiDocsSetup', 'eventsSetup', 'authSetup', 'wsSetup', 'errorHandler'];
+    corePlugins.forEach(plugin => require(`./plugins/${plugin}`)(fastify));
 
-    fastify.register(require('./routes/systemRoutes'));
-    fastify.register(require('./routes')); 
+    const coreRoutes = ['systemRoutes', 'index'];
+    coreRoutes.forEach(route => fastify.register(require(`./routes/${route}`)));
 
     // OPTIMIZATION: Graceful Shutdown Hook with Promise.race fallback timeout
     fastify.addHook('onClose', async (instance, done) => {
