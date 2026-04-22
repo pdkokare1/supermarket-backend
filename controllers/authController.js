@@ -2,6 +2,15 @@
 
 const authService = require('../services/authService');
 
+// OPTIMIZATION: Centralized dynamic cookie configuration to enforce consistent security across all auth endpoints
+const getCookieOptions = () => ({
+    path: '/', 
+    httpOnly: true, 
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax', 
+    maxAge: 7 * 24 * 60 * 60 
+});
+
 // ==========================================
 // --- CONTROLLER EXPORTS ---
 // ==========================================
@@ -20,13 +29,7 @@ exports.login = async (request, reply) => {
         const { user, token, refreshToken } = await authService.authenticateUser(username, pin, request.ip, request.server);
 
         // Cross-Origin cookie configuration for decoupled Vercel/Railway architecture
-        reply.setCookie('refreshToken', refreshToken, {
-            path: '/', 
-            httpOnly: true, 
-            secure: process.env.NODE_ENV === 'production',
-            sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax', 
-            maxAge: 7 * 24 * 60 * 60 
-        });
+        reply.setCookie('refreshToken', refreshToken, getCookieOptions());
         
         return { success: true, message: 'Login successful', data: user, token: token };
     } catch (error) {
@@ -45,13 +48,7 @@ exports.refresh = async (request, reply) => {
         const { user, token, refreshToken } = await authService.refreshSession(decoded.id, decoded.tokenVersion, request.server);
 
         if (refreshToken) {
-            reply.setCookie('refreshToken', refreshToken, {
-                path: '/', 
-                httpOnly: true, 
-                secure: process.env.NODE_ENV === 'production',
-                sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax', 
-                maxAge: 7 * 24 * 60 * 60 
-            });
+            reply.setCookie('refreshToken', refreshToken, getCookieOptions());
         }
 
         return { success: true, token: token, data: user };
