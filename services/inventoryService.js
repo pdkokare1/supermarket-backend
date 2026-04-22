@@ -160,22 +160,28 @@ exports.calculateSalesVelocityAndStock = async (velocityDays, lowStockThreshold,
     
     for await (let p of productCursor) {
         let isModified = false;
+        let updateFields = {}; // ENTERPRISE FIX: Strict dot-notation targeting
         
         if (p.variants) {
-            p.variants.forEach(v => {
+            p.variants.forEach((v, index) => {
                 const totalSold = variantSales[v._id.toString()] || 0;
                 const dailyAvg = totalSold / velocityDays;
-                v.averageDailySales = Number(dailyAvg.toFixed(2));
+                
+                const avgDailySalesFixed = Number(dailyAvg.toFixed(2));
+                const daysOfStockFixed = dailyAvg > 0 ? Number((v.stock / dailyAvg).toFixed(1)) : 999;
 
-                v.daysOfStock = dailyAvg > 0 ? Number((v.stock / dailyAvg).toFixed(1)) : 999;
+                // ENTERPRISE FIX: Update ONLY the specific stats using array indices.
+                // This prevents the cron job from accidentally overwriting live stock updates (race conditions)
+                updateFields[`variants.${index}.averageDailySales`] = avgDailySalesFixed;
+                updateFields[`variants.${index}.daysOfStock`] = daysOfStockFixed;
                 isModified = true;
 
-                if (v.stock <= (v.lowStockThreshold || lowStockThreshold) || (v.daysOfStock < 3 && v.stock > 0)) {
-                    lowStockItems.push({ name: p.name, variant: v.weightOrVolume, stock: v.stock, daysLeft: v.daysOfStock });
+                if (v.stock <= (v.lowStockThreshold || lowStockThreshold) || (daysOfStockFixed < 3 && v.stock > 0)) {
+                    lowStockItems.push({ name: p.name, variant: v.weightOrVolume, stock: v.stock, daysLeft: daysOfStockFixed });
                 }
                 
-                if (v.stock > deadStockQty && v.daysOfStock > deadStockDays) {
-                    deadStockItems.push({ name: p.name, variant: v.weightOrVolume, stock: v.stock, daysLeft: v.daysOfStock });
+                if (v.stock > deadStockQty && daysOfStockFixed > deadStockDays) {
+                    deadStockItems.push({ name: p.name, variant: v.weightOrVolume, stock: v.stock, daysLeft: daysOfStockFixed });
                 }
             });
         }
@@ -184,7 +190,7 @@ exports.calculateSalesVelocityAndStock = async (velocityDays, lowStockThreshold,
             bulkOps.push({
                 updateOne: {
                     filter: { _id: p._id },
-                    update: { $set: { variants: p.variants } }
+                    update: { $set: updateFields } // Applies only dot-notation fields, leaves stock alone
                 }
             });
         }
