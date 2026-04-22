@@ -145,6 +145,8 @@ exports.getAllOrdersForExport = () => {
         .sort({ createdAt: -1 })
         // OPTIMIZATION: Added explicit batch size to prevent DB Cursor exhaustion on large enterprise exports
         .batchSize(100)
+        // ENTERPRISE OPTIMIZATION: Bypassing Mongoose document hydration to prevent OOM errors on massive exports
+        .lean()
         .cursor();
 
     // OPTIMIZATION: Async Generator stream pipeline ensures O(1) memory footprint for enterprise-scale exports
