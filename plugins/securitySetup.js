@@ -3,10 +3,15 @@
 
 module.exports = function(fastify) {
     
-    // ENTERPRISE SECURITY FIX: Universal Origin Reflector
-    // This dynamically echoes the exact origin of the incoming request, guaranteeing 100% CORS compliance.
+    // ENTERPRISE SECURITY FIX: Strict Origin Whitelisting
+    // Replacing the insecure 'origin: true' Universal Reflector with strict validation.
+    // Ensure you set ALLOWED_ORIGINS in your Railway Environment Variables (e.g., "https://mydomain.com,https://admin.mydomain.com")
+    const allowedOrigins = process.env.ALLOWED_ORIGINS 
+        ? process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim())
+        : [/^https?:\/\/localhost:\d+$/]; // Fallback to local dev if not set
+
     fastify.register(require('@fastify/cors'), { 
-        origin: true,
+        origin: allowedOrigins,
         methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
         credentials: true,
         allowedHeaders: [
@@ -35,6 +40,7 @@ module.exports = function(fastify) {
                 defaultSrc: ["'self'"],
                 scriptSrc: isProd ? ["'self'"] : ["'self'", "'unsafe-inline'"],
                 objectSrc: ["'none'"],
+                frameAncestors: ["'none'"], // Prevent clickjacking
                 upgradeInsecureRequests: [],
             },
         },
@@ -46,11 +52,10 @@ module.exports = function(fastify) {
         max: 100,
         timeWindow: '1 minute',
         ban: 3, 
+        // Relies on Fastify's native request.ip, which respects the trustProxy setting configured in app.js
+        // This prevents malicious actors from bypassing limits by spoofing x-forwarded-for headers.
         keyGenerator: function (request) {
-            return request.headers['cf-connecting-ip'] || 
-                   request.headers['x-forwarded-for']?.split(',')[0].trim() || 
-                   request.headers['x-real-ip'] || 
-                   request.ip;
+            return request.ip;
         },
         errorResponseBuilder: function (request, context) {
             return {
