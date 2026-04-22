@@ -44,7 +44,9 @@ module.exports = function(fastify) {
                 const colName = collections[i].name;
                 gzipStream.write(`  "${colName}": [\n`);
                 
-                const cursor = mongoose.connection.db.collection(colName).find({});
+                // ENTERPRISE FIX: Appended .batchSize(100) to explicitly restrict the MongoDB 
+                // network wire protocol to only pull 100 documents into the container's memory at a time.
+                const cursor = mongoose.connection.db.collection(colName).find({}).batchSize(100);
                 let isFirstDoc = true;
                 let docCount = 0; // Tracking for event loop protection
                 
