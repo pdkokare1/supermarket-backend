@@ -44,7 +44,11 @@ process.on('uncaughtException', (err) => {
 });
 
 // OPTIMIZATION: Catch container termination signals to trigger graceful server drain.
+let isShuttingDown = false; // Lock to prevent double execution
 const shutdownSignalHandler = async (signal) => {
+    if (isShuttingDown) return;
+    isShuttingDown = true;
+
     fastify.log.info(`Worker ${process.pid} received ${signal}. Stopping new traffic and completing active checkouts...`);
     
     // Failsafe: Prevent container orchestration platforms from executing a hard unlogged kill.
