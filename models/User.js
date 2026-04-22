@@ -49,28 +49,34 @@ const userSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 // OPTIMIZATION: Auto-invalidate Redis session cache immediately upon security/role updates
-userSchema.post('save', async function(doc) {
-    try {
-        const cacheUtils = require('../utils/cacheUtils');
-        const redis = cacheUtils.getClient();
-        if (redis) {
-            // SECURITY FIX: Synchronized cache key with authService.js (cache:user)
-            // Ensures RBAC updates or account lockouts take effect instantly at the edge.
-            await redis.del(`cache:user:${doc._id.toString()}`);
-        }
-    } catch (e) { console.warn('[CACHE] Failed to clear user session cache', e.message); }
+// Wrapped in setImmediate to ensure the Event Loop isn't blocked and API responds instantly
+userSchema.post('save', function(doc) {
+    if (!doc) return;
+    setImmediate(async () => {
+        try {
+            const cacheUtils = require('../utils/cacheUtils');
+            const redis = cacheUtils.getClient();
+            if (redis) {
+                // SECURITY FIX: Synchronized cache key with authService.js (cache:user)
+                // Ensures RBAC updates or account lockouts take effect instantly at the edge.
+                await redis.del(`cache:user:${doc._id.toString()}`);
+            }
+        } catch (e) { console.warn('[CACHE] Failed to clear user session cache', e.message); }
+    });
 });
 
-userSchema.post('findOneAndUpdate', async function(doc) {
+userSchema.post('findOneAndUpdate', function(doc) {
     if(!doc) return;
-    try {
-        const cacheUtils = require('../utils/cacheUtils');
-        const redis = cacheUtils.getClient();
-        if (redis) {
-            // SECURITY FIX: Synchronized cache key with authService.js (cache:user)
-            await redis.del(`cache:user:${doc._id.toString()}`);
-        }
-    } catch (e) { console.warn('[CACHE] Failed to clear user session cache', e.message); }
+    setImmediate(async () => {
+        try {
+            const cacheUtils = require('../utils/cacheUtils');
+            const redis = cacheUtils.getClient();
+            if (redis) {
+                // SECURITY FIX: Synchronized cache key with authService.js (cache:user)
+                await redis.del(`cache:user:${doc._id.toString()}`);
+            }
+        } catch (e) { console.warn('[CACHE] Failed to clear user session cache', e.message); }
+    });
 });
 
 module.exports = mongoose.model('User', userSchema);
