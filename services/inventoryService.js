@@ -2,7 +2,7 @@
 
 const Product = require('../models/Product');
 const Order = require('../models/Order'); 
-const distributorService = require('./distributorService'); // DOMAIN INTEGRATION
+const distributorService = require('./distributorService'); 
 const { withTransaction } = require('../utils/dbUtils'); 
 const AppError = require('../utils/AppError'); 
 const auditService = require('./auditService'); 
@@ -73,7 +73,6 @@ exports.deductInventory = async (items, storeId, session) => {
     
     const bulkOperations = [];
 
-    // OPTIMIZATION (Existing): Explicit $gte checks paired with $inc ensures an atomic constraint, preventing race conditions from dropping inventory below 0.
     for (const item of items) {
         if (storeId) {
             bulkOperations.push({
@@ -132,7 +131,7 @@ exports.getExpiringProducts = async (days = 7) => {
             stock: "$variants.stock",
             expiryDate: "$variants.expiryDate"
         }}
-    ]).allowDiskUse(true); // OPTIMIZATION: Prevents OOM during massive CRON scans
+    ]).allowDiskUse(true);
 };
 
 exports.calculateSalesVelocityAndStock = async (velocityDays, lowStockThreshold, deadStockQty, deadStockDays) => {
@@ -143,14 +142,16 @@ exports.calculateSalesVelocityAndStock = async (velocityDays, lowStockThreshold,
         { $match: { createdAt: { $gte: dateAgo }, status: { $in: ['Completed', 'Dispatched'] } } },
         { $unwind: "$items" },
         { $group: { _id: "$items.variantId", totalSold: { $sum: "$items.qty" } } }
-    ]).allowDiskUse(true); // OPTIMIZATION: Allow heavy order history scanning without crashing server RAM
+    ]).allowDiskUse(true); 
 
     let variantSales = {};
     velocityAgg.forEach(v => {
         if (v._id) variantSales[v._id.toString()] = v.totalSold;
     });
 
-    const productCursor = Product.find({ isActive: true }).select('name variants').cursor();
+    // OPTIMIZATION: Critical memory leak patch. Using .lean() converts heavy Mongoose documents into plain JS objects, 
+    // saving hundreds of megabytes of RAM when iterating over thousands of products during background jobs.
+    const productCursor = Product.find({ isActive: true }).select('name variants').lean().cursor();
     
     let lowStockItems = [];
     let deadStockItems = [];
@@ -191,7 +192,6 @@ exports.calculateSalesVelocityAndStock = async (velocityDays, lowStockThreshold,
         if (bulkOps.length >= BATCH_SIZE) {
             await Product.bulkWrite(bulkOps);
             bulkOps = []; 
-            // OPTIMIZATION: Unblock the event loop so checkouts can process concurrently
             await new Promise(resolve => setImmediate(resolve));
         }
     }
