@@ -2,7 +2,7 @@
 
 const mongoose = require('mongoose');
 const Order = require('../models/Order');
-const customerService = require('./customerService'); // DOMAIN INTEGRATION
+const customerService = require('./customerService'); 
 const inventoryService = require('./inventoryService'); 
 const notificationService = require('./notificationService'); 
 const { withTransaction } = require('../utils/dbUtils');
@@ -21,33 +21,27 @@ async function withIdempotency(idempotencyKey, executeCheckoutTask) {
         const resultKey = `idem:checkout:${idempotencyKey}`;
         const lockKey = `idem:lock:${idempotencyKey}`;
 
-        // 1. Check if order was already successfully processed and cached
         const cachedResult = await redisClient.get(resultKey);
         if (cachedResult) {
             console.log(`[IDEMPOTENCY] Caught duplicate checkout request for key: ${idempotencyKey}. Returning cached success.`);
             return JSON.parse(cachedResult); 
         }
 
-        // 2. Acquire Atomic Lock to prevent race conditions during execution
         const acquiredLock = await redisClient.set(lockKey, 'IN_PROGRESS', 'NX', 'EX', 30);
         if (!acquiredLock) {
             throw new AppError('Concurrent checkout processing detected. Please wait.', 409);
         }
 
         try {
-            // 3. Execute core checkout transaction
             const result = await executeCheckoutTask();
             
-            // 4. Save final result and persist idempotency key for 24 hours
             await redisClient.set(resultKey, JSON.stringify(result), 'EX', 86400);
             
             return result;
         } finally {
-            // 5. Always release the temporary execution lock, even on failure
             await redisClient.del(lockKey);
         }
     } else {
-        // Fallback if no idempotency key provided
         return await executeCheckoutTask();
     }
 }
@@ -57,10 +51,11 @@ async function withIdempotency(idempotencyKey, executeCheckoutTask) {
 // ==========================================
 
 async function generateOrderSequence(session) {
+    // OPTIMIZATION: Added { lean: true } to avoid building a heavy Mongoose document for a simple numeric counter.
     const counter = await mongoose.model('OrderCounter').findByIdAndUpdate(
         { _id: 'orderId' },
         { $inc: { seq: 1 } },
-        { new: true, upsert: true, session }
+        { new: true, upsert: true, session, lean: true }
     );
     return counter.seq;
 }
