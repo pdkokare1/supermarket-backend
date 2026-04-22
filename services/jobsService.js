@@ -95,8 +95,9 @@ setTimeout(() => {
 
     const processNext = async () => {
         try {
-            // Block for up to 5 seconds waiting for a job to avoid CPU spinning
-            const result = await redis.brpop('DAILYPICK_JOBS_QUEUE', 5);
+            // Block for up to 1 second waiting for a job to avoid CPU spinning.
+            // Reduced from 5 to safely fit beneath the global 2-second commandTimeout limit.
+            const result = await redis.brpop('DAILYPICK_JOBS_QUEUE', 1);
             if (result) {
                 const job = JSON.parse(result[1]);
                 await exports.processTask(job.taskType, job.payload, job.retryCount || 0);
