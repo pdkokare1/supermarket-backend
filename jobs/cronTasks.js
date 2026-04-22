@@ -89,8 +89,11 @@ const createBackupFile = async (model, filename, query = {}) => {
     const cursor = model.find(query).lean().cursor();
     
     let isFirst = true;
+    let docCount = 0; // ENTERPRISE FIX: Tracking iteration count for CPU batching
     
     for await (const doc of cursor) {
+        docCount++;
+        
         if (!isFirst) {
             const canWriteComma = gzipStream.write(',\n');
             if (!canWriteComma) await new Promise(resolve => gzipStream.once('drain', resolve));
@@ -113,8 +116,9 @@ const createBackupFile = async (model, filename, query = {}) => {
         
         if (!canWrite) {
             await new Promise(resolve => gzipStream.once('drain', resolve));
-        } else {
-            // Still yield to event loop occasionally if buffer is empty but stream is busy
+        } else if (docCount % 500 === 0) {
+            // ENTERPRISE FIX: Yield to event loop occasionally to keep main thread responsive,
+            // but not on every single document to save CPU context switching overhead.
             await new Promise(resolve => setImmediate(resolve));
         }
     }
