@@ -12,8 +12,13 @@ exports.getProducts = async (request, reply) => {
     const productData = await productService.getPaginatedProducts(request.query);
     */
 
-    // OPTIMIZATION: High-Performance Read-Through Catalog Caching
-    const cacheKey = `products:catalog:${JSON.stringify(request.query)}`;
+    // OPTIMIZATION: High-Performance Read-Through Catalog Caching with Deterministic Keys
+    const sortedQuery = Object.keys(request.query || {}).sort().reduce((result, key) => {
+        result[key] = request.query[key];
+        return result;
+    }, {});
+    
+    const cacheKey = `products:catalog:${JSON.stringify(sortedQuery)}`;
     const productData = await productCacheService.fetchWithCoalescing(
         cacheKey,
         300, // 5 min TTL
