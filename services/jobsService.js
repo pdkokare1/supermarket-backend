@@ -95,17 +95,20 @@ setTimeout(() => {
 
     const processNext = async () => {
         try {
-            // Block for up to 1 second waiting for a job to avoid CPU spinning.
-            // Reduced from 5 to safely fit beneath the global 2-second commandTimeout limit.
-            const result = await redis.brpop('DAILYPICK_JOBS_QUEUE', 1);
+            // OPTIMIZATION: Switched from blocking 'brpop' to non-blocking 'lpop'.
+            // This prevents the worker from hoarding the shared Redis connection and avoids triggering the strict 2000ms commandTimeout.
+            const result = await redis.lpop('DAILYPICK_JOBS_QUEUE');
             if (result) {
-                const job = JSON.parse(result[1]);
+                const job = JSON.parse(result); // result is just the string, not an array like brpop
                 await exports.processTask(job.taskType, job.payload, job.retryCount || 0);
+                setTimeout(processNext, 100); // Check for more jobs immediately
+            } else {
+                setTimeout(processNext, 3000); // Back off and wait 3 seconds before checking again
             }
         } catch (e) {
             console.error('[BACKGROUND WORKER] Polling Error:', e);
+            setTimeout(processNext, 5000); // Wait longer on error to prevent log spam
         }
-        setTimeout(processNext, 100); 
     };
     processNext();
 }, 5000);
