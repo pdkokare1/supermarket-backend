@@ -26,8 +26,9 @@ const executeLockoutPipeline = async (redis, ip, safeUsername, ipFails, userFail
     const pipeline = redis.multi();
     pipeline.incr(`lockout:ip:${ip}`);
     pipeline.incr(`lockout:user:${safeUsername}`);
-    if (!ipFails) pipeline.expire(`lockout:ip:${ip}`, 1800);
-    if (!userFails) pipeline.expire(`lockout:user:${safeUsername}`, 900);
+    // ENTERPRISE FIX: NX ensures the TTL is strictly set once and cannot be maliciously extended
+    pipeline.expire(`lockout:ip:${ip}`, 1800, 'NX');
+    pipeline.expire(`lockout:user:${safeUsername}`, 900, 'NX');
     await pipeline.exec();
 };
 
