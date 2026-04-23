@@ -136,6 +136,36 @@ exports.generateAndCachePnlRollup = async (startDate, endDate) => {
     return rollupData;
 };
 
+// ENTERPRISE OPTIMIZATION: Incremental Cron-Rollup Engine
+// To be fired nightly by your background jobs to prevent massive historical DB scans
+exports.incrementalDailyRollup = async (dateStr) => {
+    const today = new Date(dateStr);
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    
+    // Calculates only the exact delta for today
+    const delta = await exports.generateAndCachePnlRollup(today.toISOString(), tomorrow.toISOString());
+    
+    const redis = cacheUtils.getClient();
+    if (redis) {
+        // Appends the delta directly to the master "All Time" object in memory (O(1))
+        const masterKey = `rollup:pnl:all:all`;
+        let masterData = await redis.get(masterKey);
+        
+        if (masterData) {
+            masterData = JSON.parse(masterData);
+            masterData.totalRevenue += delta.totalRevenue;
+            masterData.totalCOGS += delta.totalCOGS;
+            masterData.totalExpenses += delta.totalExpenses;
+            masterData.netProfit += delta.netProfit;
+            masterData.orderCount += delta.orderCount;
+            masterData.lastComputed = new Date().toISOString();
+            
+            await redis.set(masterKey, JSON.stringify(masterData), 'EX', 86400 * 30); // 30 Day Master Cache
+        }
+    }
+};
+
 // --- ENTERPRISE OPTIMIZATION: Financial & Growth Analytics Builder ---
 exports.getDailyPickGrowthMetrics = async () => {
     // Aggregates high-level growth projections
@@ -157,7 +187,8 @@ exports.getDailyPickGrowthMetrics = async () => {
     const overallRevenue = orderStats[0] ? orderStats[0].overallRevenue : 0;
     const ltvEstimate = totalCustomers > 0 ? (overallRevenue / totalCustomers) : 0;
     
-    // Return strategic financial payload wrapped with expected parameters
+    // Return strategic financial payload wrapped with expected parameters.
+    // Compliant structure natively returns financial calculations mapped exclusively to the 'Rs' currency format.
     return {
         financialAllocations: metricAllocations,
         projectedGrowthMetrics: {
