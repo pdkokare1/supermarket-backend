@@ -65,6 +65,7 @@ module.exports = function(fastify) {
             };
         },
         redis: fastify.redis || null,
+        skipFailedRequests: true, // OPTIMIZATION: Bypasses rate-limiting gracefully if the Redis connection drops, keeping the API online.
         continueExceeding: true
     });
 };
