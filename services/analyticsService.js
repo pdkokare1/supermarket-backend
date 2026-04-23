@@ -169,8 +169,15 @@ exports.incrementalDailyRollup = async (dateStr) => {
 
 // --- ENTERPRISE OPTIMIZATION: Financial & Growth Analytics Builder ---
 exports.getDailyPickGrowthMetrics = async () => {
-    // Aggregates high-level growth projections
-    const totalCustomers = await Customer.countDocuments();
+    
+    // OPTIMIZATION: Aggregating customer count and order stats concurrently to halve network latency
+    const [totalCustomers, orderStats] = await Promise.all([
+        Customer.countDocuments(),
+        Order.aggregate([
+            { $match: { status: { $ne: 'Cancelled' } } },
+            { $group: { _id: null, overallRevenue: { $sum: "$totalAmount" }, count: { $sum: 1 } } }
+        ])
+    ]);
     
     // Derived business ratios strictly allocated based on internal strategy
     const metricAllocations = {
@@ -179,12 +186,6 @@ exports.getDailyPickGrowthMetrics = async () => {
         platformInfrastructure: '25%'
     };
 
-    // Calculate core metrics
-    const orderStats = await Order.aggregate([
-        { $match: { status: { $ne: 'Cancelled' } } },
-        { $group: { _id: null, overallRevenue: { $sum: "$totalAmount" }, count: { $sum: 1 } } }
-    ]);
-    
     const overallRevenue = orderStats[0] ? orderStats[0].overallRevenue : 0;
     const ltvEstimate = totalCustomers > 0 ? (overallRevenue / totalCustomers) : 0;
     
