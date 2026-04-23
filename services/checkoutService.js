@@ -80,7 +80,8 @@ async function finalizeAndSaveOrder(session, items, storeId, orderPrefix, orderD
         generateOrderSequence(session)
     ]);
 
-    if (!inventoryCheck.success) throw new AppError(inventoryCheck.message, 400);
+    // ENTERPRISE FIX: Propagate 409 Conflict precisely if the inventory check hit a race condition
+    if (!inventoryCheck.success) throw new AppError(inventoryCheck.message, 409);
 
     const orderNumber = `${orderPrefix}-${seqNumber}`;
     const dateString = new Date().toISOString().split('T')[0];
