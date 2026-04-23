@@ -3,13 +3,11 @@
 
 const mongoose = require('mongoose');
 
-// OPTIMIZATION: Enforce strict schema filtering globally to prevent NoSQL Injection attacks.
 mongoose.set('strictQuery', true);
 
 const connectDB = async (fastify) => {
     const logger = fastify && fastify.log ? fastify.log : console;
 
-    // OPTIMIZATION: Pre-flight check to prevent costly retry loops if config is missing
     if (!process.env.MONGO_URI) {
         logger.error('CRITICAL ERROR: MONGO_URI is missing from environment variables. Aborting database initialization.');
         process.exit(1);
@@ -25,20 +23,22 @@ const connectDB = async (fastify) => {
                 maxPoolSize: parseInt(process.env.MONGO_MAX_POOL_SIZE, 10) || 50,
                 minPoolSize: parseInt(process.env.MONGO_MIN_POOL_SIZE, 10) || 10, 
                 serverSelectionTimeoutMS: 5000,
-                // OPTIMIZATION: Faster failover detection during replica-set node crashes
                 heartbeatFrequencyMS: 10000,
                 autoIndex: process.env.NODE_ENV !== 'production',
                 maxIdleTimeMS: 30000, 
                 socketTimeoutMS: 45000,
-                // OPTIMIZATION: Prevents load balancers from silently dropping idle TCP connections
                 keepAliveInitialDelay: 300000,
                 family: 4
             });
 
-            // OPTIMIZATION: Complete Lifecycle Observability
+            // OPTIMIZATION: Complete Lifecycle & Pool Observability
             mongoose.connection.on('disconnected', () => logger.warn('MongoDB connection dropped. Awaiting automatic reconnection...'));
             mongoose.connection.on('reconnected', () => logger.info('MongoDB successfully reconnected.'));
             mongoose.connection.on('error', (err) => logger.error(`MongoDB Connection Error: ${err.message}`));
+            
+            // Added Pool Monitoring
+            mongoose.connection.client.on('connectionPoolCreated', (event) => logger.info(`MongoDB Pool created: ${event.address}`));
+            mongoose.connection.client.on('connectionPoolClosed', (event) => logger.warn(`MongoDB Pool closed: ${event.address}`));
 
             logger.info(`Successfully connected to MongoDB Atlas by Process ${process.pid}`);
             
