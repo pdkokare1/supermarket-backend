@@ -6,7 +6,6 @@ let redisSub = null;
 let adminConnections = [];
 let customerConnections = {};
 
-// OPTIMIZATION: Max Connection Thresholds to prevent memory leaks during proxy ungraceful disconnects
 const MAX_ADMIN_CONNECTIONS = 150;
 const MAX_CUSTOMER_CONNECTIONS = 5;
 
@@ -14,7 +13,6 @@ try {
     const Redis = require('ioredis');
     if (process.env.REDIS_URL) {
         
-        // OPTIMIZATION: Applied resilient connection parameters for SSE Redis links
         const redisConfig = {
             maxRetriesPerRequest: null,
             retryStrategy: (times) => Math.min(times * 100, 3000)
@@ -23,28 +21,30 @@ try {
         redisPub = new Redis(process.env.REDIS_URL, redisConfig);
         redisSub = new Redis(process.env.REDIS_URL, redisConfig);
         
-        // OPTIMIZATION: Subscribe to both the legacy stream channel and the new horizontally-scaled operations channel
         redisSub.subscribe('ORDER_STREAM_EVENT', 'DAILYPICK_ORDER_EVENTS');
         
         redisSub.on('message', (channel, message) => {
             if (channel === 'ORDER_STREAM_EVENT') {
-                const parsed = JSON.parse(message);
-                if (parsed.target === 'admin') {
-                    adminConnections.forEach(conn => {
-                        if (!conn.destroyed) conn.write(`data: ${parsed.payload}\n\n`);
-                    });
-                } else if (parsed.target === 'customer' && customerConnections[parsed.orderId]) {
-                    customerConnections[parsed.orderId].forEach(conn => {
-                        if (!conn.destroyed) conn.write(`data: ${parsed.payload}\n\n`);
-                    });
+                // ENTERPRISE FIX: Synchronous JSON.parse wrapped in try/catch to protect Node server uptime
+                try {
+                    const parsed = JSON.parse(message);
+                    if (parsed.target === 'admin') {
+                        adminConnections.forEach(conn => {
+                            if (!conn.destroyed) conn.write(`data: ${parsed.payload}\n\n`);
+                        });
+                    } else if (parsed.target === 'customer' && customerConnections[parsed.orderId]) {
+                        customerConnections[parsed.orderId].forEach(conn => {
+                            if (!conn.destroyed) conn.write(`data: ${parsed.payload}\n\n`);
+                        });
+                    }
+                } catch (err) {
+                    console.error("SSE Legacy Stream Parse Error:", err.message);
                 }
             } 
-            // OPTIMIZATION: Bridge core service updates directly to Admin SSE streams
             else if (channel === 'DAILYPICK_ORDER_EVENTS') {
                 try {
                     const parsed = JSON.parse(message);
                     
-                    // ENTERPRISE FIX: Handles the new array-based micro-batching from eventEmitter seamlessly
                     const events = Array.isArray(parsed) ? parsed : [parsed];
                     
                     events.forEach(evt => {
@@ -65,22 +65,14 @@ try {
     console.error("Redis Initialization Error in SSE Service:", e);
 }
 
-// OPTIMIZATION: Captured interval in a variable so it can be explicitly destroyed during container shutdown to prevent Memory Leaks
 const heartbeatInterval = setInterval(() => {
     adminConnections = adminConnections.filter(conn => {
         if (conn.destroyed || !conn.writable) {
-            
-            // DEPRECATION CONSULTATION: Original code just called conn.destroy()
-            /* conn.destroy(); */
-
-            // OPTIMIZATION: Clear dangling listeners before destruction to ensure 
-            // proper Node.js Garbage Collection for memory leak prevention.
             conn.removeAllListeners();
             conn.destroy(); 
             return false;
         }
         try {
-            // FIX: Explicitly send a named heartbeat comment to prevent HTTP/2 proxy drops
             conn.write(': heartbeat\n\n');
             return true;
         } catch (e) {
@@ -98,7 +90,6 @@ const heartbeatInterval = setInterval(() => {
                 return false;
             }
             try {
-                // FIX: Explicitly send a named heartbeat comment to prevent HTTP/2 proxy drops
                 conn.write(': heartbeat\n\n');
                 return true;
             } catch (e) {
@@ -112,7 +103,6 @@ const heartbeatInterval = setInterval(() => {
 }, 15000);
 
 const addAdminConnection = (conn) => {
-    // ENTERPRISE FIX: Cull oldest zombie connections if limit breached
     if (adminConnections.length >= MAX_ADMIN_CONNECTIONS) {
         const oldest = adminConnections.shift();
         if (oldest && !oldest.destroyed) { oldest.removeAllListeners(); oldest.destroy(); }
@@ -127,7 +117,6 @@ const removeAdminConnection = (conn) => {
 const addCustomerConnection = (orderId, conn) => {
     if (!customerConnections[orderId]) customerConnections[orderId] = [];
     
-    // ENTERPRISE FIX: Cull oldest zombie connections for a single order stream
     if (customerConnections[orderId].length >= MAX_CUSTOMER_CONNECTIONS) {
         const oldest = customerConnections[orderId].shift();
         if (oldest && !oldest.destroyed) { oldest.removeAllListeners(); oldest.destroy(); }
@@ -161,7 +150,6 @@ const setSSEHeaders = (request, reply) => {
     reply.hijack(); 
     if (reply.raw.socket) reply.raw.socket.setTimeout(0); 
     
-    // FIX: Added 'Connection': 'keep-alive' required for proxy environments
     reply.raw.writeHead(200, {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
@@ -215,7 +203,6 @@ const notifyStatusUpdate = (request, orderId, status, storeId) => {
 };
 
 const closeAllConnections = () => {
-    // OPTIMIZATION: Native interval termination to prevent "Zombie" background loops during worker reloads
     clearInterval(heartbeatInterval);
     
     adminConnections.forEach(conn => { if (!conn.destroyed) conn.end(); });
