@@ -26,6 +26,10 @@ const productSchema = {
                 taxRate: { type: 'number', minimum: 0, maximum: 100 },
                 taxType: { type: 'string', enum: ['Inclusive', 'Exclusive'] }
             }
+        },
+        response: {
+            201: { type: 'object', properties: { success: { type: 'boolean' }, message: { type: 'string' }, data: { type: 'object', additionalProperties: true } } },
+            200: { type: 'object', properties: { success: { type: 'boolean' }, message: { type: 'string' }, data: { type: 'object', additionalProperties: true } } }
         }
     }
 };
@@ -45,6 +49,9 @@ const restockSchema = {
                 paymentStatus: { type: 'string', enum: ['Paid', 'Credit'] }, 
                 storeId: { type: 'string', maxLength: 50 } 
             }
+        },
+        response: {
+            200: { type: 'object', properties: { success: { type: 'boolean' }, message: { type: 'string' }, data: { type: 'object', additionalProperties: true } } }
         }
     }
 };
@@ -63,6 +70,9 @@ const rtvSchema = {
                 reason: { type: 'string', maxLength: 500 },
                 storeId: { type: 'string', maxLength: 50 } 
             }
+        },
+        response: {
+            200: { type: 'object', properties: { success: { type: 'boolean' }, message: { type: 'string' }, data: { type: 'object', additionalProperties: true } } }
         }
     }
 };
@@ -83,6 +93,18 @@ const getProductsSchema = {
                 limit: { type: 'string', maxLength: 10 },
                 sort: { type: 'string', maxLength: 50 },
                 cursor: { type: 'string', maxLength: 100 }
+            }
+        },
+        response: {
+            200: {
+                type: 'object',
+                properties: {
+                    success: { type: 'boolean' },
+                    count: { type: 'number' },
+                    total: { type: 'number' },
+                    nextCursor: { type: 'string', nullable: true },
+                    data: { type: 'array', items: { type: 'object', additionalProperties: true } }
+                }
             }
         }
     }
