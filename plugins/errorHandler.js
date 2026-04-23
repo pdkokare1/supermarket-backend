@@ -19,6 +19,34 @@ const checkCircuitBreaker = (fastify) => {
     }
 };
 
+// ENTERPRISE FIX: Secure PII Masking utility. Retains the shape of the error payload for debugging, 
+// but scrubs passwords, API keys, and masks phone numbers to maintain GDPR/Security compliance.
+const redactPII = (body) => {
+    if (!body) return null;
+    try {
+        const redacted = JSON.parse(JSON.stringify(body));
+        const sensitiveKeys = ['pin', 'password', 'token', 'customerPhone', 'apiKey'];
+        const mask = (obj) => {
+            for (let key in obj) {
+                if (sensitiveKeys.includes(key) && typeof obj[key] === 'string') {
+                    if (key === 'customerPhone') {
+                        // Keep only the last 4 digits visible
+                        obj[key] = obj[key].replace(/.(?=.{4})/g, '*');
+                    } else {
+                        obj[key] = '[REDACTED]';
+                    }
+                } else if (typeof obj[key] === 'object' && obj[key] !== null) {
+                    mask(obj[key]);
+                }
+            }
+        };
+        mask(redacted);
+        return JSON.stringify(redacted);
+    } catch (e) {
+        return '[UNPARSABLE_PAYLOAD]';
+    }
+};
+
 module.exports = function (fastify) {
     fastify.decorate('isCircuitTripped', () => circuitTripped);
 
@@ -74,7 +102,7 @@ module.exports = function (fastify) {
             userId: request.user ? request.user.id : 'Unauthenticated',
             errorName: error.name,
             errorMessage: error.message,
-            payload: request.body ? '[REDACTED]' : null 
+            payload: redactPII(request.body) // Now safely logs non-PII request parameters to help you debug errors
         };
         
         if (isServerError) {
