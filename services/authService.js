@@ -7,7 +7,6 @@ const auditService = require('./auditService');
 const securityService = require('./securityService'); 
 const cacheUtils = require('../utils/cacheUtils');
 
-// MODULARITY: Standardized helper for all Auth-related audit logs
 const logAuthAudit = async (server, action, targetId, username, details = {}, userId = null) => {
     await auditService.logEvent({
         action,
@@ -20,16 +19,18 @@ const logAuthAudit = async (server, action, targetId, username, details = {}, us
     });
 };
 
-// MODULARITY: Centralized Redis lockout tracking to prevent duplicated pipeline execution
 const executeLockoutPipeline = async (redis, ip, safeUsername, ipFails, userFails) => {
     if (!redis) return;
-    const pipeline = redis.multi();
-    pipeline.incr(`lockout:ip:${ip}`);
-    pipeline.incr(`lockout:user:${safeUsername}`);
-    // ENTERPRISE FIX: NX ensures the TTL is strictly set once and cannot be maliciously extended
-    pipeline.expire(`lockout:ip:${ip}`, 1800, 'NX');
-    pipeline.expire(`lockout:user:${safeUsername}`, 900, 'NX');
-    await pipeline.exec();
+    try {
+        const pipeline = redis.multi();
+        pipeline.incr(`lockout:ip:${ip}`);
+        pipeline.incr(`lockout:user:${safeUsername}`);
+        pipeline.expire(`lockout:ip:${ip}`, 1800, 'NX');
+        pipeline.expire(`lockout:user:${safeUsername}`, 900, 'NX');
+        await pipeline.exec();
+    } catch (err) {
+        // Soft fail to ensure login process isn't completely halted by cache issues
+    }
 };
 
 exports.setupDefaultAdmin = async (envSetupKey, queryKey, isProduction) => {
@@ -58,9 +59,10 @@ exports.setupDefaultAdmin = async (envSetupKey, queryKey, isProduction) => {
         admin.tokenVersion = (admin.tokenVersion || 0) + 1;
         await admin.save();
         
-        // CACHE INVALIDATION: Clear admin cache if forcibly reset
         const redis = cacheUtils.getClient();
-        if (redis) await redis.del(`cache:user:${admin._id.toString()}`);
+        if (redis) {
+            try { await redis.del(`cache:user:${admin._id.toString()}`); } catch (e) {}
+        }
 
         return { message: `Existing Admin FORCE RESET. All old sessions revoked. Username: 'admin', PIN: '${defaultPin}'` };
     }
@@ -72,16 +74,18 @@ exports.authenticateUser = async (username, pin, ip, server) => {
     let ipFails = 0;
     let userFails = 0;
 
-    // ENTERPRISE OPTIMIZATION: Edge IP & Distributed Account Lockout Defense
     if (redis) {
-        ipFails = await redis.get(`lockout:ip:${ip}`);
-        userFails = await redis.get(`lockout:user:${safeUsername}`);
+        try {
+            ipFails = await redis.get(`lockout:ip:${ip}`);
+            userFails = await redis.get(`lockout:user:${safeUsername}`);
+        } catch (e) {
+            // Soft fail: continue to DB if Redis is unreachable
+        }
 
         if (ipFails && parseInt(ipFails) > 10) {
             await logAuthAudit(server, 'EDGE_THREAT_BLOCKED', 'IP', ip, { reason: 'IP brute-force block triggered' });
             throw new AppError('Too many failed requests from this IP. Blocked globally for 30 minutes.', 403);
         }
-        // Prevents distributed botnet attacks targeting a single account
         if (userFails && parseInt(userFails) > 10) {
             await logAuthAudit(server, 'EDGE_THREAT_BLOCKED', 'Username', safeUsername, { ip, reason: 'Distributed account brute-force block' });
             throw new AppError('Too many failed requests for this account. Blocked for 15 minutes.', 403);
@@ -93,6 +97,11 @@ exports.authenticateUser = async (username, pin, ip, server) => {
     
     if (!user) {
         await executeLockoutPipeline(redis, ip, safeUsername, ipFails, userFails);
+        
+        // ENTERPRISE FIX: Dummy compare to prevent username enumeration via timing attacks
+        // Simulates the time taken by bcrypt to hash a password
+        await securityService.comparePassword('dummy', '$2b$10$DummyHashStringUsedForTimingAttackMitigation123456');
+        
         await logAuthAudit(server, 'FAILED_LOGIN_ATTEMPT', 'Login', safeUsername || 'Unknown', { ip, reason: 'User not found' });
         throw new AppError('Invalid Username or PIN.', 401, { safeUsername, reason: 'User not found' });
     }
@@ -132,12 +141,13 @@ exports.authenticateUser = async (username, pin, ip, server) => {
     }
     
     if (redis) {
-        // Clear IP/User blocks and cache on successful login
-        const pipeline = redis.multi();
-        pipeline.del(`lockout:ip:${ip}`);
-        pipeline.del(`lockout:user:${safeUsername}`);
-        pipeline.del(`cache:user:${user._id.toString()}`);
-        await pipeline.exec();
+        try {
+            const pipeline = redis.multi();
+            pipeline.del(`lockout:ip:${ip}`);
+            pipeline.del(`lockout:user:${safeUsername}`);
+            pipeline.del(`cache:user:${user._id.toString()}`);
+            await pipeline.exec();
+        } catch (e) { }
     }
     
     user.failedLoginAttempts = 0;
@@ -152,8 +162,9 @@ exports.authenticateUser = async (username, pin, ip, server) => {
 
 exports.refreshSession = async (decodedId, decodedVersion, server) => {
     const user = await exports.getUserById(decodedId);
-    if (!user || !user.isActive || user.tokenVersion !== decodedVersion) {
-        throw new AppError('Invalid or revoked session', 401);
+    // ENTERPRISE FIX: Ensure locked accounts cannot bypass restrictions using an active refresh token
+    if (!user || !user.isActive || user.isLocked || user.tokenVersion !== decodedVersion) {
+        throw new AppError('Invalid, locked, or revoked session', 401);
     }
     const tokens = securityService.generateTokens(server, user);
     return { user, token: tokens.token, refreshToken: tokens.refreshToken };
@@ -162,16 +173,15 @@ exports.refreshSession = async (decodedId, decodedVersion, server) => {
 exports.revokeSession = async (userId, server, tokenToBlacklist = null) => {
     const user = await User.findById(userId);
     if (user) {
-        user.tokenVersion = (user.tokenVersion || 0) + 1; // Explicit invalidation of all old refresh/access tokens
+        user.tokenVersion = (user.tokenVersion || 0) + 1; 
         await user.save();
         
         const redis = cacheUtils.getClient();
         if (redis) {
-            await redis.del(`cache:user:${userId.toString()}`);
-            
-            // MODULARITY: Extracted from controller. Handles immediate JWT blacklisting.
-            if (tokenToBlacklist) {
-                try {
+            try {
+                await redis.del(`cache:user:${userId.toString()}`);
+                
+                if (tokenToBlacklist) {
                     const decoded = server.jwt.decode(tokenToBlacklist);
                     if (decoded && decoded.exp) {
                         const ttl = decoded.exp - Math.floor(Date.now() / 1000);
@@ -179,9 +189,9 @@ exports.revokeSession = async (userId, server, tokenToBlacklist = null) => {
                             await redis.set(`bl_${tokenToBlacklist}`, 'blacklisted', 'EX', ttl);
                         }
                     }
-                } catch (err) {
-                    server.log.warn(`Failed to blacklist token during logout: ${err.message}`);
                 }
+            } catch (err) {
+                server.log.warn(`Failed to process Redis blacklisting during logout: ${err.message}`);
             }
         }
 
@@ -194,17 +204,24 @@ exports.getUserById = async (id) => {
     const redis = cacheUtils.getClient();
     const cacheKey = `cache:user:${id}`;
     
-    // PERFORMANCE: Intercept read queries with memory caching to reduce DB Load
     if (redis) {
-        const cachedUser = await redis.get(cacheKey);
-        if (cachedUser) return JSON.parse(cachedUser);
+        // ENTERPRISE FIX: Prevent Redis dropouts from crashing authentication checks
+        try {
+            const cachedUser = await redis.get(cacheKey);
+            if (cachedUser) return JSON.parse(cachedUser);
+        } catch (err) {
+            // Soft fail, allow system to fetch directly from DB
+        }
     }
 
-    // .lean() skips Mongoose document instantiation, making read queries up to 3x faster
     const user = await User.findById(id).lean();
     
     if (redis && user) {
-        await redis.set(cacheKey, JSON.stringify(user), 'EX', 300); // Cache user state for 5 minutes
+        try {
+            await redis.set(cacheKey, JSON.stringify(user), 'EX', 300);
+        } catch (err) {
+            // Soft fail
+        }
     }
     
     return user;
