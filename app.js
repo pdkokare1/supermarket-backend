@@ -11,8 +11,10 @@ const createApp = (opts = {}) => {
     const isProduction = process.env.NODE_ENV === 'production';
     
     const fastify = Fastify({
+        // OPTIMIZATION: Asynchronous logging in production to prevent event loop blocking on heavy I/O
         logger: isProduction ? { 
             level: 'info',
+            stream: require('pino').destination({ sync: false, minLength: 4096 }),
             // OPTIMIZATION: Redact sensitive credential headers to prevent them from hitting cloud log streams
             redact: ['req.headers.authorization', 'req.headers.cookie'] 
         } : {
