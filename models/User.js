@@ -16,7 +16,6 @@ const userSchema = new mongoose.Schema({
         type: String, 
         required: true 
     },
-    // --- NEW: Multi-Store Employee Assignment ---
     assignedStores: [{ 
         type: mongoose.Schema.Types.ObjectId, 
         ref: 'Store' 
@@ -25,7 +24,6 @@ const userSchema = new mongoose.Schema({
         type: mongoose.Schema.Types.ObjectId, 
         ref: 'Register' 
     },
-    // --- ENHANCED: Strict Role-Based Access Control (RBAC) ---
     role: { 
         type: String, 
         enum: ['Admin', 'Cashier'], 
@@ -46,10 +44,19 @@ const userSchema = new mongoose.Schema({
         type: Number, 
         default: 0 
     }
-}, { timestamps: true });
+}, { 
+    timestamps: true,
+    // ENTERPRISE FIX: Ensure virtual fields are included when document is serialized to the frontend or Redis
+    toJSON: { virtuals: true },
+    toObject: { virtuals: true }
+});
 
-// OPTIMIZATION: Auto-invalidate Redis session cache immediately upon security/role updates
-// Wrapped in setImmediate to ensure the Event Loop isn't blocked and API responds instantly
+// ENTERPRISE SECURITY FIX: Dynamic lock state calculation.
+// Without this, the `if (user.isLocked)` check in authService.js will always fail, rendering brute-force protection useless.
+userSchema.virtual('isLocked').get(function() {
+    return !!(this.lockUntil && this.lockUntil > Date.now());
+});
+
 userSchema.post('save', function(doc) {
     if (!doc) return;
     setImmediate(async () => {
@@ -57,8 +64,6 @@ userSchema.post('save', function(doc) {
             const cacheUtils = require('../utils/cacheUtils');
             const redis = cacheUtils.getClient();
             if (redis) {
-                // SECURITY FIX: Synchronized cache key with authService.js (cache:user)
-                // Ensures RBAC updates or account lockouts take effect instantly at the edge.
                 await redis.del(`cache:user:${doc._id.toString()}`);
             }
         } catch (e) { console.warn('[CACHE] Failed to clear user session cache', e.message); }
@@ -72,7 +77,6 @@ userSchema.post('findOneAndUpdate', function(doc) {
             const cacheUtils = require('../utils/cacheUtils');
             const redis = cacheUtils.getClient();
             if (redis) {
-                // SECURITY FIX: Synchronized cache key with authService.js (cache:user)
                 await redis.del(`cache:user:${doc._id.toString()}`);
             }
         } catch (e) { console.warn('[CACHE] Failed to clear user session cache', e.message); }
