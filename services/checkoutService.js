@@ -1,5 +1,6 @@
 /* services/checkoutService.js */
 
+const crypto = require('crypto'); // ENTERPRISE FIX: Native crypto for unique idempotency lock tracking
 const mongoose = require('mongoose');
 const Order = require('../models/Order');
 const customerService = require('./customerService'); 
@@ -20,6 +21,9 @@ async function withIdempotency(idempotencyKey, executeCheckoutTask) {
     if (idempotencyKey && redisClient) {
         const resultKey = `idem:checkout:${idempotencyKey}`;
         const lockKey = `idem:lock:${idempotencyKey}`;
+        
+        // ENTERPRISE FIX: Unique UUID to guarantee a thread only deletes its own lock
+        const lockValue = crypto.randomUUID(); 
 
         const cachedResult = await redisClient.get(resultKey);
         if (cachedResult) {
@@ -27,7 +31,7 @@ async function withIdempotency(idempotencyKey, executeCheckoutTask) {
             return JSON.parse(cachedResult); 
         }
 
-        const acquiredLock = await redisClient.set(lockKey, 'IN_PROGRESS', 'NX', 'EX', 30);
+        const acquiredLock = await redisClient.set(lockKey, lockValue, 'NX', 'EX', 30);
         if (!acquiredLock) {
             throw new AppError('Concurrent checkout processing detected. Please wait.', 409);
         }
@@ -39,7 +43,16 @@ async function withIdempotency(idempotencyKey, executeCheckoutTask) {
             
             return result;
         } finally {
-            await redisClient.del(lockKey);
+            // ENTERPRISE FIX: Atomic Lua script ensures lock is only deleted if the UUID matches.
+            // Prevents long-running checkouts from accidentally deleting locks acquired by subsequent requests.
+            const script = `
+                if redis.call("get", KEYS[1]) == ARGV[1] then
+                    return redis.call("del", KEYS[1])
+                else
+                    return 0
+                end
+            `;
+            await redisClient.eval(script, 1, lockKey, lockValue);
         }
     } else {
         return await executeCheckoutTask();
