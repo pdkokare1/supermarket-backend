@@ -52,7 +52,12 @@ const productSchema = new mongoose.Schema({
     category: { type: String, required: true },
     brand: { type: String, default: '' }, 
     distributorName: { type: String, default: '' }, 
-    imageUrl: { type: String, default: '' },
+    imageUrl: { 
+        type: String, 
+        default: '',
+        // SECURITY OPTIMIZATION: XSS Protection ensuring the string is a valid HTTP/HTTPS URL
+        match: [/^(https?:\/\/.+)?$/, 'Please fill a valid image URL']
+    },
     isActive: { type: Boolean, default: true },
     isArchived: { type: Boolean, default: false }, 
     searchTags: { type: String, default: '' },
