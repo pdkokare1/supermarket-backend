@@ -1,3 +1,4 @@
+/* models/Shift.js */
 const mongoose = require('mongoose');
 
 const shiftSchema = new mongoose.Schema({
@@ -32,5 +33,9 @@ const shiftSchema = new mongoose.Schema({
         default: 'Open' 
     }
 }, { timestamps: true });
+
+// ENTERPRISE FIX: Database-level lock preventing multiple open shifts globally.
+// This permanently eliminates cash-drawer concurrency race conditions.
+shiftSchema.index({ status: 1 }, { unique: true, partialFilterExpression: { status: 'Open' } });
 
 module.exports = mongoose.model('Shift', shiftSchema);
