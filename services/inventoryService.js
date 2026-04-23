@@ -14,13 +14,15 @@ const { invalidateProductCache } = require('./productCacheService');
 // ==========================================
 
 const getProductAndVariant = async (productId, variantId, session = null) => {
-    const query = Product.findById(productId);
+    // OPTIMIZATION: .lean() added. We do not need a hydrated document just to read current stock levels.
+    const query = Product.findById(productId).lean();
     if (session) query.session(session);
     
     const product = await query;
     if (!product) throw new AppError('Product not found', 404);
     
-    const variant = product.variants.id(variantId);
+    // OPTIMIZATION: Replaced heavy Mongoose .id() method with native JS .find() since the object is now a POJO.
+    const variant = product.variants.find(v => v._id.toString() === variantId.toString());
     if (!variant) throw new AppError('Variant not found', 404);
     
     return { product, variant };
@@ -264,7 +266,7 @@ exports.processRestock = async (productId, payload) => {
             { _id: productId },
             updateQuery,
             { new: true, arrayFilters, session }
-        );
+        ).lean(); // OPTIMIZATION: Zero hydration overhead
         
         if (paymentStatus === 'Credit' && updatedProduct.distributorName) {
             const totalCost = Number(addedQuantity) * Number(purchasingPrice);
@@ -319,7 +321,7 @@ exports.processRTV = async (productId, payload) => {
             { _id: productId },
             updateQuery,
             { new: true, arrayFilters, session }
-        );
+        ).lean(); // OPTIMIZATION: Zero hydration overhead
 
         appEvents.emit('PRODUCT_UPDATED', { 
             productId: updatedProduct._id, 
@@ -362,7 +364,7 @@ exports.processTransfer = async (payload, username, logError) => {
             { _id: productId },
             updateQuery,
             { new: true, arrayFilters, session }
-        );
+        ).lean(); // OPTIMIZATION: Zero hydration overhead
         
         await auditService.logEvent({
             action: 'STOCK_TRANSFER',
