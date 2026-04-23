@@ -11,7 +11,7 @@ const cacheUtils = require('../utils/cacheUtils');
 const { getPaginationOptions, getCursorFilter } = require('../utils/paginationUtils');
 const { getFilterDates } = require('../utils/dateUtils');
 const appEvents = require('../utils/eventEmitter'); 
-const customerService = require('./customerService'); // DOMAIN INTEGRATION
+const customerService = require('./customerService'); 
 const { Readable } = require('stream');
 
 // ==========================================
@@ -30,11 +30,19 @@ exports.processPartialRefund = async (orderId, payload, user) => {
     return withTransaction(async (session) => {
         const { productId, variantId, qtyToRefund, newTotalAmount } = payload;
         const order = await Order.findById(orderId).session(session);
+        
         if (!order) throw new AppError('Order not found', 404);
+        // ENTERPRISE SECURITY FIX: Prevent partial refund processing on already cancelled orders
+        if (order.status === 'Cancelled') throw new AppError('Cannot refund items on an already cancelled order.', 400);
 
         order.items = order.items
             .map(item => {
-                if (item.productId === productId && item.variantId === variantId) {
+                // ENTERPRISE FIX: Enforced string conversion. 
+                // Mongoose ObjectIds compared to Payload Strings using '===' previously failed silently.
+                const isMatchingProduct = item.productId.toString() === productId.toString();
+                const isMatchingVariant = (!variantId) || (item.variantId && item.variantId.toString() === variantId.toString());
+                
+                if (isMatchingProduct && isMatchingVariant) {
                     item.qty -= qtyToRefund;
                 }
                 return item;
@@ -43,7 +51,6 @@ exports.processPartialRefund = async (orderId, payload, user) => {
 
         order.totalAmount = newTotalAmount;
 
-        // OPTIMIZATION: Execute DB save, inventory update, and customer refund concurrently to minimize transaction lock duration.
         const parallelTasks = [
             inventoryService.restoreInventory([{ productId, variantId, qty: qtyToRefund }], order.storeId, session),
             order.save({ session })
@@ -67,16 +74,18 @@ exports.processPartialRefund = async (orderId, payload, user) => {
 
 exports.processCancelOrder = async (orderId, reason, user) => {
     return withTransaction(async (session) => {
-        // OPTIMIZATION: Added .select() projection to significantly reduce BSON payload size during memory hydration
         const order = await Order.findById(orderId)
             .select('status paymentMethod customerPhone totalAmount items storeId')
             .session(session);
             
         if (!order) throw new AppError('Order not found', 404);
         
+        // ENTERPRISE SECURITY FIX: Double-Cancel Protection.
+        // Prevents malicious actors or network retries from duplicating inventory restoration and 'Pay Later' refunds.
+        if (order.status === 'Cancelled') throw new AppError('Order is already cancelled.', 400);
+        
         order.status = 'Cancelled';
 
-        // OPTIMIZATION: Parallelizing external service updates and saves to reduce overall latency
         const parallelTasks = [
             inventoryService.restoreInventory(order.items, order.storeId, session),
             order.save({ session })
@@ -107,12 +116,10 @@ exports.getOrdersList = async (queryParams) => {
 
     const { limit, skip, cursor } = getPaginationOptions(queryParams);
 
-    // OPTIMIZATION: Inject O(1) Cursor matching safely combining with other filters
     if (cursor) {
         Object.assign(filter, getCursorFilter(cursor, -1));
     }
 
-    // OPTIMIZATION: Single-Pass Aggregation with Root Match
     const result = await Order.aggregate([
         { $match: filter },
         { $facet: {
@@ -121,7 +128,6 @@ exports.getOrdersList = async (queryParams) => {
             ],
             data: [
                 { $sort: { createdAt: -1 } },
-                // If using cursor, skip becomes 0 automatically preventing slow DB scans
                 { $skip: cursor ? 0 : skip },
                 { $limit: limit || 50 }
             ],
@@ -136,7 +142,6 @@ exports.getOrdersList = async (queryParams) => {
     const total = result[0].metadata[0]?.total || 0;
     const pendingStats = result[0].stats[0] || { pendingCount: 0, pendingRevenue: 0 };
     
-    // OPTIMIZATION: Return the nextCursor natively to the frontend
     const nextCursor = orders.length > 0 ? orders[orders.length - 1]._id : null;
 
     return { 
@@ -154,41 +159,42 @@ exports.getOrdersList = async (queryParams) => {
 
 exports.getAllOrdersForExport = () => {
     const cursor = Order.find()
-        .read('secondaryPreferred') // ENTERPRISE FIX: Offloads heavy admin export queries to read replicas to prevent primary DB CPU spikes during live checkouts.
+        .read('secondaryPreferred') 
         .select('orderNumber createdAt customerName customerPhone totalAmount status paymentMethod deliveryType')
         .sort({ createdAt: -1 })
-        // OPTIMIZATION: Added explicit batch size to prevent DB Cursor exhaustion on large enterprise exports
         .batchSize(100)
-        // ENTERPRISE OPTIMIZATION: Bypassing Mongoose document hydration to prevent OOM errors on massive exports
         .lean()
         .cursor();
 
-    // OPTIMIZATION: Async Generator stream pipeline ensures O(1) memory footprint for enterprise-scale exports
     async function* generateRows() {
-        for await (const o of cursor) {
-            yield { 
-                OrderID: o.orderNumber || o._id.toString(), 
-                Date: new Date(o.createdAt).toLocaleString(), 
-                CustomerName: o.customerName || '', 
-                Phone: o.customerPhone || '', 
-                TotalAmount: o.totalAmount || 0, 
-                Status: o.status || '', 
-                PaymentMethod: o.paymentMethod || '', 
-                DeliveryType: o.deliveryType || '' 
-            };
+        try {
+            for await (const o of cursor) {
+                yield { 
+                    OrderID: o.orderNumber || o._id.toString(), 
+                    Date: new Date(o.createdAt).toLocaleString(), 
+                    CustomerName: o.customerName || '', 
+                    Phone: o.customerPhone || '', 
+                    TotalAmount: o.totalAmount || 0, 
+                    Status: o.status || '', 
+                    PaymentMethod: o.paymentMethod || '', 
+                    DeliveryType: o.deliveryType || '' 
+                };
+            }
+        } finally {
+            // ENTERPRISE FIX: Explicit closure guarantees no DB connections or memory are leaked 
+            // if the user's browser drops the connection mid-download.
+            await cursor.close();
         }
     }
         
     return Readable.from(generateRows());
 };
 
-// OPTIMIZATION: Added optional 'session' parameter to allow these functions to be wrapped in larger transactions if needed
 exports.assignDriverToOrder = async (orderId, driverName, driverPhone, session = null) => {
     const options = { new: true };
     if (session) options.session = session;
     const order = await Order.findByIdAndUpdate(orderId, { deliveryDriverName: driverName, driverPhone: driverPhone || '' }, options);
     
-    // STABILITY OPTIMIZATION: Throw robust 404 to prevent process crash if orderId is invalid
     if (!order) throw new AppError('Order not found or already removed.', 404);
     
     appEvents.broadcastEvent('ORDER_UPDATED', { orderId: order._id, storeId: order.storeId });
@@ -200,7 +206,6 @@ exports.updateOrderStatus = async (orderId, status, session = null) => {
     if (session) options.session = session;
     const order = await Order.findByIdAndUpdate(orderId, { status: status }, options);
     
-    // STABILITY OPTIMIZATION: Prevents undefined broadcast crash
     if (!order) throw new AppError('Order not found to update status.', 404);
     
     appEvents.broadcastEvent('ORDER_STATUS_UPDATED', { orderId: order._id, status: status, storeId: order.storeId });
