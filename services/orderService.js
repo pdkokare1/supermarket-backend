@@ -32,8 +32,6 @@ exports.processPartialRefund = async (orderId, payload, user) => {
         const order = await Order.findById(orderId).session(session);
         if (!order) throw new AppError('Order not found', 404);
 
-        await inventoryService.restoreInventory([{ productId, variantId, qty: qtyToRefund }], order.storeId, session);
-
         order.items = order.items
             .map(item => {
                 if (item.productId === productId && item.variantId === variantId) {
@@ -43,13 +41,20 @@ exports.processPartialRefund = async (orderId, payload, user) => {
             })
             .filter(item => item.qty > 0);
 
+        order.totalAmount = newTotalAmount;
+
+        // OPTIMIZATION: Execute DB save, inventory update, and customer refund concurrently to minimize transaction lock duration.
+        const parallelTasks = [
+            inventoryService.restoreInventory([{ productId, variantId, qty: qtyToRefund }], order.storeId, session),
+            order.save({ session })
+        ];
+
         if (order.paymentMethod === 'Pay Later') {
             const diff = order.totalAmount - newTotalAmount;
-            if (diff > 0) await customerService.refundPayLaterCredit(order.customerPhone, diff, session);
+            if (diff > 0) parallelTasks.push(customerService.refundPayLaterCredit(order.customerPhone, diff, session));
         }
-        
-        order.totalAmount = newTotalAmount;
-        await order.save({ session });
+
+        await Promise.all(parallelTasks);
 
         await auditService.logEvent({ action: 'PARTIAL_REFUND', targetType: 'Order', targetId: order._id.toString(), username: user.username, userId: user.id, details: { refundedItem: productId, qty: qtyToRefund }, session });
         await clearOrderAnalyticsCache();
@@ -70,10 +75,18 @@ exports.processCancelOrder = async (orderId, reason, user) => {
         if (!order) throw new AppError('Order not found', 404);
         
         order.status = 'Cancelled';
-        if (order.paymentMethod === 'Pay Later') await customerService.refundPayLaterCredit(order.customerPhone, order.totalAmount, session);
 
-        await inventoryService.restoreInventory(order.items, order.storeId, session);
-        await order.save({ session });
+        // OPTIMIZATION: Parallelizing external service updates and saves to reduce overall latency
+        const parallelTasks = [
+            inventoryService.restoreInventory(order.items, order.storeId, session),
+            order.save({ session })
+        ];
+
+        if (order.paymentMethod === 'Pay Later') {
+            parallelTasks.push(customerService.refundPayLaterCredit(order.customerPhone, order.totalAmount, session));
+        }
+        
+        await Promise.all(parallelTasks);
         
         await auditService.logEvent({ action: 'CANCEL_ORDER', targetType: 'Order', targetId: order._id.toString(), username: user ? user.username : 'System', userId: user ? user.id : null, details: { reason: reason || 'Not provided', amountRefunded: order.totalAmount }, session });
         await clearOrderAnalyticsCache();
