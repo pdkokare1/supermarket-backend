@@ -2,21 +2,13 @@
 'use strict';
 
 const auditService = require('../services/auditService');
-const crypto = require('crypto'); // OPTIMIZATION: Natively generate correlation IDs
 
 module.exports = function(fastify) {
     
-    // OPTIMIZATION: Cloud Observability & Correlation Tracing
-    fastify.addHook('onRequest', async (request, reply) => {
-        // Generate or forward tracing ID
-        const correlationId = request.headers['x-correlation-id'] || crypto.randomUUID();
-        request.correlationId = correlationId;
-        
-        // Attach to the logger context so it automatically appears in all pino logs
-        request.log = request.log.child({ correlationId });
-        
-        // Return to client so frontend errors can be directly mapped to backend logs
-        reply.header('x-correlation-id', correlationId);
+    // OPTIMIZATION: Ensure downstream clients receive the highly-optimized Fastify native request ID for log tracing
+    fastify.addHook('onSend', async (request, reply, payload) => {
+        reply.header('x-correlation-id', request.id);
+        return payload;
     });
 
     // OPTIMIZATION: Non-Blocking Compliance Logging Hook
