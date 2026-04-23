@@ -31,3 +31,14 @@ DailyPick is designed to survive ISP outages at the physical store. This protoco
    * **Success State:** A toast notification will appear stating "Offline Mode: Action queued for background sync."
    * Reconnect the tablet to Wi-Fi.
    * **Success State:** Within 30 seconds, the Service Worker will silently flush the outbox, transmitting the payload to Railway with an `Idempotency-Key` to prevent double-billing.
+
+## Phase 3: Pre-Launch Load Testing & QA Protocol
+Before driving live traffic, prove the backend locks and container scaling by executing the Artillery stress test.
+
+1. **Execute the Simulation:**
+   * Open your local terminal.
+   * Run the command: `npx artillery run load-test.yml`
+2. **Monitor the Pipeline:**
+   * Open your Railway Dashboard. Navigate to "Metrics".
+   * Ensure CPU does not hit 100% and MongoDB connections do not exhaust during the 500 req/sec spike.
+   * **Success State:** Artillery terminal outputs 0 failed HTTP requests, confirming the atomic Idempotency locks successfully caught concurrent duplicates.
