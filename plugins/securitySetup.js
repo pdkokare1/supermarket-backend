@@ -52,9 +52,11 @@ module.exports = function(fastify) {
         max: 100,
         timeWindow: '1 minute',
         ban: 3, 
-        // Relies on Fastify's native request.ip, which respects the trustProxy setting configured in app.js
-        // This prevents malicious actors from bypassing limits by spoofing x-forwarded-for headers.
+        // ENTERPRISE FIX: Prioritize Authenticated User ID to prevent false-positive NAT IP bans
         keyGenerator: function (request) {
+            if (request.user && request.user.id) {
+                return request.user.id;
+            }
             return request.ip;
         },
         errorResponseBuilder: function (request, context) {
