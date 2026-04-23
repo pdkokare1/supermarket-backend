@@ -41,7 +41,7 @@ exports.getAuditLogs = async (queryParams) => {
 };
 
 // OPTIMIZATION: Expanded footprint to securely capture before/after object states
-exports.logEvent = async ({ action, targetType, targetId, username, details = {}, userId = null, previousState = null, newState = null, session = null, logError = null }) => {
+exports.logEvent = async ({ action, targetType, targetId, username, details = {}, userId = null, previousState = null, newState = null, session = null, logError = null, reqId = null, ip = null }) => {
     const logEntry = { 
         action, 
         targetType, 
@@ -53,6 +53,10 @@ exports.logEvent = async ({ action, targetType, targetId, username, details = {}
     if (userId) logEntry.userId = userId;
     if (previousState) logEntry.previousState = previousState;
     if (newState) logEntry.newState = newState;
+    
+    // ENTERPRISE FIX: Capture the exact terminal identifier and request stream for precise forensic debugging
+    if (reqId) logEntry.details.reqId = reqId;
+    if (ip) logEntry.details.ip = ip;
 
     // DEPRECATION CONSULTATION: Awaiting synchronous database inserts slows down administrative operations
     /*
