@@ -27,7 +27,6 @@ function validateAndApplyPayLater(custProfile, amount) {
 }
 
 exports.getAggregatedCustomers = async () => {
-    // OPTIMIZATION: Cache the heavy CRM aggregation for 1 hour to save DB CPU
     const CACHE_KEY = 'crm:aggregated_customers';
     const cachedData = await cacheUtils.getCachedData(CACHE_KEY);
     if (cachedData) return cachedData;
@@ -62,7 +61,6 @@ exports.getAllCustomers = async () => {
 exports.getCustomersForExport = async () => {
     const exportData = [];
     
-    // OPTIMIZATION: Memory safe cursor iteration prevents OOM crashes on large exports
     const cursor = Customer.find()
         .select('name phone loyaltyPoints isCreditEnabled creditLimit creditUsed createdAt')
         .cursor();
@@ -93,11 +91,15 @@ exports.updateCustomerLimit = async (phone, name, isCreditEnabled, creditLimit) 
 };
 
 exports.recordPayment = async (phone, amount) => {
-    let cust = await Customer.findOne({ phone });
-    if (!cust) throw new AppError('Customer not found.', 404); 
+    // ENTERPRISE FIX: Replaced read-modify-write block with atomic MongoDB pipeline.
+    // Completely eliminates financial race conditions where concurrent payments could overwrite each other.
+    const cust = await Customer.findOneAndUpdate(
+        { phone },
+        [ { $set: { creditUsed: { $max: [0, { $subtract: ["$creditUsed", Number(amount)] }] } } } ],
+        { new: true }
+    );
     
-    cust.creditUsed = Math.max(0, cust.creditUsed - Number(amount));
-    await cust.save();
+    if (!cust) throw new AppError('Customer not found.', 404); 
 
     appEvents.emit('CUSTOMER_PAYMENT_RECORDED', { phone: cust.phone });
 
@@ -105,8 +107,6 @@ exports.recordPayment = async (phone, amount) => {
 };
 
 exports.refundPayLaterCredit = async (customerPhone, amount, session) => {
-    // OPTIMIZATION: Replaced memory-heavy document fetch & save with an atomic database pipeline update.
-    // This guarantees thread safety under high concurrency and reduces Node.js memory overhead.
     await Customer.updateOne(
         { phone: customerPhone },
         [ { $set: { creditUsed: { $max: [0, { $subtract: ["$creditUsed", amount] }] } } } ],
@@ -114,7 +114,6 @@ exports.refundPayLaterCredit = async (customerPhone, amount, session) => {
     );
 };
 
-// DOMAIN BOUNDARY OPTIMIZATION: Migrated from checkoutService
 exports.processOnlineCheckoutProfile = async (customerPhone, customerName, totalAmount, paymentMethod, session) => {
     let custProfile = await Customer.findOneAndUpdate(
         { phone: customerPhone },
@@ -132,7 +131,6 @@ exports.processOnlineCheckoutProfile = async (customerPhone, customerName, total
     return custProfile;
 };
 
-// DOMAIN BOUNDARY OPTIMIZATION: Migrated from checkoutService
 exports.processPosCheckoutProfile = async (customerPhone, totalAmount, paymentMethod, pointsRedeemed, session) => {
     let custProfile = await Customer.findOneAndUpdate(
         { phone: customerPhone },
