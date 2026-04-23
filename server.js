@@ -1,9 +1,7 @@
 /* server.js */
 'use strict';
 
-const mongoose = require('mongoose');
-
-// OPTIMIZATION: Only load dotenv in non-production environments to save disk I/O on deployment containers.
+// OPTIMIZATION: Load environment variables absolutely first so all subsequent modules have access.
 if (process.env.NODE_ENV !== 'production') {
     require('dotenv').config();
 }
