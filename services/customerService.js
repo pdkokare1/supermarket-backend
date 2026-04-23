@@ -5,6 +5,7 @@ const Order = require('../models/Order');
 const AppError = require('../utils/AppError'); 
 const appEvents = require('../utils/eventEmitter'); 
 const cacheUtils = require('../utils/cacheUtils'); 
+const { Readable } = require('stream'); // ENTERPRISE FIX: Native streams imported
 
 const formatCustomerForExport = (c) => ({
     Name: c.name,
@@ -58,18 +59,25 @@ exports.getAllCustomers = async () => {
         .lean();
 };
 
-exports.getCustomersForExport = async () => {
-    const exportData = [];
-    
+exports.getCustomersForExport = () => {
+    // ENTERPRISE FIX: Replaced RAM-crashing Array.push() loop with a memory-safe stream generator.
     const cursor = Customer.find()
         .select('name phone loyaltyPoints isCreditEnabled creditLimit creditUsed createdAt')
+        .lean() // Zero hydration
         .cursor();
 
-    for (let c = await cursor.next(); c != null; c = await cursor.next()) {
-        exportData.push(formatCustomerForExport(c));
+    async function* generateRows() {
+        try {
+            for await (const c of cursor) {
+                yield formatCustomerForExport(c);
+            }
+        } finally {
+            // Explicit closure guarantees no DB connections leak if download is cancelled
+            await cursor.close();
+        }
     }
     
-    return exportData;
+    return Readable.from(generateRows());
 };
 
 exports.getCustomerByPhone = async (phone) => {
@@ -77,16 +85,17 @@ exports.getCustomerByPhone = async (phone) => {
 };
 
 exports.updateCustomerLimit = async (phone, name, isCreditEnabled, creditLimit) => {
-    let cust = await Customer.findOne({ phone });
-    if (!cust) {
-        cust = new Customer({ phone, name: name || 'Valued Customer' });
-    }
-    cust.isCreditEnabled = isCreditEnabled;
-    cust.creditLimit = Number(creditLimit);
-    await cust.save();
+    // OPTIMIZATION: Converted read-modify-save (2 trips + hydration) into 1 atomic operation.
+    const cust = await Customer.findOneAndUpdate(
+        { phone },
+        { 
+            $setOnInsert: { name: name || 'Valued Customer' },
+            $set: { isCreditEnabled, creditLimit: Number(creditLimit) }
+        },
+        { new: true, upsert: true, lean: true } // Zero hydration
+    );
 
     appEvents.emit('CUSTOMER_UPDATED', { phone: cust.phone });
-
     return cust;
 };
 
@@ -96,7 +105,7 @@ exports.recordPayment = async (phone, amount) => {
     const cust = await Customer.findOneAndUpdate(
         { phone },
         [ { $set: { creditUsed: { $max: [0, { $subtract: ["$creditUsed", Number(amount)] }] } } } ],
-        { new: true }
+        { new: true, lean: true } // Added lean
     );
     
     if (!cust) throw new AppError('Customer not found.', 404); 
