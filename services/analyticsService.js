@@ -73,7 +73,8 @@ exports.generateAndCachePnlRollup = async (startDate, endDate) => {
                         0
                     ]
                 }
-            }},
+            }
+            },
             { $addFields: {
                 estimatedCost: {
                     $let: {
@@ -219,22 +220,17 @@ exports.getPnl = async (startDate, endDate) => {
 exports.generateForecast = async (geminiKey) => {
     if (!geminiKey) throw new Error('Gemini API key not configured on server.');
 
-    const products = await Product.find({ isActive: true, isArchived: { $ne: true } })
-        .select('name variants.weightOrVolume variants.stock variants.price variants.lowStockThreshold')
-        .lean();
-        
-    const inventorySnapshot = [];
-    products.forEach(p => {
-        if (p.variants) {
-            p.variants.forEach(v => {
-                if (v.stock <= (v.lowStockThreshold || 10)) {
-                    inventorySnapshot.push({ name: p.name, variant: v.weightOrVolume, currentStock: v.stock, price: v.price });
-                }
-            });
-        }
-    });
+    // OPTIMIZATION: Completely replaced JavaScript RAM loops with a native MongoDB Pipeline. 
+    // This prevents massive Memory Spikes and offloads the sorting/filtering to the C++ DB engine.
+    const analysisData = await Product.aggregate([
+        { $match: { isActive: true, isArchived: { $ne: true } } },
+        { $unwind: "$variants" },
+        { $match: { $expr: { $lte: ["$variants.stock", { $ifNull: ["$variants.lowStockThreshold", 10] }] } } },
+        { $project: { _id: 0, name: 1, variant: "$variants.weightOrVolume", currentStock: "$variants.stock", price: "$variants.price" } },
+        { $sort: { currentStock: 1 } },
+        { $limit: 60 }
+    ]).allowDiskUse(true);
 
-    const analysisData = inventorySnapshot.sort((a, b) => a.currentStock - b.currentStock).slice(0, 60);
     if (analysisData.length === 0) {
         return { recommendations: [], message: "Inventory levels are exceptionally healthy. No AI forecast needed." };
     }
