@@ -27,7 +27,6 @@ const getProductAndVariant = async (productId, variantId, session = null) => {
 };
 
 const addLocationStockQuery = (updateQuery, arrayFilters, variant, storeId, quantity, locIdentifier = 'loc') => {
-    // ENTERPRISE FIX: Safe array fallback for legacy products without locationInventory initialized
     const hasStore = (variant.locationInventory || []).some(l => l.storeId && l.storeId.toString() === storeId.toString());
     if (hasStore) {
         updateQuery.$inc = updateQuery.$inc || {};
@@ -106,11 +105,9 @@ exports.deductInventory = async (items, storeId, session) => {
         const bulkResult = await Product.bulkWrite(bulkOperations, { session });
         
         if (bulkResult.modifiedCount !== items.length) {
-            // ENTERPRISE FIX: Identify EXACTLY which item caused the race condition for precise frontend error
             const currentStock = await Product.find({ _id: { $in: productIds } }).select('name variants').session(session).lean();
             let failedItemName = 'an item in your cart';
             
-            // OPTIMIZATION: Replaced O(N^2) nested array searches with O(1) Hash Map lookups to protect the Node event loop during large cart rejections.
             const stockMap = new Map(currentStock.map(p => [p._id.toString(), p]));
 
             for (const item of items) {
@@ -119,7 +116,6 @@ exports.deductInventory = async (items, storeId, session) => {
                     const variantMap = new Map(prod.variants.map(v => [v._id.toString(), v]));
                     const variant = variantMap.get(item.variantId.toString());
                     
-                    // If the found stock is strictly less than what we asked to deduct, we found the culprit
                     if (variant && variant.stock < item.qty) {
                         failedItemName = `${prod.name} (${variant.weightOrVolume})`;
                         break;
@@ -163,7 +159,6 @@ exports.calculateSalesVelocityAndStock = async (velocityDays, lowStockThreshold,
 
     const velocityAgg = await Order.aggregate([
         { $match: { createdAt: { $gte: dateAgo }, status: { $in: ['Completed', 'Dispatched'] } } },
-        // ENTERPRISE FIX: Project heavily strips unneeded strings (like notes, deliveryAddress) before unwinding to save massive amounts of RAM
         { $project: { items: 1 } },
         { $unwind: "$items" },
         { $group: { _id: "$items.variantId", totalSold: { $sum: "$items.qty" } } }
@@ -174,8 +169,6 @@ exports.calculateSalesVelocityAndStock = async (velocityDays, lowStockThreshold,
         if (v._id) variantSales[v._id.toString()] = v.totalSold;
     });
 
-    // OPTIMIZATION: Critical memory leak patch. Using .lean() converts heavy Mongoose documents into plain JS objects, 
-    // saving hundreds of megabytes of RAM when iterating over thousands of products during background jobs.
     const productCursor = Product.find({ isActive: true }).select('name variants').lean().cursor();
     
     let lowStockItems = [];
@@ -184,22 +177,28 @@ exports.calculateSalesVelocityAndStock = async (velocityDays, lowStockThreshold,
     const BATCH_SIZE = 500; 
     
     for await (let p of productCursor) {
-        let isModified = false;
-        let updateFields = {}; // ENTERPRISE FIX: Strict dot-notation targeting
-        
         if (p.variants) {
-            p.variants.forEach((v, index) => {
+            p.variants.forEach((v) => {
                 const totalSold = variantSales[v._id.toString()] || 0;
                 const dailyAvg = totalSold / velocityDays;
                 
                 const avgDailySalesFixed = Number(dailyAvg.toFixed(2));
                 const daysOfStockFixed = dailyAvg > 0 ? Number((v.stock / dailyAvg).toFixed(1)) : 999;
 
-                // ENTERPRISE FIX: Update ONLY the specific stats using array indices.
-                // This prevents the cron job from accidentally overwriting live stock updates (race conditions)
-                updateFields[`variants.${index}.averageDailySales`] = avgDailySalesFixed;
-                updateFields[`variants.${index}.daysOfStock`] = daysOfStockFixed;
-                isModified = true;
+                // ENTERPRISE FIX: Replaced dangerous Array-Index mutation with strict arrayFilter matching.
+                // Prevents corrupting the wrong variant if an admin reorders or deletes a variant mid-cron run.
+                bulkOps.push({
+                    updateOne: {
+                        filter: { _id: p._id },
+                        update: { 
+                            $set: { 
+                                "variants.$[var].averageDailySales": avgDailySalesFixed,
+                                "variants.$[var].daysOfStock": daysOfStockFixed
+                            } 
+                        },
+                        arrayFilters: [{ "var._id": v._id }]
+                    }
+                });
 
                 if (v.stock <= (v.lowStockThreshold || lowStockThreshold) || (daysOfStockFixed < 3 && v.stock > 0)) {
                     lowStockItems.push({ name: p.name, variant: v.weightOrVolume, stock: v.stock, daysLeft: daysOfStockFixed });
@@ -207,15 +206,6 @@ exports.calculateSalesVelocityAndStock = async (velocityDays, lowStockThreshold,
                 
                 if (v.stock > deadStockQty && daysOfStockFixed > deadStockDays) {
                     deadStockItems.push({ name: p.name, variant: v.weightOrVolume, stock: v.stock, daysLeft: daysOfStockFixed });
-                }
-            });
-        }
-        
-        if (isModified) {
-            bulkOps.push({
-                updateOne: {
-                    filter: { _id: p._id },
-                    update: { $set: updateFields } // Applies only dot-notation fields, leaves stock alone
                 }
             });
         }
@@ -253,7 +243,13 @@ exports.processRestock = async (productId, payload) => {
         };
 
         const updateQuery = {
-            $push: { "variants.$[var].purchaseHistory": purchaseHistoryEntry },
+            // ENTERPRISE FIX: Native capped arrays via $slice prevents 16MB BSON Document Crash over time.
+            $push: { 
+                "variants.$[var].purchaseHistory": {
+                    $each: [purchaseHistoryEntry],
+                    $slice: -50 // Keep only the latest 50 entries to preserve DB memory limits
+                } 
+            },
             $inc: { "variants.$[var].stock": Number(addedQuantity) },
             $set: { "variants.$[var].price": Number(newSellingPrice) }
         };
@@ -299,14 +295,19 @@ exports.processRTV = async (productId, payload) => {
         const returnHistoryEntry = { distributorName, returnedQuantity: Number(returnedQuantity), refundAmount: Number(refundAmount), reason, storeId };
 
         const updateQuery = {
-            $push: { "variants.$[var].returnHistory": returnHistoryEntry },
+            // ENTERPRISE FIX: Native capped arrays via $slice.
+            $push: { 
+                "variants.$[var].returnHistory": {
+                    $each: [returnHistoryEntry],
+                    $slice: -50
+                } 
+            },
             $inc: { "variants.$[var].stock": -Number(returnedQuantity) }
         };
         
         const arrayFilters = [{ "var._id": variantId }];
 
         if (storeId) {
-            // ENTERPRISE FIX: Safe array fallback
             let locStock = (variant.locationInventory || []).find(l => l.storeId && l.storeId.toString() === storeId);
             if (locStock && locStock.stock >= returnedQuantity) {
                 updateQuery.$inc["variants.$[var].locationInventory.$[loc].stock"] = -Number(returnedQuantity);
@@ -341,7 +342,6 @@ exports.processTransfer = async (payload, username, logError) => {
 
         const { product, variant } = await getProductAndVariant(productId, variantId, session);
 
-        // ENTERPRISE FIX: Safe array fallback
         let fromLoc = (variant.locationInventory || []).find(l => l.storeId.toString() === fromStoreId);
         if (!fromLoc || fromLoc.stock < quantity) {
             throw new AppError('Insufficient stock at source location.', 400);
