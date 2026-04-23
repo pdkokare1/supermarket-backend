@@ -21,7 +21,9 @@ exports.generateTokens = (server, user) => {
 };
 
 exports.hashPassword = async (password) => {
-    return await bcrypt.hash(password, 10);
+    // ENTERPRISE FIX: Dynamic salt rounds for future-proof cryptography, defaulting to 12
+    const saltRounds = parseInt(process.env.BCRYPT_SALT_ROUNDS, 10) || 12;
+    return await bcrypt.hash(password, saltRounds);
 };
 
 exports.comparePassword = async (password, hash) => {
