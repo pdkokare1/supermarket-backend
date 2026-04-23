@@ -81,4 +81,7 @@ productSchema.index({ isArchived: 1, isActive: 1, category: 1, "variants.price":
 // OPTIMIZATION: Zero-latency sort index matching the productService's default { createdAt: -1 } fallback
 productSchema.index({ createdAt: -1 });
 
+// ENTERPRISE OPTIMIZATION: Compound Text Index for instant keyword search without regex COLLSCANs
+productSchema.index({ name: 'text', brand: 'text', searchTags: 'text' });
+
 module.exports = mongoose.model('Product', productSchema);
