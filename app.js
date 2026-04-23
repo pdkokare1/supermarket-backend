@@ -24,7 +24,9 @@ const createApp = (opts = {}) => {
                 }
             }
         },
-        trustProxy: true,
+        // ENTERPRISE SECURITY FIX: Restrict proxy trust to immediate upstream load balancers (Railway/Vercel) to prevent IP spoofing
+        trustProxy: process.env.TRUST_PROXY_HOPS ? parseInt(process.env.TRUST_PROXY_HOPS, 10) : 1,
+        
         // OPTIMIZATION: Disables automatic logging of every single HTTP request to save heavy disk I/O in production.
         disableRequestLogging: isProduction,
         // OPTIMIZATION: Normalizes routes to prevent 404s on trailing slashes and speeds up radix tree routing.
