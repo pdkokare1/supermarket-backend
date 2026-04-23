@@ -158,14 +158,31 @@ exports.refreshSession = async (decodedId, decodedVersion, server) => {
     return { user, token: tokens.token, refreshToken: tokens.refreshToken };
 };
 
-exports.revokeSession = async (userId, server) => {
+exports.revokeSession = async (userId, server, tokenToBlacklist = null) => {
     const user = await User.findById(userId);
     if (user) {
         user.tokenVersion = (user.tokenVersion || 0) + 1; // Explicit invalidation of all old refresh/access tokens
         await user.save();
         
         const redis = cacheUtils.getClient();
-        if (redis) await redis.del(`cache:user:${userId.toString()}`);
+        if (redis) {
+            await redis.del(`cache:user:${userId.toString()}`);
+            
+            // MODULARITY: Extracted from controller. Handles immediate JWT blacklisting.
+            if (tokenToBlacklist) {
+                try {
+                    const decoded = server.jwt.decode(tokenToBlacklist);
+                    if (decoded && decoded.exp) {
+                        const ttl = decoded.exp - Math.floor(Date.now() / 1000);
+                        if (ttl > 0) {
+                            await redis.set(`bl_${tokenToBlacklist}`, 'blacklisted', 'EX', ttl);
+                        }
+                    }
+                } catch (err) {
+                    server.log.warn(`Failed to blacklist token during logout: ${err.message}`);
+                }
+            }
+        }
 
         await logAuthAudit(server, 'LOGOUT', user._id.toString(), user.username, {}, user._id);
     }
