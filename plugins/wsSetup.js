@@ -9,6 +9,9 @@ module.exports = function (fastify) {
     let redisPubWS = null;
     let redisSubWS = null;
 
+    // OPTIMIZATION: Connection Rate Limiter to prevent Socket Exhaustion (DDoS Defense)
+    const activeUserConnections = new Map();
+
     const sendToClients = (messageObj) => {
         if (!fastify.websocketServer) return;
         const msgStr = JSON.stringify(messageObj);
@@ -95,6 +98,24 @@ module.exports = function (fastify) {
                     if (!user || !user.isActive || user.tokenVersion !== decoded.tokenVersion) {
                         throw new Error('Invalid session');
                     }
+
+                    // ENTERPRISE OPTIMIZATION: Enforce strict connection ceilings per user to prevent socket flooding
+                    const userIdStr = user._id.toString();
+                    const currentConns = activeUserConnections.get(userIdStr) || 0;
+                    
+                    if (currentConns >= 10) {
+                        fastify.log.warn(`[WS] Blocked excess concurrent connections for user ${userIdStr}`);
+                        ws.send(JSON.stringify({ type: 'ERROR', message: 'Maximum concurrent device limit reached.' }));
+                        ws.terminate();
+                        return;
+                    }
+                    activeUserConnections.set(userIdStr, currentConns + 1);
+
+                    ws.on('close', () => {
+                        const count = activeUserConnections.get(userIdStr);
+                        if (count > 1) activeUserConnections.set(userIdStr, count - 1);
+                        else activeUserConnections.delete(userIdStr);
+                    });
 
                     ws.storeId = user.storeId ? user.storeId.toString() : (req.query.storeId || null);
                     ws.isAdmin = user.role === 'Admin';
