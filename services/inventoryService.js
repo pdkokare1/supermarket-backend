@@ -27,7 +27,8 @@ const getProductAndVariant = async (productId, variantId, session = null) => {
 };
 
 const addLocationStockQuery = (updateQuery, arrayFilters, variant, storeId, quantity, locIdentifier = 'loc') => {
-    const hasStore = variant.locationInventory.some(l => l.storeId && l.storeId.toString() === storeId.toString());
+    // ENTERPRISE FIX: Safe array fallback for legacy products without locationInventory initialized
+    const hasStore = (variant.locationInventory || []).some(l => l.storeId && l.storeId.toString() === storeId.toString());
     if (hasStore) {
         updateQuery.$inc = updateQuery.$inc || {};
         updateQuery.$inc[`variants.$[var].locationInventory.$[${locIdentifier}].stock`] = Number(quantity);
@@ -283,7 +284,8 @@ exports.processRTV = async (productId, payload) => {
         const arrayFilters = [{ "var._id": variantId }];
 
         if (storeId) {
-            let locStock = variant.locationInventory.find(l => l.storeId && l.storeId.toString() === storeId);
+            // ENTERPRISE FIX: Safe array fallback
+            let locStock = (variant.locationInventory || []).find(l => l.storeId && l.storeId.toString() === storeId);
             if (locStock && locStock.stock >= returnedQuantity) {
                 updateQuery.$inc["variants.$[var].locationInventory.$[loc].stock"] = -Number(returnedQuantity);
                 arrayFilters.push({ "loc.storeId": storeId });
@@ -317,7 +319,8 @@ exports.processTransfer = async (payload, username, logError) => {
 
         const { product, variant } = await getProductAndVariant(productId, variantId, session);
 
-        let fromLoc = variant.locationInventory.find(l => l.storeId.toString() === fromStoreId);
+        // ENTERPRISE FIX: Safe array fallback
+        let fromLoc = (variant.locationInventory || []).find(l => l.storeId.toString() === fromStoreId);
         if (!fromLoc || fromLoc.stock < quantity) {
             throw new AppError('Insufficient stock at source location.', 400);
         }
