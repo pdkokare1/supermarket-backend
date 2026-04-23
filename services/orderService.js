@@ -187,9 +187,11 @@ exports.assignDriverToOrder = async (orderId, driverName, driverPhone, session =
     const options = { new: true };
     if (session) options.session = session;
     const order = await Order.findByIdAndUpdate(orderId, { deliveryDriverName: driverName, driverPhone: driverPhone || '' }, options);
-    if (order) {
-        appEvents.broadcastEvent('ORDER_UPDATED', { orderId: order._id, storeId: order.storeId });
-    }
+    
+    // STABILITY OPTIMIZATION: Throw robust 404 to prevent process crash if orderId is invalid
+    if (!order) throw new AppError('Order not found or already removed.', 404);
+    
+    appEvents.broadcastEvent('ORDER_UPDATED', { orderId: order._id, storeId: order.storeId });
     return order;
 };
 
@@ -197,9 +199,11 @@ exports.updateOrderStatus = async (orderId, status, session = null) => {
     const options = { new: true };
     if (session) options.session = session;
     const order = await Order.findByIdAndUpdate(orderId, { status: status }, options);
-    if (order) {
-        appEvents.broadcastEvent('ORDER_STATUS_UPDATED', { orderId: order._id, status: status, storeId: order.storeId });
-    }
+    
+    // STABILITY OPTIMIZATION: Prevents undefined broadcast crash
+    if (!order) throw new AppError('Order not found to update status.', 404);
+    
+    appEvents.broadcastEvent('ORDER_STATUS_UPDATED', { orderId: order._id, status: status, storeId: order.storeId });
     return order;
 };
 
