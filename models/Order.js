@@ -61,6 +61,11 @@ const orderSchema = new mongoose.Schema({
         type: [orderItemSchema], 
         required: true 
     },
+    // ENTERPRISE FIX: Native currency alignment for financial calculations
+    currency: {
+        type: String,
+        default: 'Rs'
+    },
     totalAmount: { 
         type: Number, 
         required: true,
@@ -68,11 +73,15 @@ const orderSchema = new mongoose.Schema({
     },
     status: { 
         type: String, 
-        default: 'Order Placed' 
+        default: 'Order Placed',
+        // SECURITY FIX: Prevent payload injection by locking states
+        enum: ['Order Placed', 'Packing', 'Dispatched', 'Delivered', 'Cancelled', 'Returned'] 
     },
     paymentMethod: { 
         type: String, 
-        default: 'Cash on Delivery' 
+        default: 'Cash on Delivery',
+        // SECURITY FIX: Strict financial state boundaries
+        enum: ['Cash on Delivery', 'UPI', 'Card', 'Pay Later', 'Mixed']
     },
     splitDetails: {
         cash: { type: Number, default: 0, min: 0 },
