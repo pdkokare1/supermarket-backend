@@ -7,11 +7,6 @@ const productCacheService = require('../services/productCacheService');
 
 exports.getProducts = async (request, reply) => {
     
-    // DEPRECATION CONSULTATION: Direct DB querying for high-traffic routes overloads MongoDB
-    /*
-    const productData = await productService.getPaginatedProducts(request.query);
-    */
-
     // OPTIMIZATION: High-Performance Read-Through Catalog Caching with Deterministic Keys
     const sortedQuery = Object.keys(request.query || {}).sort().reduce((result, key) => {
         result[key] = request.query[key];
