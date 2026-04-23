@@ -57,7 +57,8 @@ exports.createProduct = async (productData) => {
 
 exports.updateProduct = async (productId, updateData) => {
     const { _id, isArchived, isActive, ...safeUpdateData } = updateData;
-    const updatedProduct = await Product.findByIdAndUpdate(productId, { $set: safeUpdateData }, { new: true, runValidators: true });
+    // OPTIMIZATION: .lean() appended to prevent heavy Mongoose document hydration.
+    const updatedProduct = await Product.findByIdAndUpdate(productId, { $set: safeUpdateData }, { new: true, runValidators: true }).lean();
     if (updatedProduct) {
         await triggerProductUpdates(updatedProduct._id);
     }
@@ -66,11 +67,12 @@ exports.updateProduct = async (productId, updateData) => {
 
 exports.archiveProduct = async (productId) => {
     // OPTIMIZATION: Converted findById + save (2 queries) to a single atomic update (1 query). Saves network round-trips.
+    // OPTIMIZATION: .lean() appended for zero-hydration performance.
     const product = await Product.findByIdAndUpdate(
         productId, 
         { $set: { isArchived: true, isActive: false } }, 
         { new: true }
-    );
+    ).lean();
     if (!product) return null;
     await triggerProductUpdates(product._id);
     return product;
@@ -79,11 +81,12 @@ exports.archiveProduct = async (productId) => {
 exports.toggleProductStatus = async (productId) => {
     // OPTIMIZATION: Using Mongoose aggregation pipeline update to atomically flip boolean natively in DB. 
     // Eliminates race conditions and reduces query count from 2 to 1.
+    // OPTIMIZATION: .lean() appended for zero-hydration performance.
     const product = await Product.findByIdAndUpdate(
         productId, 
         [{ $set: { isActive: { $not: "$isActive" } } }], 
         { new: true }
-    );
+    ).lean();
     if (!product) return null;
     await triggerProductUpdates(product._id);
     return product;
