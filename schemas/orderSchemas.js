@@ -36,7 +36,8 @@ const posCheckoutSchema = {
                 properties: {
                     success: { type: 'boolean' },
                     message: { type: 'string' },
-                    orderId: { type: 'string' }
+                    orderId: { type: 'string' },
+                    orderData: { type: 'object', additionalProperties: true }
                 }
             }
         }
@@ -108,9 +109,47 @@ const externalCheckoutSchema = {
     }
 };
 
-const statusSchema = { schema: { body: { type: 'object', additionalProperties: false, required: ['status'], properties: { status: { type: 'string', maxLength: 50 } } } } };
-const cancelSchema = { schema: { body: { type: 'object', additionalProperties: false, required: ['reason'], properties: { reason: { type: 'string', maxLength: 500 } } } } };
-const assignDriverSchema = { schema: { body: { type: 'object', additionalProperties: false, required: ['driverName'], properties: { driverName: { type: 'string', maxLength: 100 }, driverPhone: { type: 'string', maxLength: 20 } } } } };
+const statusSchema = { 
+    schema: { 
+        body: { 
+            type: 'object', 
+            additionalProperties: false, 
+            required: ['status'], 
+            properties: { status: { type: 'string', maxLength: 50 } } 
+        },
+        response: {
+            200: { type: 'object', properties: { success: { type: 'boolean' }, message: { type: 'string' }, data: { type: 'object', additionalProperties: true } } }
+        }
+    } 
+};
+
+const cancelSchema = { 
+    schema: { 
+        body: { 
+            type: 'object', 
+            additionalProperties: false, 
+            required: ['reason'], 
+            properties: { reason: { type: 'string', maxLength: 500 } } 
+        },
+        response: {
+            200: { type: 'object', properties: { success: { type: 'boolean' }, message: { type: 'string' }, data: { type: 'object', additionalProperties: true } } }
+        }
+    } 
+};
+
+const assignDriverSchema = { 
+    schema: { 
+        body: { 
+            type: 'object', 
+            additionalProperties: false, 
+            required: ['driverName'], 
+            properties: { driverName: { type: 'string', maxLength: 100 }, driverPhone: { type: 'string', maxLength: 20 } } 
+        },
+        response: {
+            200: { type: 'object', properties: { success: { type: 'boolean' }, message: { type: 'string' }, data: { type: 'object', additionalProperties: true } } }
+        }
+    } 
+};
 
 const getOrdersSchema = {
     schema: {
@@ -123,6 +162,19 @@ const getOrdersSchema = {
                 page: { type: 'string', maxLength: 10 },
                 limit: { type: 'string', maxLength: 10 },
                 cursor: { type: 'string', maxLength: 100 } 
+            }
+        },
+        response: {
+            200: {
+                type: 'object',
+                properties: {
+                    success: { type: 'boolean' },
+                    count: { type: 'number' },
+                    total: { type: 'number' },
+                    nextCursor: { type: 'string', nullable: true },
+                    stats: { type: 'object', additionalProperties: true },
+                    data: { type: 'array', items: { type: 'object', additionalProperties: true } }
+                }
             }
         }
     }
