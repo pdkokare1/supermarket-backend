@@ -97,15 +97,19 @@ exports.processExternalCheckout = async (payload, externalSession = null) => {
         
         const coreLogic = async (session) => {
             const { source, externalOrderId, customerName, customerPhone, deliveryAddress, items, totalAmount, paymentMethod, notes, storeId } = payload;
-            const orderPrefix = `EXT-${source.toUpperCase().substring(0, 3)}`;
-            const formattedNotes = `[${source.toUpperCase()}] Ext ID: ${externalOrderId || 'N/A'}. ${notes || ''}`;
-            const orderData = { notes: formattedNotes, customerName: customerName || `${source} Customer`, customerPhone: customerPhone || '', deliveryAddress: deliveryAddress || `${source} Pickup`, totalAmount, paymentMethod: paymentMethod || 'Prepaid External', deliveryType: 'Instant', status: 'Order Placed' };
+            
+            // ENTERPRISE FIX: Null-pointer prevention for third-party payloads missing the 'source' field
+            const safeSource = source || 'API';
+            const orderPrefix = `EXT-${safeSource.toUpperCase().substring(0, 3)}`;
+            const formattedNotes = `[${safeSource.toUpperCase()}] Ext ID: ${externalOrderId || 'N/A'}. ${notes || ''}`;
+            const orderData = { notes: formattedNotes, customerName: customerName || `${safeSource} Customer`, customerPhone: customerPhone || '', deliveryAddress: deliveryAddress || `${safeSource} Pickup`, totalAmount, paymentMethod: paymentMethod || 'Prepaid External', deliveryType: 'Instant', status: 'Order Placed' };
+            
             return await finalizeAndSaveOrder(session, items, storeId, orderPrefix, orderData);
         };
 
         const newOrder = externalSession ? await coreLogic(externalSession) : await withTransaction(coreLogic);
 
-        appEvents.emit('NEW_ORDER', { order: newOrder, storeId: payload.storeId, source: payload.source });
+        appEvents.emit('NEW_ORDER', { order: newOrder, storeId: payload.storeId, source: payload.source || 'API' });
         return newOrder;
     });
 };
