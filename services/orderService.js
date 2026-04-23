@@ -141,6 +141,7 @@ exports.getOrdersList = async (queryParams) => {
 
 exports.getAllOrdersForExport = () => {
     const cursor = Order.find()
+        .read('secondaryPreferred') // ENTERPRISE FIX: Offloads heavy admin export queries to read replicas to prevent primary DB CPU spikes during live checkouts.
         .select('orderNumber createdAt customerName customerPhone totalAmount status paymentMethod deliveryType')
         .sort({ createdAt: -1 })
         // OPTIMIZATION: Added explicit batch size to prevent DB Cursor exhaustion on large enterprise exports
