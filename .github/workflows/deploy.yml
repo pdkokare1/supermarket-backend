@@ -9,6 +9,11 @@ on:
     branches:
       - main
 
+# OPTIMIZATION: Concurrency group prevents multiple parallel builds from thrashing the Railway deployment pipeline
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
