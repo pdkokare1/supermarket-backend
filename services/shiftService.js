@@ -3,9 +3,9 @@
 const Shift = require('../models/Shift');
 const Order = require('../models/Order');
 const AppError = require('../utils/AppError');
-const auditService = require('./auditService'); // Added for standardized logging
-const appEvents = require('../utils/eventEmitter'); // Added for event-driven updates
-const cacheUtils = require('../utils/cacheUtils'); // OPTIMIZATION: Added for heavy POS state caching
+const auditService = require('./auditService'); 
+const appEvents = require('../utils/eventEmitter'); 
+const cacheUtils = require('../utils/cacheUtils'); 
 
 exports.openShift = async (payload, user, logError) => {
     const { userName, startingFloat } = payload;
@@ -21,7 +21,16 @@ exports.openShift = async (payload, user, logError) => {
         status: 'Open'
     });
     
-    await newShift.save();
+    try {
+        await newShift.save();
+    } catch (error) {
+        // ENTERPRISE FIX: Catch the specific unique index violation (E11000) triggered if 
+        // two cashiers hit 'Open Shift' in the exact same millisecond.
+        if (error.code === 11000) {
+            throw new AppError('A shift was just opened by another register. Close it first.', 400);
+        }
+        throw error;
+    }
 
     await auditService.logEvent({
         action: 'SHIFT_OPENED',
@@ -33,23 +42,19 @@ exports.openShift = async (payload, user, logError) => {
         logError
     });
 
-    // OPTIMIZATION: Invalidate stale shift cache
     await cacheUtils.deleteKey('shift:current');
-
-    // EVENT: Notify POS real-time system
     appEvents.emit('SHIFT_OPENED', { shiftId: newShift._id });
 
     return newShift;
 };
 
 exports.getCurrentShift = async () => {
-    // OPTIMIZATION: Cache the open shift state. Extremely high-traffic POS endpoint.
     const CACHE_KEY = 'shift:current';
     let shift = await cacheUtils.getCachedData(CACHE_KEY);
     
     if (!shift) {
         shift = await Shift.findOne({ status: 'Open' }).lean();
-        if (shift) await cacheUtils.setCachedData(CACHE_KEY, shift, 3600); // 1 hour TTL
+        if (shift) await cacheUtils.setCachedData(CACHE_KEY, shift, 3600); 
     }
     
     return shift;
@@ -65,8 +70,6 @@ exports.closeShift = async (payload, user, logError) => {
 
     const endTime = new Date();
     
-    // OPTIMIZED: Replaced RAM-heavy .find().forEach() with a highly efficient MongoDB aggregation.
-    // This prevents Out-Of-Memory errors by letting the DB calculate the cash totals, including complex split logic.
     const orderStats = await Order.aggregate([
         { $match: { createdAt: { $gte: shift.startTime, $lte: endTime }, status: { $ne: 'Cancelled' } } },
         { $group: {
@@ -104,10 +107,7 @@ exports.closeShift = async (payload, user, logError) => {
         logError
     });
 
-    // OPTIMIZATION: Invalidate stale shift cache
     await cacheUtils.deleteKey('shift:current');
-
-    // EVENT: Notify POS real-time system
     appEvents.emit('SHIFT_CLOSED', { shiftId: shift._id });
 
     return { shift, discrepancy };
