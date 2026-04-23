@@ -61,29 +61,6 @@ const createApp = (opts = {}) => {
     const coreRoutes = ['systemRoutes', 'index'];
     coreRoutes.forEach(route => fastify.register(require(`./routes/${route}`)));
 
-    fastify.addHook('onClose', async (instance, done) => {
-        instance.log.info('Active requests drained. Server shutting down. Closing database connections...');
-        
-        const closeConnections = async () => {
-            if (mongoose.connection.readyState === 1) await mongoose.connection.close();
-            if (redisClient) await redisClient.quit();
-        };
-
-        const shutdownLimit = process.env.SHUTDOWN_TIMEOUT || 5000;
-        const timeout = new Promise((_, reject) => 
-            setTimeout(() => reject(new Error(`Shutdown operation timed out after ${shutdownLimit}ms`)), shutdownLimit)
-        );
-
-        try {
-            await Promise.race([closeConnections(), timeout]);
-            instance.log.info('Connections closed successfully.');
-        } catch (err) {
-            instance.log.error('Error during shutdown:', err);
-        }
-        
-        done();
-    });
-
     return { fastify, redisClient };
 };
 
