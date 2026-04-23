@@ -25,6 +25,8 @@ const connectDB = async (fastify) => {
                 maxPoolSize: parseInt(process.env.MONGO_MAX_POOL_SIZE, 10) || 50,
                 minPoolSize: parseInt(process.env.MONGO_MIN_POOL_SIZE, 10) || 10, 
                 serverSelectionTimeoutMS: 5000,
+                // OPTIMIZATION: Faster failover detection during replica-set node crashes
+                heartbeatFrequencyMS: 10000,
                 autoIndex: process.env.NODE_ENV !== 'production',
                 maxIdleTimeMS: 30000, 
                 socketTimeoutMS: 45000,
