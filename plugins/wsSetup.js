@@ -3,13 +3,11 @@
 const User = require('../models/User');
 
 module.exports = function (fastify) {
-    // BUG FIX: Register the websocket plugin so Fastify knows how to handle the WS upgrade handshake
     fastify.register(require('@fastify/websocket'));
 
     let redisPubWS = null;
     let redisSubWS = null;
 
-    // OPTIMIZATION: Connection Rate Limiter to prevent Socket Exhaustion (DDoS Defense)
     const activeUserConnections = new Map();
 
     const sendToClients = (messageObj) => {
@@ -18,8 +16,6 @@ module.exports = function (fastify) {
         fastify.websocketServer.clients.forEach(function each(client) {
             if (client.readyState === 1) { 
                 
-                // OPTIMIZATION: Backpressure limit to prevent V8 Out-Of-Memory.
-                // Discards message for this client if their network buffer exceeds 512KB.
                 if (client.bufferedAmount > 1024 * 512) {
                     fastify.log.warn(`Dropping WS frame for choking client.`);
                     return; 
@@ -35,7 +31,6 @@ module.exports = function (fastify) {
     if (process.env.REDIS_URL) {
         try {
             const Redis = require('ioredis');
-            // OPTIMIZATION: Configured lazyConnect and autoResubscribe to survive network blips in scalable cloud environments
             const redisConfig = {
                 lazyConnect: true,
                 maxRetriesPerRequest: null,
@@ -49,8 +44,13 @@ module.exports = function (fastify) {
             
             redisSubWS.on('message', (channel, messageStr) => {
                 if (channel === 'POS_WS_STREAM') {
-                    const parsed = JSON.parse(messageStr);
-                    sendToClients(parsed);
+                    // ENTERPRISE FIX: Synchronous JSON.parse wrapped in try/catch to prevent corrupted frames from crashing the entire Node server
+                    try {
+                        const parsed = JSON.parse(messageStr);
+                        sendToClients(parsed);
+                    } catch (err) {
+                        fastify.log.error('Redis WS Parse Error: Discarding corrupted message frame.');
+                    }
                 }
             });
             
@@ -92,14 +92,12 @@ module.exports = function (fastify) {
                     
                     const decoded = fastify.jwt.verify(token);
                     
-                    // OPTIMIZATION: .lean() applied to bypass Mongoose hydration for faster connection handshakes
                     const user = await User.findById(decoded.id).select('role isActive tokenVersion storeId').lean();
                     
                     if (!user || !user.isActive || user.tokenVersion !== decoded.tokenVersion) {
                         throw new Error('Invalid session');
                     }
 
-                    // ENTERPRISE OPTIMIZATION: Enforce strict connection ceilings per user to prevent socket flooding
                     const userIdStr = user._id.toString();
                     const currentConns = activeUserConnections.get(userIdStr) || 0;
                     
@@ -122,8 +120,6 @@ module.exports = function (fastify) {
                     ws.isAlive = true; 
 
                     ws.on('message', message => {
-                        // OPTIMIZATION: Memory Exhaustion Defense
-                        // Instantly drop frames larger than 5KB to prevent the Event Loop from freezing during synchronous JSON parsing
                         if (Buffer.byteLength(message) > 5120) {
                             fastify.log.warn(`[WS Store: ${ws.storeId || 'Global'}] Disconnected client for exceeding maximum frame size limit.`);
                             ws.terminate();
@@ -156,7 +152,6 @@ module.exports = function (fastify) {
             })();
         });
 
-        // OPTIMIZATION: Capture the interval ID to prevent process-blocking memory leaks
         const pingInterval = setInterval(() => {
             if (!fastify.websocketServer) return;
             fastify.websocketServer.clients.forEach((client) => {
@@ -166,7 +161,6 @@ module.exports = function (fastify) {
             });
         }, 30000);
 
-        // OPTIMIZATION: Clean up the dangling interval when the server shuts down gracefully
         instance.addHook('onClose', (appInstance, done) => {
             clearInterval(pingInterval);
             done();
