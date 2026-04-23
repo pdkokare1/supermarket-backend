@@ -6,7 +6,6 @@ const fp = require('fastify-plugin');
 const initRedis = require('./config/redis'); 
 const cacheUtils = require('./utils/cacheUtils');
 const mongoose = require('mongoose'); 
-const crypto = require('crypto');
 
 const createApp = (opts = {}) => {
     const isProduction = process.env.NODE_ENV === 'production';
@@ -25,10 +24,8 @@ const createApp = (opts = {}) => {
                 }
             }
         },
-        // OPTIMIZATION: Native Correlation Tracing integration avoids GC-heavy .child() logger instantiation per request
-        genReqId: function (req) {
-            return req.headers['x-correlation-id'] || crypto.randomUUID();
-        },
+        // OPTIMIZATION: Native Header Integration. Fastify's C-level hyperid handles this significantly faster than custom JS functions.
+        requestIdHeader: 'x-correlation-id',
         trustProxy: process.env.TRUST_PROXY_HOPS ? parseInt(process.env.TRUST_PROXY_HOPS, 10) : 1,
         disableRequestLogging: isProduction,
         ignoreTrailingSlash: true,
