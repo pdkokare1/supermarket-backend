@@ -81,7 +81,8 @@ exports.invalidateByPattern = async (pattern) => {
             const [newCursor, keys] = await redisCache.scan(cursor, 'MATCH', pattern, 'COUNT', 100);
             cursor = newCursor;
             if (keys.length > 0) {
-                await redisCache.pipeline().del(...keys).exec();
+                // OPTIMIZATION: UNLINK is non-blocking. It frees memory asynchronously, preventing Redis event loop freezes on large sweeps.
+                await redisCache.pipeline().unlink(...keys).exec();
             }
         } while (cursor !== '0');
     } catch(e) {
