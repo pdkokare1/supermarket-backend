@@ -28,11 +28,22 @@ exports.recordFailedAttempt = async (ip, username, ipFails, userFails) => {
     await pipeline.exec();
 };
 
+// ENTERPRISE OPTIMIZATION: Instant Bot-Trap mechanism
+exports.triggerHoneypot = async (ip) => {
+    const redis = cacheUtils.getClient();
+    if (!redis) return;
+    
+    // Instantly sets the IP failure count to 9999, effectively banning the bot
+    // TTL set to 24 hours (86400 seconds) to block sustained volumetric attacks
+    await redis.set(`lockout:ip:${ip}`, 9999, 'EX', 86400);
+    console.warn(`[SECURITY] Honeypot triggered. Malicious IP banned: ${ip}`);
+};
+
 exports.clearLockout = async (ip, username) => {
     const redis = cacheUtils.getClient();
     if (!redis) return;
 
-    const pipeline = multi();
+    const pipeline = redis.multi(); // FIXED: Called from redis instance
     pipeline.del(`lockout:ip:${ip}`);
     pipeline.del(`lockout:user:${username}`);
     await pipeline.exec();
