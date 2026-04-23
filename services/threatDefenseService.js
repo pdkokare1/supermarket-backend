@@ -22,8 +22,9 @@ exports.recordFailedAttempt = async (ip, username, ipFails, userFails) => {
     const pipeline = redis.multi();
     pipeline.incr(`lockout:ip:${ip}`);
     pipeline.incr(`lockout:user:${username}`);
-    if (!ipFails) pipeline.expire(`lockout:ip:${ip}`, 1800);
-    if (!userFails) pipeline.expire(`lockout:user:${username}`, 900);
+    // ENTERPRISE FIX: NX ensures the TTL is strictly set once and cannot be maliciously extended
+    if (!ipFails) pipeline.expire(`lockout:ip:${ip}`, 1800, 'NX');
+    if (!userFails) pipeline.expire(`lockout:user:${username}`, 900, 'NX');
     await pipeline.exec();
 };
 
@@ -31,7 +32,7 @@ exports.clearLockout = async (ip, username) => {
     const redis = cacheUtils.getClient();
     if (!redis) return;
 
-    const pipeline = redis.multi();
+    const pipeline = multi();
     pipeline.del(`lockout:ip:${ip}`);
     pipeline.del(`lockout:user:${username}`);
     await pipeline.exec();
