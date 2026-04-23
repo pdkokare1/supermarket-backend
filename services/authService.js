@@ -20,6 +20,17 @@ const logAuthAudit = async (server, action, targetId, username, details = {}, us
     });
 };
 
+// MODULARITY: Centralized Redis lockout tracking to prevent duplicated pipeline execution
+const executeLockoutPipeline = async (redis, ip, safeUsername, ipFails, userFails) => {
+    if (!redis) return;
+    const pipeline = redis.multi();
+    pipeline.incr(`lockout:ip:${ip}`);
+    pipeline.incr(`lockout:user:${safeUsername}`);
+    if (!ipFails) pipeline.expire(`lockout:ip:${ip}`, 1800);
+    if (!userFails) pipeline.expire(`lockout:user:${safeUsername}`, 900);
+    await pipeline.exec();
+};
+
 exports.setupDefaultAdmin = async (envSetupKey, queryKey, isProduction) => {
     if (isProduction) throw new AppError('Forbidden: Setup route disabled in production.', 403);
 
@@ -80,15 +91,7 @@ exports.authenticateUser = async (username, pin, ip, server) => {
                            .collation({ locale: 'en', strength: 2 }); 
     
     if (!user) {
-        if (redis) {
-            const pipeline = redis.multi();
-            pipeline.incr(`lockout:ip:${ip}`);
-            pipeline.incr(`lockout:user:${safeUsername}`);
-            if (!ipFails) pipeline.expire(`lockout:ip:${ip}`, 1800);
-            if (!userFails) pipeline.expire(`lockout:user:${safeUsername}`, 900);
-            await pipeline.exec();
-        }
-        
+        await executeLockoutPipeline(redis, ip, safeUsername, ipFails, userFails);
         await logAuthAudit(server, 'FAILED_LOGIN_ATTEMPT', 'Login', safeUsername || 'Unknown', { ip, reason: 'User not found' });
         throw new AppError('Invalid Username or PIN.', 401, { safeUsername, reason: 'User not found' });
     }
@@ -117,14 +120,7 @@ exports.authenticateUser = async (username, pin, ip, server) => {
     }
 
     if (!isValid) {
-        if (redis) {
-            const pipeline = redis.multi();
-            pipeline.incr(`lockout:ip:${ip}`);
-            pipeline.incr(`lockout:user:${safeUsername}`);
-            if (!ipFails) pipeline.expire(`lockout:ip:${ip}`, 1800);
-            if (!userFails) pipeline.expire(`lockout:user:${safeUsername}`, 900);
-            await pipeline.exec();
-        }
+        await executeLockoutPipeline(redis, ip, safeUsername, ipFails, userFails);
 
         user.failedLoginAttempts = (user.failedLoginAttempts || 0) + 1;
         if (user.failedLoginAttempts >= 5) user.lockUntil = Date.now() + 15 * 60 * 1000; 
