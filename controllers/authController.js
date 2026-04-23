@@ -60,24 +60,14 @@ exports.refresh = async (request, reply) => {
 };
 
 exports.logout = async (request, reply) => {
-    await authService.revokeSession(request.user.id, request.server);
-
-    // Kept here to prevent breaking the application until we update authService.js
+    let token = null;
     const authHeader = request.headers.authorization;
-    if (authHeader && authHeader.startsWith('Bearer ') && request.server.redis) {
-        const token = authHeader.split(' ')[1];
-        try {
-            const decoded = request.server.jwt.decode(token);
-            if (decoded && decoded.exp) {
-                const ttl = decoded.exp - Math.floor(Date.now() / 1000);
-                if (ttl > 0) {
-                    await request.server.redis.set(`bl_${token}`, 'blacklisted', 'EX', ttl);
-                }
-            }
-        } catch (err) {
-            request.server.log.warn(`Failed to blacklist token during logout: ${err.message}`);
-        }
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+        token = authHeader.split(' ')[1];
     }
+
+    // Pass token to service layer to handle the Redis blacklisting securely
+    await authService.revokeSession(request.user.id, request.server, token);
 
     const cookieOpts = getCookieOptions();
     reply.clearCookie('refreshToken', { path: '/', sameSite: cookieOpts.sameSite, secure: cookieOpts.secure });
