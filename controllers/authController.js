@@ -1,15 +1,20 @@
 /* controllers/authController.js */
+'use strict';
 
 const authService = require('../services/authService');
 
-// OPTIMIZATION: Centralized dynamic cookie configuration via ENV variable
-const getCookieOptions = () => ({
+// OPTIMIZATION: Evaluate environment constants at module load exactly once. 
+// This prevents expensive `parseInt` and environment variable lookups on every single authentication request.
+const isProd = process.env.NODE_ENV === 'production';
+const cookieMaxAge = process.env.REFRESH_TOKEN_EXPIRES_IN ? parseInt(process.env.REFRESH_TOKEN_EXPIRES_IN, 10) : 7 * 24 * 60 * 60;
+
+const baseCookieOptions = {
     path: '/', 
     httpOnly: true, 
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax', 
-    maxAge: process.env.REFRESH_TOKEN_EXPIRES_IN ? parseInt(process.env.REFRESH_TOKEN_EXPIRES_IN, 10) : 7 * 24 * 60 * 60 
-});
+    secure: isProd,
+    sameSite: isProd ? 'none' : 'lax', 
+    maxAge: cookieMaxAge 
+};
 
 // ==========================================
 // --- CONTROLLER EXPORTS ---
@@ -17,7 +22,7 @@ const getCookieOptions = () => ({
 
 exports.setupAdmin = async (request, reply) => {
     // ENTERPRISE SECURITY FIX: Ensure this endpoint is strictly disabled in production unless implicitly flagged via ENV
-    if (process.env.NODE_ENV === 'production' && process.env.ENABLE_SETUP_ENDPOINT !== 'true') {
+    if (isProd && process.env.ENABLE_SETUP_ENDPOINT !== 'true') {
         return reply.status(403).send({ success: false, message: 'Setup endpoint disabled in production.' });
     }
 
@@ -31,7 +36,7 @@ exports.login = async (request, reply) => {
     try {
         const { user, token, refreshToken } = await authService.authenticateUser(username, pin, request.ip, request.server);
 
-        reply.setCookie('refreshToken', refreshToken, getCookieOptions());
+        reply.setCookie('refreshToken', refreshToken, baseCookieOptions);
         
         return { success: true, message: 'Login successful', data: user, token: token };
     } catch (error) {
@@ -50,7 +55,7 @@ exports.refresh = async (request, reply) => {
         const { user, token, refreshToken } = await authService.refreshSession(decoded.id, decoded.tokenVersion, request.server);
 
         if (refreshToken) {
-            reply.setCookie('refreshToken', refreshToken, getCookieOptions());
+            reply.setCookie('refreshToken', refreshToken, baseCookieOptions);
         }
 
         return { success: true, token: token, data: user };
@@ -69,8 +74,7 @@ exports.logout = async (request, reply) => {
     // Pass token to service layer to handle the Redis blacklisting securely
     await authService.revokeSession(request.user.id, request.server, token);
 
-    const cookieOpts = getCookieOptions();
-    reply.clearCookie('refreshToken', { path: '/', sameSite: cookieOpts.sameSite, secure: cookieOpts.secure });
+    reply.clearCookie('refreshToken', { path: '/', sameSite: baseCookieOptions.sameSite, secure: baseCookieOptions.secure });
     reply.clearCookie('__Host-refreshToken', { path: '/' });
 
     return { success: true, message: 'Logged out successfully globally.' };
