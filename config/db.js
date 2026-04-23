@@ -28,7 +28,10 @@ const connectDB = async (fastify) => {
                 maxIdleTimeMS: 30000, 
                 socketTimeoutMS: 45000,
                 keepAliveInitialDelay: 300000,
-                family: 4
+                family: 4,
+                // ENTERPRISE OPTIMIZATION: Network Compression to reduce cloud egress costs and payload latency
+                compressors: ['zstd', 'zlib'],
+                zlibCompressionLevel: 6
             });
 
             // OPTIMIZATION: Complete Lifecycle & Pool Observability
@@ -36,9 +39,12 @@ const connectDB = async (fastify) => {
             mongoose.connection.on('reconnected', () => logger.info('MongoDB successfully reconnected.'));
             mongoose.connection.on('error', (err) => logger.error(`MongoDB Connection Error: ${err.message}`));
             
-            // Added Pool Monitoring
-            mongoose.connection.client.on('connectionPoolCreated', (event) => logger.info(`MongoDB Pool created: ${event.address}`));
-            mongoose.connection.client.on('connectionPoolClosed', (event) => logger.warn(`MongoDB Pool closed: ${event.address}`));
+            // ENTERPRISE FIX: Safe client retrieval to prevent undefined crashes on initial boot
+            const client = mongoose.connection.getClient();
+            if (client) {
+                client.on('connectionPoolCreated', (event) => logger.info(`MongoDB Pool created: ${event.address}`));
+                client.on('connectionPoolClosed', (event) => logger.warn(`MongoDB Pool closed: ${event.address}`));
+            }
 
             logger.info(`Successfully connected to MongoDB Atlas by Process ${process.pid}`);
             
