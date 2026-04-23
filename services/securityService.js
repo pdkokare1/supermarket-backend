@@ -5,23 +5,23 @@ const bcrypt = require('bcrypt');
 exports.generateTokens = (server, user) => {
     const tokenVersion = user.tokenVersion || 0;
     
-    // Refresh Token: Long-lived (7 Days). Used only to fetch new access tokens.
+    // Refresh Token: Long-lived (7 Days). Used only to fetch new access tokens via HttpOnly cookies.
     const refreshToken = server.jwt.sign(
         { id: user._id, tokenVersion }, 
         { expiresIn: '7d' }
     );
 
-    // FIX: Increased Access Token lifespan to 7 days to prevent cashiers from being logged out mid-shift.
+    // ENTERPRISE SECURITY FIX: Access tokens MUST be short-lived. 
+    // The frontend will automatically rotate this using the refresh token, keeping cashiers logged in seamlessly.
     const token = server.jwt.sign(
         { id: user._id, role: user.role, username: user.username, tokenVersion },
-        { expiresIn: '7d' }
+        { expiresIn: '1h' }
     );
 
     return { token, refreshToken };
 };
 
 exports.hashPassword = async (password) => {
-    // ENTERPRISE FIX: Dynamic salt rounds for future-proof cryptography, defaulting to 12
     const saltRounds = parseInt(process.env.BCRYPT_SALT_ROUNDS, 10) || 12;
     return await bcrypt.hash(password, saltRounds);
 };
