@@ -52,6 +52,7 @@ module.exports = function(fastify) {
         max: 100,
         timeWindow: '1 minute',
         ban: 3, 
+        hook: 'preHandler', // ENTERPRISE FIX: Allow auth middleware to run first
         // ENTERPRISE FIX: Prioritize Authenticated User ID to prevent false-positive NAT IP bans
         keyGenerator: function (request) {
             if (request.user && request.user.id) {
