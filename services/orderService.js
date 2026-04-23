@@ -74,21 +74,27 @@ exports.processPartialRefund = async (orderId, payload, user) => {
 
 exports.processCancelOrder = async (orderId, reason, user) => {
     return withTransaction(async (session) => {
-        const order = await Order.findById(orderId)
-            .select('status paymentMethod customerPhone totalAmount items storeId')
-            .session(session);
+        // OPTIMIZATION: Converted findById + save (Hydration + 2 Network trips) into a single atomic findOneAndUpdate.
+        // The query itself ({ status: { $ne: 'Cancelled' } }) prevents the Double-Cancel race condition strictly at the database level.
+        const order = await Order.findOneAndUpdate(
+            { _id: orderId, status: { $ne: 'Cancelled' } },
+            { $set: { status: 'Cancelled' } },
+            { 
+                new: true, 
+                session, 
+                select: 'status paymentMethod customerPhone totalAmount items storeId',
+                lean: true // OPTIMIZATION: Zero Hydration
+            }
+        );
             
-        if (!order) throw new AppError('Order not found', 404);
-        
-        // ENTERPRISE SECURITY FIX: Double-Cancel Protection.
-        // Prevents malicious actors or network retries from duplicating inventory restoration and 'Pay Later' refunds.
-        if (order.status === 'Cancelled') throw new AppError('Order is already cancelled.', 400);
-        
-        order.status = 'Cancelled';
+        if (!order) {
+            const existing = await Order.findById(orderId).select('status').lean();
+            if (!existing) throw new AppError('Order not found', 404);
+            throw new AppError('Order is already cancelled.', 400);
+        }
 
         const parallelTasks = [
-            inventoryService.restoreInventory(order.items, order.storeId, session),
-            order.save({ session })
+            inventoryService.restoreInventory(order.items, order.storeId, session)
         ];
 
         if (order.paymentMethod === 'Pay Later') {
@@ -193,7 +199,8 @@ exports.getAllOrdersForExport = () => {
 exports.assignDriverToOrder = async (orderId, driverName, driverPhone, session = null) => {
     const options = { new: true };
     if (session) options.session = session;
-    const order = await Order.findByIdAndUpdate(orderId, { deliveryDriverName: driverName, driverPhone: driverPhone || '' }, options);
+    // OPTIMIZATION: .lean() for zero hydration
+    const order = await Order.findByIdAndUpdate(orderId, { deliveryDriverName: driverName, driverPhone: driverPhone || '' }, options).lean();
     
     if (!order) throw new AppError('Order not found or already removed.', 404);
     
@@ -204,7 +211,8 @@ exports.assignDriverToOrder = async (orderId, driverName, driverPhone, session =
 exports.updateOrderStatus = async (orderId, status, session = null) => {
     const options = { new: true };
     if (session) options.session = session;
-    const order = await Order.findByIdAndUpdate(orderId, { status: status }, options);
+    // OPTIMIZATION: .lean() for zero hydration
+    const order = await Order.findByIdAndUpdate(orderId, { status: status }, options).lean();
     
     if (!order) throw new AppError('Order not found to update status.', 404);
     
