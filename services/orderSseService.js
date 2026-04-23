@@ -6,6 +6,10 @@ let redisSub = null;
 let adminConnections = [];
 let customerConnections = {};
 
+// OPTIMIZATION: Max Connection Thresholds to prevent memory leaks during proxy ungraceful disconnects
+const MAX_ADMIN_CONNECTIONS = 150;
+const MAX_CUSTOMER_CONNECTIONS = 5;
+
 try {
     const Redis = require('ioredis');
     if (process.env.REDIS_URL) {
@@ -37,12 +41,21 @@ try {
             } 
             // OPTIMIZATION: Bridge core service updates directly to Admin SSE streams
             else if (channel === 'DAILYPICK_ORDER_EVENTS') {
-                const parsed = JSON.parse(message);
-                const bridgePayload = JSON.stringify({ type: parsed.eventName, ...parsed.payload });
-                
-                adminConnections.forEach(conn => {
-                    if (!conn.destroyed) conn.write(`data: ${bridgePayload}\n\n`);
-                });
+                try {
+                    const parsed = JSON.parse(message);
+                    
+                    // ENTERPRISE FIX: Handles the new array-based micro-batching from eventEmitter seamlessly
+                    const events = Array.isArray(parsed) ? parsed : [parsed];
+                    
+                    events.forEach(evt => {
+                        const bridgePayload = JSON.stringify({ type: evt.eventName, ...evt.payload });
+                        adminConnections.forEach(conn => {
+                            if (!conn.destroyed) conn.write(`data: ${bridgePayload}\n\n`);
+                        });
+                    });
+                } catch (err) {
+                    console.error("SSE Batch Parsing Error:", err.message);
+                }
             }
         });
         
@@ -98,15 +111,30 @@ const heartbeatInterval = setInterval(() => {
     }
 }, 15000);
 
-const addAdminConnection = (conn) => adminConnections.push(conn);
+const addAdminConnection = (conn) => {
+    // ENTERPRISE FIX: Cull oldest zombie connections if limit breached
+    if (adminConnections.length >= MAX_ADMIN_CONNECTIONS) {
+        const oldest = adminConnections.shift();
+        if (oldest && !oldest.destroyed) { oldest.removeAllListeners(); oldest.destroy(); }
+    }
+    adminConnections.push(conn);
+};
+
 const removeAdminConnection = (conn) => {
     adminConnections = adminConnections.filter(c => c !== conn);
 };
 
 const addCustomerConnection = (orderId, conn) => {
     if (!customerConnections[orderId]) customerConnections[orderId] = [];
+    
+    // ENTERPRISE FIX: Cull oldest zombie connections for a single order stream
+    if (customerConnections[orderId].length >= MAX_CUSTOMER_CONNECTIONS) {
+        const oldest = customerConnections[orderId].shift();
+        if (oldest && !oldest.destroyed) { oldest.removeAllListeners(); oldest.destroy(); }
+    }
     customerConnections[orderId].push(conn);
 };
+
 const removeCustomerConnection = (orderId, conn) => {
     if (customerConnections[orderId]) {
         customerConnections[orderId] = customerConnections[orderId].filter(c => c !== conn);
