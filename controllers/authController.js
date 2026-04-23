@@ -76,14 +76,16 @@ exports.logout = async (request, reply) => {
         }
     }
 
-    reply.clearCookie('refreshToken', { path: '/', sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax', secure: process.env.NODE_ENV === 'production' });
+    const cookieOpts = getCookieOptions();
+    reply.clearCookie('refreshToken', { path: '/', sameSite: cookieOpts.sameSite, secure: cookieOpts.secure });
     reply.clearCookie('__Host-refreshToken', { path: '/' });
 
     return { success: true, message: 'Logged out successfully globally.' };
 };
 
 exports.verify = async (request, reply) => {
-    const user = await authService.getUserById(request.query.id);
+    // ENTERPRISE SECURITY FIX: Prevent IDOR (Insecure Direct Object Reference)
+    const user = await authService.getUserById(request.user.id);
     if (!user) return reply.status(401).send({ success: false, message: 'Invalid or inactive session.' });
     
     return { success: true, message: 'Session verified', data: user };
