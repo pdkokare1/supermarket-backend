@@ -140,6 +140,8 @@ exports.calculateSalesVelocityAndStock = async (velocityDays, lowStockThreshold,
 
     const velocityAgg = await Order.aggregate([
         { $match: { createdAt: { $gte: dateAgo }, status: { $in: ['Completed', 'Dispatched'] } } },
+        // ENTERPRISE FIX: Project heavily strips unneeded strings (like notes, deliveryAddress) before unwinding to save massive amounts of RAM
+        { $project: { items: 1 } },
         { $unwind: "$items" },
         { $group: { _id: "$items.variantId", totalSold: { $sum: "$items.qty" } } }
     ]).allowDiskUse(true); 
