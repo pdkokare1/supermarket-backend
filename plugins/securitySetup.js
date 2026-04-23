@@ -1,6 +1,8 @@
 /* plugins/securitySetup.js */
 'use strict';
 
+const threatDefenseService = require('../services/threatDefenseService');
+
 module.exports = function(fastify) {
     
     // ENTERPRISE SECURITY FIX: Strict Origin Whitelisting
@@ -70,5 +72,15 @@ module.exports = function(fastify) {
         redis: fastify.redis || null,
         skipFailedRequests: true, // OPTIMIZATION: Bypasses rate-limiting gracefully if the Redis connection drops, keeping the API online.
         continueExceeding: true
+    });
+
+    // ENTERPRISE SECURITY: Honey-Pot Traps
+    // Automated scanners look for these vulnerable routes. If accessed, ban the IP instantly.
+    const honeyPotRoutes = ['/.env', '/wp-admin', '/wp-login.php', '/config.json'];
+    honeyPotRoutes.forEach(route => {
+        fastify.all(route, async (request, reply) => {
+            await threatDefenseService.triggerHoneypot(request.ip);
+            return reply.status(403).send({ success: false, message: 'Forbidden' });
+        });
     });
 };
