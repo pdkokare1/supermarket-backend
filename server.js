@@ -50,16 +50,18 @@ const shutdownSignalHandler = async (signal) => {
     fastify.log.info(`Worker ${process.pid} received ${signal}. Stopping new traffic and completing active checkouts...`);
     
     // Failsafe: Prevent container orchestration platforms from executing a hard unlogged kill.
-    setTimeout(() => {
+    const killTimer = setTimeout(() => {
         fastify.log.error('Graceful shutdown drain timeout exceeded. Forcing process exit.');
         if (fastify.log.flushSync) fastify.log.flushSync();
         process.exit(1);
-    }, 10000).unref();
+    }, 10000);
 
     try {
         await fastify.close(); // Triggers the onClose hook in app.js natively after draining
+        clearTimeout(killTimer); // OPTIMIZATION: Clear the timer explicitly to free up the event loop
         process.exit(0);
     } catch (err) {
+        clearTimeout(killTimer);
         fastify.log.error(`Error during graceful shutdown: ${err.message}`);
         process.exit(1);
     }
