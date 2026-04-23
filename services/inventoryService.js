@@ -104,8 +104,25 @@ exports.deductInventory = async (items, storeId, session) => {
 
     if (bulkOperations.length > 0) {
         const bulkResult = await Product.bulkWrite(bulkOperations, { session });
+        
         if (bulkResult.modifiedCount !== items.length) {
-            return { success: false, message: 'Stock level changed during checkout or item unavailable. Please review cart.' };
+            // ENTERPRISE FIX: Identify EXACTLY which item caused the race condition for precise frontend error
+            const currentStock = await Product.find({ _id: { $in: productIds } }).select('name variants').session(session).lean();
+            let failedItemName = 'an item in your cart';
+            
+            for (const item of items) {
+                const prod = currentStock.find(p => p._id.toString() === item.productId.toString());
+                if (prod) {
+                    const variant = prod.variants.find(v => v._id.toString() === item.variantId.toString());
+                    // If the found stock is strictly less than what we asked to deduct, we found the culprit
+                    if (variant && variant.stock < item.qty) {
+                        failedItemName = `${prod.name} (${variant.weightOrVolume})`;
+                        break;
+                    }
+                }
+            }
+            
+            return { success: false, message: `Oversell Prevented: "${failedItemName}" does not have enough stock remaining. Another customer just purchased it.` };
         }
         await invalidateProductCache();
     }
