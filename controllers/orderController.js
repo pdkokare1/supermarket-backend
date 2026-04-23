@@ -85,13 +85,6 @@ exports.getOrders = async (request, reply) => {
 };
 
 exports.exportOrders = async (request, reply) => {
-    // DEPRECATION CONSULTATION: Synchronous streaming blocked the active connection until finish
-    /*
-    const dataStream = orderService.getAllOrdersForExport();
-    const csvTransform = new Transform({ ... });
-    return reply.send(dataStream.pipe(csvTransform));
-    */
-
     // OPTIMIZATION: Asynchronous Task Queuing. Offloads heavy CSV generation to background worker.
     await jobsService.enqueueTask('EXPORT_ORDERS', { 
         email: request.user?.email || process.env.TARGET_EMAIL,
