@@ -10,6 +10,13 @@ const cacheUtils = require('./cacheUtils');
  * being directly coupled to each other.
  */
 class AppEventEmitter extends EventEmitter {
+    constructor() {
+        super();
+        // OPTIMIZATION: Initialization of micro-batching queue to drastically reduce Redis I/O overhead
+        this.batchQueue = [];
+        this.batchTimeout = null;
+    }
+
     // OPTIMIZATION: Centralized method to publish across horizontal instances via Redis Pub/Sub
     broadcastEvent(eventName, payload) {
         // Wrapped in setImmediate to completely decouple from the main synchronous execution thread
@@ -17,10 +24,19 @@ class AppEventEmitter extends EventEmitter {
             // Retain native Node emitter for single-instance listeners
             this.emit(eventName, payload);
             
-            // Broadcast to other Railway instances via Redis
-            const redis = cacheUtils.getClient();
-            if (redis) {
-                redis.publish('DAILYPICK_ORDER_EVENTS', JSON.stringify({ eventName, payload })).catch(() => {});
+            // ENTERPRISE OPTIMIZATION: High-Throughput Event Micro-Batching
+            this.batchQueue.push({ eventName, payload });
+            
+            if (!this.batchTimeout) {
+                this.batchTimeout = setTimeout(() => {
+                    const redis = cacheUtils.getClient();
+                    if (redis && this.batchQueue.length > 0) {
+                        // Flushes multiple rapid events as a single network payload
+                        redis.publish('DAILYPICK_ORDER_EVENTS', JSON.stringify(this.batchQueue)).catch(() => {});
+                    }
+                    this.batchQueue = [];
+                    this.batchTimeout = null;
+                }, 50); // 50ms flush window consolidates bursts of operations
             }
         });
     }
