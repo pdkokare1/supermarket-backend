@@ -9,19 +9,6 @@ const cacheUtils = require('../utils/cacheUtils');
 // OPTIMIZATION: In-memory promise map to mitigate Cache Stampedes / Thundering Herds
 const inFlightPromises = new Map();
 
-// DEPRECATION CONSULTATION: Initializing a new Redis client here causes severe connection leaks 
-// because it bypasses the global pool established in app.js. The logic has been commented out.
-/*
-try {
-    const Redis = require('ioredis');
-    if (process.env.REDIS_URL) {
-        redisCache = new Redis(process.env.REDIS_URL);
-    }
-} catch (e) {
-    console.error("[CACHE SERVICE] Redis Initialization Error:", e.message);
-}
-*/
-
 // OPTIMIZATION: Promise Coalescing Wrapper. Use this in your controllers to safely fetch cacheable data.
 const fetchWithCoalescing = async (cacheKey, ttlSeconds, dbFetchFunction) => {
     // 1. Check Redis Cache
