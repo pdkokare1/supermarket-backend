@@ -1,6 +1,8 @@
 /* utils/processManager.js */
 'use strict';
 
+const mongoose = require('mongoose');
+
 const setupProcessManager = (fastify) => {
     process.on('unhandledRejection', (err) => {
         fastify.log.error(`UNHANDLED REJECTION: ${err.message}`);
@@ -33,6 +35,17 @@ const setupProcessManager = (fastify) => {
 
         try {
             await fastify.close(); 
+            
+            // OPTIMIZATION: Safely drain and sever persistent database connections to prevent mid-transaction corruption
+            if (mongoose.connection.readyState === 1) {
+                await mongoose.connection.close(false);
+                fastify.log.info('MongoDB connections closed safely.');
+            }
+            if (fastify.redis) {
+                await fastify.redis.quit();
+                fastify.log.info('Redis connections closed safely.');
+            }
+
             clearTimeout(killTimer); 
             process.exit(0);
         } catch (err) {
