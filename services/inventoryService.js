@@ -110,10 +110,15 @@ exports.deductInventory = async (items, storeId, session) => {
             const currentStock = await Product.find({ _id: { $in: productIds } }).select('name variants').session(session).lean();
             let failedItemName = 'an item in your cart';
             
+            // OPTIMIZATION: Replaced O(N^2) nested array searches with O(1) Hash Map lookups to protect the Node event loop during large cart rejections.
+            const stockMap = new Map(currentStock.map(p => [p._id.toString(), p]));
+
             for (const item of items) {
-                const prod = currentStock.find(p => p._id.toString() === item.productId.toString());
+                const prod = stockMap.get(item.productId.toString());
                 if (prod) {
-                    const variant = prod.variants.find(v => v._id.toString() === item.variantId.toString());
+                    const variantMap = new Map(prod.variants.map(v => [v._id.toString(), v]));
+                    const variant = variantMap.get(item.variantId.toString());
+                    
                     // If the found stock is strictly less than what we asked to deduct, we found the culprit
                     if (variant && variant.stock < item.qty) {
                         failedItemName = `${prod.name} (${variant.weightOrVolume})`;
