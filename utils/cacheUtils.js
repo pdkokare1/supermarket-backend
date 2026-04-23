@@ -3,21 +3,12 @@
 
 const crypto = require('crypto');
 
-// The client will be injected from app.js to ensure connection sharing.
 let redisCache = null;
 
-/**
- * Injects the global Redis client into the cache utility.
- * @param {Object} client - The established Redis client instance.
- */
 exports.setClient = (client) => {
     redisCache = client;
 };
 
-/**
- * Retrieves the global Redis client.
- * @returns {Object|null} The Redis client instance or null.
- */
 exports.getClient = () => {
     return redisCache;
 };
@@ -26,13 +17,13 @@ exports.generateKey = (prefix, queryObj) => {
     let stringifiedData;
     
     if (queryObj && typeof queryObj === 'object') {
-        // OPTIMIZATION: Native replacer array handles deterministic stringification faster than an intermediate object loop
         stringifiedData = JSON.stringify(queryObj, Object.keys(queryObj).sort());
     } else {
         stringifiedData = String(queryObj); 
     }
     
-    const hash = crypto.createHash('md5').update(stringifiedData).digest('hex');
+    // OPTIMIZATION: Upgraded from MD5 to SHA-256. Hardware accelerated on modern CPUs, faster and prevents collision attacks.
+    const hash = crypto.createHash('sha256').update(stringifiedData).digest('hex');
     return `${prefix}:${hash}`;
 };
 
@@ -49,12 +40,19 @@ exports.getCachedData = async (key) => {
 
 exports.setCachedData = async (key, data, ttlSeconds = 3600) => {
     if (!redisCache || !key) return;
+
+    // OPTIMIZATION: Pre-serialization heuristic. Stringifying massive JSON blocks the Node event loop synchronously.
+    // We reject massive arrays upfront before wasting CPU cycles locking the thread.
+    if (Array.isArray(data) && data.length > 5000) {
+        console.warn(`[CACHE UTILS] Payload exceeds safe array length for key ${key}. Bypassing cache to protect Event Loop.`);
+        return;
+    }
+
     try {
         const stringified = JSON.stringify(data);
         
-        // OPTIMIZATION: Memory Protection using O(1) string length instead of O(n) Buffer.byteLength to prevent Event Loop blocking on massive payloads.
         if (stringified.length > 500000) {
-            console.warn(`[CACHE UTILS] Payload too large for key ${key}. Bypassing Redis cache to protect memory.`);
+            console.warn(`[CACHE UTILS] Payload too large (${stringified.length} bytes) for key ${key}. Bypassing Redis cache to protect memory.`);
             return;
         }
 
@@ -81,7 +79,6 @@ exports.invalidateByPattern = async (pattern) => {
             const [newCursor, keys] = await redisCache.scan(cursor, 'MATCH', pattern, 'COUNT', 100);
             cursor = newCursor;
             if (keys.length > 0) {
-                // OPTIMIZATION: UNLINK is non-blocking. It frees memory asynchronously, preventing Redis event loop freezes on large sweeps.
                 await redisCache.pipeline().unlink(...keys).exec();
             }
         } while (cursor !== '0');
