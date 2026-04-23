@@ -74,16 +74,24 @@ async function generateOrderSequence(session) {
 }
 
 async function finalizeAndSaveOrder(session, items, storeId, orderPrefix, orderData) {
-    const inventoryCheck = await inventoryService.deductInventory(items, storeId, session);
+    // OPTIMIZATION: Parallelize independent DB calls to shorten transaction lock duration.
+    const [inventoryCheck, seqNumber] = await Promise.all([
+        inventoryService.deductInventory(items, storeId, session),
+        generateOrderSequence(session)
+    ]);
+
     if (!inventoryCheck.success) throw new AppError(inventoryCheck.message, 400);
 
-    const seqNumber = await generateOrderSequence(session);
     const orderNumber = `${orderPrefix}-${seqNumber}`;
     const dateString = new Date().toISOString().split('T')[0];
 
     const newOrder = new Order({ orderNumber, dateString, storeId: storeId || null, items, ...orderData });
-    await newOrder.save({ session });
-    await cacheUtils.deleteKey('orders:analytics');
+    
+    // OPTIMIZATION: Run the DB save and the Redis cache invalidation concurrently.
+    await Promise.all([
+        newOrder.save({ session }),
+        cacheUtils.deleteKey('orders:analytics')
+    ]);
 
     return newOrder;
 }
@@ -119,11 +127,16 @@ exports.processOnlineCheckout = async (payload, externalSession = null) => {
         const { customerName, customerPhone, deliveryAddress, items, totalAmount, deliveryType, scheduleTime, paymentMethod, notes, storeId } = payload;
         
         const coreLogic = async (session) => {
-            
-            await customerService.processOnlineCheckoutProfile(customerPhone, customerName, totalAmount, paymentMethod, session);
-
             const orderData = { notes: notes || '', customerName, customerPhone, deliveryAddress, totalAmount, paymentMethod: paymentMethod || 'Cash on Delivery', deliveryType: deliveryType || 'Instant', scheduleTime: scheduleTime || 'ASAP' };
-            return await finalizeAndSaveOrder(session, items, storeId, 'ORD', orderData);
+            
+            // OPTIMIZATION: Customer profile update and Order Finalization are completely independent. 
+            // Running them in Promise.all saves an entire network round-trip.
+            const [_, newOrder] = await Promise.all([
+                customerService.processOnlineCheckoutProfile(customerPhone, customerName, totalAmount, paymentMethod, session),
+                finalizeAndSaveOrder(session, items, storeId, 'ORD', orderData)
+            ]);
+
+            return newOrder;
         };
 
         const newOrder = externalSession ? await coreLogic(externalSession) : await withTransaction(coreLogic);
@@ -144,6 +157,7 @@ exports.processPosCheckout = async (payload, externalSession = null) => {
         const coreLogic = async (session) => {
             let finalCustomerName = 'Walk-in Guest';
 
+            // NOTE: Cannot parallelize this step because finalCustomerName is required dynamically for the order payload below.
             if (customerPhone) {
                 finalCustomerName = await customerService.processPosCheckoutProfile(customerPhone, totalAmount, paymentMethod, pointsRedeemed, session);
             }
