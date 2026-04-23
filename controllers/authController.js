@@ -2,13 +2,13 @@
 
 const authService = require('../services/authService');
 
-// OPTIMIZATION: Centralized dynamic cookie configuration to enforce consistent security across all auth endpoints
+// OPTIMIZATION: Centralized dynamic cookie configuration via ENV variable
 const getCookieOptions = () => ({
     path: '/', 
     httpOnly: true, 
     secure: process.env.NODE_ENV === 'production',
     sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax', 
-    maxAge: 7 * 24 * 60 * 60 
+    maxAge: process.env.REFRESH_TOKEN_EXPIRES_IN ? parseInt(process.env.REFRESH_TOKEN_EXPIRES_IN, 10) : 7 * 24 * 60 * 60 
 });
 
 // ==========================================
@@ -16,8 +16,11 @@ const getCookieOptions = () => ({
 // ==========================================
 
 exports.setupAdmin = async (request, reply) => {
-    // FIX: Bypassing the strict production lock so you can initialize the DB on Railway.
-    // This remains completely secure because it still strictly requires the SETUP_KEY.
+    // ENTERPRISE SECURITY FIX: Ensure this endpoint is strictly disabled in production unless implicitly flagged via ENV
+    if (process.env.NODE_ENV === 'production' && process.env.ENABLE_SETUP_ENDPOINT !== 'true') {
+        return reply.status(403).send({ success: false, message: 'Setup endpoint disabled in production.' });
+    }
+
     const result = await authService.setupDefaultAdmin(process.env.SETUP_KEY, request.query.key, false);
     return { success: true, message: result.message };
 };
@@ -28,7 +31,6 @@ exports.login = async (request, reply) => {
     try {
         const { user, token, refreshToken } = await authService.authenticateUser(username, pin, request.ip, request.server);
 
-        // Cross-Origin cookie configuration for decoupled Vercel/Railway architecture
         reply.setCookie('refreshToken', refreshToken, getCookieOptions());
         
         return { success: true, message: 'Login successful', data: user, token: token };
@@ -60,6 +62,7 @@ exports.refresh = async (request, reply) => {
 exports.logout = async (request, reply) => {
     await authService.revokeSession(request.user.id, request.server);
 
+    // Kept here to prevent breaking the application until we update authService.js
     const authHeader = request.headers.authorization;
     if (authHeader && authHeader.startsWith('Bearer ') && request.server.redis) {
         const token = authHeader.split(' ')[1];
@@ -84,7 +87,6 @@ exports.logout = async (request, reply) => {
 };
 
 exports.verify = async (request, reply) => {
-    // ENTERPRISE SECURITY FIX: Prevent IDOR (Insecure Direct Object Reference)
     const user = await authService.getUserById(request.user.id);
     if (!user) return reply.status(401).send({ success: false, message: 'Invalid or inactive session.' });
     
