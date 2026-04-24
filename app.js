@@ -7,14 +7,24 @@ const fp = require('fastify-plugin');
 const initRedis = require('./config/redis'); 
 const cacheUtils = require('./utils/cacheUtils');
 const mongoose = require('mongoose'); 
-const loggerConfig = require('./config/logger');
 
 const createApp = (opts = {}) => {
     const isProduction = process.env.NODE_ENV === 'production';
     
     const fastify = Fastify({
-        logger: loggerConfig,
-        // OPTIMIZATION: Native Header Integration. Fastify's C-level hyperid handles this significantly faster than custom JS functions.
+        logger: isProduction ? { 
+            level: 'info',
+            stream: require('pino').destination({ sync: false, minLength: 4096 }),
+            redact: ['req.headers.authorization', 'req.headers.cookie'] 
+        } : {
+            transport: {
+                target: 'pino-pretty',
+                options: {
+                    translateTime: 'HH:MM:ss Z',
+                    ignore: 'pid,hostname'
+                }
+            }
+        },
         requestIdHeader: 'x-correlation-id',
         trustProxy: process.env.TRUST_PROXY_HOPS ? parseInt(process.env.TRUST_PROXY_HOPS, 10) : 1,
         disableRequestLogging: isProduction,
@@ -32,8 +42,13 @@ const createApp = (opts = {}) => {
         ...opts
     });
 
-    // Pass the fastify logger directly to the redis initializer
-    const redisClient = initRedis(fastify.log);
+    const redisClient = initRedis();
+
+    if (redisClient) {
+        redisClient.on('error', (err) => fastify.log.error(`Redis Client Error: ${err.message}`));
+        redisClient.on('connect', () => fastify.log.info('Redis Client successfully connected'));
+        redisClient.on('reconnecting', () => fastify.log.warn('Redis Client is reconnecting to the server'));
+    }
     
     cacheUtils.setClient(redisClient);
     
@@ -41,14 +56,16 @@ const createApp = (opts = {}) => {
         instance.decorate('redis', redisClient);
     }));
 
+    // ENTERPRISE FIX: Attach the Railway Healthcheck directly to the root instance BEFORE any plugins or routing logic.
+    // This guarantees the route is never prefixed by autoloaders and provides an instant 200 OK to the load balancer.
+    fastify.get('/api/health', async (request, reply) => {
+        return reply.code(200).send({ status: 'Healthy', uptime: process.uptime() });
+    });
+
     // --- Modularized Setups ---
-    
-    // Retained manual execution for plugins to guarantee global scope without risking Fastify encapsulation issues.
     const corePlugins = ['securitySetup', 'middlewareSetup', 'apiDocsSetup', 'eventsSetup', 'authSetup', 'wsSetup', 'loadSheddingSetup', 'errorHandler'];
     corePlugins.forEach(plugin => require(`./plugins/${plugin}`)(fastify));
 
-    // OPTIMIZATION: Enterprise Auto-loading for Routes. 
-    // Replaces manual array mapping. Fastify now handles asynchronous loading natively.
     fastify.register(require('@fastify/autoload'), {
         dir: path.join(__dirname, 'routes')
     });
