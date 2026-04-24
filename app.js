@@ -1,6 +1,7 @@
 /* app.js */
 'use strict';
 
+const path = require('path');
 const Fastify = require('fastify');
 const fp = require('fastify-plugin'); 
 const initRedis = require('./config/redis'); 
@@ -57,11 +58,16 @@ const createApp = (opts = {}) => {
     }));
 
     // --- Modularized Setups ---
+    
+    // Retained manual execution for plugins to guarantee global scope without risking Fastify encapsulation issues.
     const corePlugins = ['securitySetup', 'middlewareSetup', 'apiDocsSetup', 'eventsSetup', 'authSetup', 'wsSetup', 'loadSheddingSetup', 'errorHandler'];
     corePlugins.forEach(plugin => require(`./plugins/${plugin}`)(fastify));
 
-    const coreRoutes = ['systemRoutes', 'index'];
-    coreRoutes.forEach(route => fastify.register(require(`./routes/${route}`)));
+    // OPTIMIZATION: Enterprise Auto-loading for Routes. 
+    // Replaces manual array mapping. Fastify now handles asynchronous loading natively.
+    fastify.register(require('@fastify/autoload'), {
+        dir: path.join(__dirname, 'routes')
+    });
 
     return { fastify, redisClient };
 };
