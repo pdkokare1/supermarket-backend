@@ -12,20 +12,24 @@ const OrderCounter = mongoose.models.OrderCounter || mongoose.model('OrderCounte
 
 // OPTIMIZATION: Schema wrapper to strip auto-generated _ids from cart items, saving Atlas storage size.
 // strict: false ensures no frontend payload data is ever lost or rejected.
-const orderItemSchema = new mongoose.Schema({}, { strict: false, _id: false });
+const orderItemSchema = new mongoose.Schema({
+    // Explicitly defining new multi-tenant pointers while keeping strict: false for legacy payloads
+    masterProductId: { type: mongoose.Schema.Types.ObjectId, ref: 'MasterProduct' },
+    storeInventoryId: { type: mongoose.Schema.Types.ObjectId, ref: 'StoreInventory' }
+}, { strict: false, _id: false });
 
 const orderSchema = new mongoose.Schema({
     // --- NEW: Human Readable Order Identifier ---
     orderNumber: { 
         type: String, 
         unique: true,
-        sparse: true // Allows backward compatibility for older documents
+        sparse: true 
     },
     // --- NEW: Multi-Store Integration ---
     storeId: { 
         type: mongoose.Schema.Types.ObjectId, 
         ref: 'Store', 
-        sparse: true // Allows legacy single-store orders to remain untouched
+        sparse: true 
     },
     registerId: { 
         type: mongoose.Schema.Types.ObjectId, 
@@ -44,7 +48,28 @@ const orderSchema = new mongoose.Schema({
         type: String, 
         required: true 
     },
-    // --- NEW FUNCTIONALITY: Delivery Instructions & Assignment ---
+    
+    // --- NEW: AGGREGATOR FULFILLMENT ROUTING ---
+    fulfillmentType: {
+        type: String,
+        enum: ['PLATFORM_DELIVERY', 'STORE_DELIVERY', 'PICKUP'],
+        default: 'PICKUP'
+    },
+    fulfillmentStatus: {
+        type: String,
+        enum: ['Pending', 'Dispatched', 'Arrived', 'Delivered', 'Failed'],
+        default: 'Pending'
+    },
+    splitShipmentGroupId: {
+        type: String,
+        default: null // Links multiple backend orders into one frontend B2C Cart
+    },
+    partnerTrackingId: {
+        type: String,
+        default: null // For Croma / Reliance API integrations
+    },
+
+    // --- LEGACY: Delivery Instructions & Assignment ---
     notes: {
         type: String,
         default: ''
@@ -105,23 +130,13 @@ const orderSchema = new mongoose.Schema({
 // --- OPTIMIZED INDEXES FOR HIGH-SPEED QUERIES ---
 orderSchema.index({ status: 1, createdAt: -1 }); 
 orderSchema.index({ deliveryType: 1, status: 1 }); 
-
-// OPTIMIZATION: Covered index specifically for the getOrdersList aggregation
 orderSchema.index({ deliveryType: 1, status: 1, createdAt: -1 }); 
-
 orderSchema.index({ storeId: 1, createdAt: -1 });
 orderSchema.index({ registerId: 1, createdAt: -1 });
-
-// NEW: Compound index for CRM/Customer lookup speed
 orderSchema.index({ customerPhone: 1, status: 1, createdAt: -1 }); 
-
-// NEW: Compound index for Financial EOD aggregations
 orderSchema.index({ paymentMethod: 1, createdAt: -1 });
-
-// ENTERPRISE OPTIMIZATION: Deep Compound Index for Materialized View Rollups
 orderSchema.index({ storeId: 1, status: 1, createdAt: -1 });
-
-// ENTERPRISE OPTIMIZATION: Text Index for instant Admin search without regex COLLSCANs
+orderSchema.index({ splitShipmentGroupId: 1 }); // Fast B2C Cart aggregation
 orderSchema.index({ orderNumber: 'text', customerPhone: 'text', customerName: 'text' });
 
 module.exports = mongoose.model('Order', orderSchema);
