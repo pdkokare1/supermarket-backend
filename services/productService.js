@@ -6,7 +6,7 @@ const MasterProduct = require('../models/MasterProduct');
 const StoreInventory = require('../models/StoreInventory');
 const cacheUtils = require('../utils/cacheUtils');
 const appEvents = require('../utils/eventEmitter');
-const { buildProductQuery } = require('../utils/queryBuilderUtils');
+const { buildProductQuery, buildInventoryQuery } = require('../utils/queryBuilderUtils');
 const { getPaginationOptions, getSortQuery } = require('../utils/paginationUtils');
 const { fetchWithCoalescing } = require('./productCacheService');
 
@@ -29,9 +29,12 @@ exports.getPaginatedProducts = async (queryParams) => {
         if (queryParams.storeId) {
             const storeIdObj = new mongoose.Types.ObjectId(queryParams.storeId);
             
+            // Use the new localized query builder to handle stock filters (low, out, dead)
+            const inventoryMatch = buildInventoryQuery(queryParams, queryParams.storeId);
+            
             // Group the individual inventory SKUs back into logical products
             const pipeline = [
-                { $match: { storeId: storeIdObj } },
+                { $match: inventoryMatch },
                 { $group: {
                     _id: '$masterProductId',
                     variants: { $push: '$$ROOT' }
@@ -44,7 +47,7 @@ exports.getPaginatedProducts = async (queryParams) => {
             const masterIds = groupedInventory.map(g => g._id);
             
             const totalAgg = await StoreInventory.aggregate([
-                { $match: { storeId: storeIdObj } },
+                { $match: inventoryMatch },
                 { $group: { _id: '$masterProductId' } },
                 { $count: 'total' }
             ]);
