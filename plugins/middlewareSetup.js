@@ -11,13 +11,20 @@ module.exports = function(fastify) {
         return payload;
     });
 
-    // OPTIMIZATION: Non-Blocking Compliance Logging Hook
-    // Flushes the audit batch asynchronously ONLY after the response is securely sent to the user
-    fastify.addHook('onResponse', async (request, reply) => {
-        await auditService.flushAuditBatch();
+    // OPTIMIZATION: Non-Blocking Fire-and-Forget Audit
+    // Effect: Removed 'await'. Allows Fastify to fully close the request lifecycle and release memory 
+    // instantly, instead of waiting for external database writes to complete.
+    fastify.addHook('onResponse', (request, reply, done) => {
+        auditService.flushAuditBatch().catch(err => fastify.log.error(`Audit Flush Error: ${err.message}`));
+        done();
     });
 
-    fastify.register(require('@fastify/compress'), { global: true });
+    // OPTIMIZATION: CPU-Aware Compression
+    // Effect: Bypasses the compression engine for payloads under 1KB to save cloud CPU compute cycles.
+    fastify.register(require('@fastify/compress'), { 
+        global: true,
+        threshold: 1024 
+    });
 
     // OPTIMIZATION: Hardened Multipart limits to drop hanging connections and prevent slow-loris/multipart DDoS
     fastify.register(require('@fastify/multipart'), {
@@ -30,7 +37,6 @@ module.exports = function(fastify) {
     let cookieSecret = process.env.COOKIE_SECRET;
     
     // ENTERPRISE SECURITY: Fail-Fast configuration. 
-    // Never allow the container to boot with a hardcoded public string in production.
     if (process.env.NODE_ENV === 'production' && !cookieSecret) {
         fastify.log.fatal("CRITICAL SECURITY ALERT: Missing COOKIE_SECRET in production. Server shutting down to prevent session hijacking vulnerabilities.");
         process.exit(1);
