@@ -15,7 +15,6 @@ module.exports = function(fastify) {
     const isLocalDev = /^https?:\/\/localhost:\d+$/;
 
     fastify.register(require('@fastify/cors'), { 
-        // ENTERPRISE FIX: Custom origin function for maximum O(1) performance
         origin: (origin, cb) => {
             if (!origin || allowedOriginsSet.has(origin)) {
                 cb(null, true);
@@ -69,7 +68,6 @@ module.exports = function(fastify) {
         ban: 3, 
         hook: 'preHandler', 
         keyGenerator: function (request) {
-            // OPTIMIZATION: Faster truthy evaluation without nested branching
             return (request.user && request.user.id) ? request.user.id : request.ip;
         },
         errorResponseBuilder: function (request, context) {
@@ -84,11 +82,14 @@ module.exports = function(fastify) {
         continueExceeding: true
     });
 
-    // OPTIMIZATION: Unified Radix Tree Routing for Honeypots
-    // Effect: Replaces multiple distinct route registrations with a single optimized regex constraint.
-    // Prevents the router tree from fragmenting at the root level, speeding up standard API routes.
-    fastify.all('/:trap(^\\.env|wp-admin|wp-login\\.php|config\\.json)', async (request, reply) => {
-        await threatDefenseService.triggerHoneypot(request.ip);
-        return reply.status(403).send({ success: false, message: 'Forbidden' });
+    // ENTERPRISE FIX: Replaced greedy regex with exact string matching.
+    // Fastify's regex parser handles start-of-string anchors (^) poorly 
+    // inside named parameters, causing it to accidentally match the root path `/`.
+    const maliciousPaths = ['/.env', '/wp-admin', '/wp-login.php', '/config.json'];
+    maliciousPaths.forEach(trapPath => {
+        fastify.all(trapPath, async (request, reply) => {
+            await threatDefenseService.triggerHoneypot(request.ip);
+            return reply.status(403).send({ success: false, message: 'Forbidden' });
+        });
     });
 };
