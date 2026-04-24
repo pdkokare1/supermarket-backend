@@ -3,7 +3,7 @@
 
 const Redis = require('ioredis');
 
-const initRedis = () => {
+const initRedis = (logger = console) => {
     if (!process.env.REDIS_URL) {
         return null;
     }
@@ -18,13 +18,15 @@ const initRedis = () => {
             }
         });
 
-        // Error handlers must remain attached to prevent unhandled promise rejections,
-        // but we remove synchronous console output to prevent blocking the event loop.
-        redisClient.on('error', () => {});
-        redisClient.on('ready', () => {});
+        // Enterprise Observability: Handle errors gracefully without crashing, 
+        // while ensuring metrics are visible to the system logger.
+        redisClient.on('error', (err) => logger.error(`Redis Client Error: ${err.message}`));
+        redisClient.on('connect', () => logger.info('Redis Client successfully connected'));
+        redisClient.on('reconnecting', () => logger.warn('Redis Client is reconnecting to the server'));
 
         return redisClient;
     } catch (error) {
+        logger.error(`Failed to initialize Redis client: ${error.message}`);
         return null;
     }
 };
