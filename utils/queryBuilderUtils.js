@@ -1,4 +1,5 @@
 /* utils/queryBuilderUtils.js */
+const mongoose = require('mongoose');
 
 // OPTIMIZATION: Helper function to neutralize regex control characters and prevent ReDoS attacks.
 const escapeRegex = (string) => {
@@ -21,22 +22,41 @@ const buildProductQuery = (queryObj) => {
     
     if (queryObj.category && queryObj.category !== 'All') filter.category = queryObj.category; 
     if (queryObj.brand && queryObj.brand !== 'All') filter.brand = queryObj.brand;
-    if (queryObj.distributor && queryObj.distributor !== 'All') filter.distributorName = queryObj.distributor;
 
-    if (queryObj.stockStatus === 'out') {
-        filter['variants.stock'] = { $lte: 0 };
-    } else if (queryObj.stockStatus === 'dead') {
-        filter['variants.stock'] = { $gt: 15 };
-    } else if (queryObj.stockStatus === 'low') {
-        // OPTIMIZED: Replaced complex expression with $elemMatch for better indexing.
-        filter.variants = {
-            $elemMatch: {
-                stock: { $gt: 0 },
-                $expr: { $lte: ["$stock", { $ifNull: ["$lowStockThreshold", 5] }] }
-            }
-        };
-    }
+    // DELETED: variants.stock and distributor logic. 
+    // Reason: MasterProduct is global and contains no local volatile stock data.
+
     return filter;
 };
 
-module.exports = { buildProductQuery };
+// NEW: Function strictly for Tenant/Store Inventory filtering
+const buildInventoryQuery = (queryObj, storeId) => {
+    let filter = { storeId: new mongoose.Types.ObjectId(storeId) };
+
+    if (queryObj.all !== 'true') {
+        filter.isActive = true;
+    }
+
+    // Optional distributor filter via recent purchase history
+    if (queryObj.distributor && queryObj.distributor !== 'All') {
+         filter['purchaseHistory.distributorName'] = queryObj.distributor;
+    }
+
+    // Stock status filtering applied directly to the root-level stock integer
+    if (queryObj.stockStatus === 'out') {
+        filter.stock = { $lte: 0 };
+    } else if (queryObj.stockStatus === 'dead') {
+        filter.stock = { $gt: 15 };
+    } else if (queryObj.stockStatus === 'low') {
+        filter.$expr = {
+            $and: [
+                { $gt: ["$stock", 0] },
+                { $lte: ["$stock", { $ifNull: ["$lowStockThreshold", 5] }] }
+            ]
+        };
+    }
+
+    return filter;
+};
+
+module.exports = { buildProductQuery, buildInventoryQuery };
