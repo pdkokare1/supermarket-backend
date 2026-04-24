@@ -1,6 +1,6 @@
 /* plugins/errorHandler.js */
+'use strict';
 
-// OPTIMIZATION: In-Memory Circuit Breaker State
 let consecutiveErrors = 0;
 let circuitTripped = false;
 let breakerResetTimer = null;
@@ -19,29 +19,23 @@ const checkCircuitBreaker = (fastify) => {
     }
 };
 
-// ENTERPRISE FIX: Secure PII Masking utility. Retains the shape of the error payload for debugging, 
-// but scrubs passwords, API keys, and masks phone numbers to maintain GDPR/Security compliance.
+// OPTIMIZATION: O(1) Memory Set for sensitive lookups
+const sensitiveKeys = new Set(['pin', 'password', 'token', 'customerPhone', 'apiKey']);
+
+// ENTERPRISE FIX: Native V8 Serialization Redaction
+// Effect: Replaces slow, memory-heavy recursive object cloning with an inline stringify replacer.
+// This prevents high-concurrency requests from locking the thread when large error payloads are logged.
 const redactPII = (body) => {
     if (!body) return null;
     try {
-        const redacted = JSON.parse(JSON.stringify(body));
-        const sensitiveKeys = ['pin', 'password', 'token', 'customerPhone', 'apiKey'];
-        const mask = (obj) => {
-            for (let key in obj) {
-                if (sensitiveKeys.includes(key) && typeof obj[key] === 'string') {
-                    if (key === 'customerPhone') {
-                        // Keep only the last 4 digits visible
-                        obj[key] = obj[key].replace(/.(?=.{4})/g, '*');
-                    } else {
-                        obj[key] = '[REDACTED]';
-                    }
-                } else if (typeof obj[key] === 'object' && obj[key] !== null) {
-                    mask(obj[key]);
-                }
+        return JSON.stringify(body, (key, value) => {
+            if (sensitiveKeys.has(key) && typeof value === 'string') {
+                return key === 'customerPhone' 
+                    ? value.replace(/.(?=.{4})/g, '*') 
+                    : '[REDACTED]';
             }
-        };
-        mask(redacted);
-        return JSON.stringify(redacted);
+            return value;
+        });
     } catch (e) {
         return '[UNPARSABLE_PAYLOAD]';
     }
@@ -50,10 +44,8 @@ const redactPII = (body) => {
 module.exports = function (fastify) {
     fastify.decorate('isCircuitTripped', () => circuitTripped);
 
-    // OPTIMIZATION: Circuit Breaker Interceptor. Aborts incoming requests instantly if the system is overloaded.
     fastify.addHook('onRequest', (request, reply, done) => {
         if (circuitTripped) {
-            // Immediately reply with 503, preventing the request from executing controller or DB logic
             return reply.status(503).send({
                 success: false,
                 message: 'Service Unavailable: DailyPick systems are temporarily paused to prevent cascading failures. Please try again in 30 seconds.'
@@ -62,9 +54,10 @@ module.exports = function (fastify) {
         done();
     });
 
-    // OPTIMIZATION: Natively reset the circuit breaker state on any successful response
+    // ENTERPRISE FIX: Strict Health Reset
+    // Effect: Prevents 4xx client errors or non-data endpoints from falsely resetting the failure state.
     fastify.addHook('onResponse', (request, reply, done) => {
-        if (reply.statusCode >= 200 && reply.statusCode < 400) {
+        if (reply.statusCode === 200 || reply.statusCode === 201) {
             consecutiveErrors = 0;
         }
         done();
@@ -72,15 +65,8 @@ module.exports = function (fastify) {
 
     fastify.setErrorHandler(function (error, request, reply) {
         
-        // DEPRECATION CONSULTATION: Previous handler lacked failure state tracking
-        /*
-        if (error.name === 'ValidationError') { ... }
-        */
-
-        // OPTIMIZATION: Gracefully handle standard MongoDB user-input errors without causing 500s
         if (error.name === 'ValidationError') {
             error.statusCode = 400;
-            // OPTIMIZATION: Added fallback empty object to prevent process crashes on malformed error objects
             error.message = Object.values(error.errors || {}).map(val => val.message).join(', ');
         } else if (error.name === 'CastError') {
             error.statusCode = 400;
@@ -92,7 +78,6 @@ module.exports = function (fastify) {
 
         const isServerError = !error.statusCode || error.statusCode >= 500;
 
-        // OPTIMIZATION: Upgraded APM payload for enterprise tracing
         const apmLog = {
             event: isServerError ? 'CRITICAL_ERROR' : 'USER_ERROR',
             timestamp: new Date().toISOString(),
@@ -102,18 +87,17 @@ module.exports = function (fastify) {
             userId: request.user ? request.user.id : 'Unauthenticated',
             errorName: error.name,
             errorMessage: error.message,
-            payload: redactPII(request.body) // Now safely logs non-PII request parameters to help you debug errors
+            payload: redactPII(request.body) 
         };
         
         if (isServerError) {
             fastify.log.error(`[APM MONITOR] ${JSON.stringify(apmLog)}`);
             if (process.env.NODE_ENV !== 'production') fastify.log.error(error); 
-            checkCircuitBreaker(fastify); // Increment failure tracking
+            checkCircuitBreaker(fastify); 
         } else {
             fastify.log.warn(`[CLIENT ERROR] ${error.statusCode} - ${error.message} - [REQ_ID: ${request.id}]`);
         }
 
-        // OPTIMIZATION: Never leak raw database strings to the frontend during a crash
         const safeMessage = isServerError ? 'Internal Server Error. Our team has been notified.' : error.message;
 
         reply.status(error.statusCode || 500).send({
