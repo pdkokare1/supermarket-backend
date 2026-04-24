@@ -1,7 +1,8 @@
 /* routes/systemRoutes.js */
+'use strict';
 
 const os = require('os');
-const v8 = require('v8'); // OPTIMIZATION: Core V8 engine metrics
+const v8 = require('v8'); 
 const mongoose = require('mongoose');
 const { monitorEventLoopDelay } = require('perf_hooks');
 
@@ -26,38 +27,30 @@ module.exports = async function (fastify, options) {
         return { success: true, data: { lowStock: [], deadStock: [], lastGenerated: null }, cached: false };
     });
 
-    // DEPRECATION CONSULTATION: Standard health checks lack CPU/Event Loop visibility.
-    /*
-    fastify.get('/api/health', async (request, reply) => {
-        const dbStatus = mongoose.connection.readyState === 1 ? 'Connected' : 'Disconnected';
-        let redisStatus = 'Not Configured';
-        // ... older memory usage logic
-    });
-    */
-
-    // OPTIMIZATION: Advanced Readiness & Liveness Probes for Auto-Healing
-    fastify.get('/api/health', async (request, reply) => {
-        // 1. Check if server is marked for graceful shutdown
+    // OPTIMIZATION: Shifted deep structural health checks to a dedicated metrics endpoint.
+    // Preserves advanced diagnostics safely without interfering with Railway's mandatory startup pings.
+    fastify.get('/api/system/metrics', async (request, reply) => {
         if (fastify.isShuttingDown) {
             return reply.status(503).send({ status: 'Shutting Down', message: 'Container is draining traffic.' });
         }
 
-        // 2. Measure Event Loop Lag (CPU Health)
-        const eventLoopLag = hld.mean / 1e6; // Convert nanoseconds to milliseconds
-        const isCpuOverloaded = eventLoopLag > 100; // If lag > 100ms, Node is struggling
+        const eventLoopLag = hld.mean / 1e6; 
+        const isCpuOverloaded = eventLoopLag > 100; 
 
-        // 3. Measure Deep V8 Memory Limits (OOM Prevention)
         const heapStats = v8.getHeapStatistics();
         const heapUsedPercentage = (heapStats.used_heap_size / heapStats.heap_size_limit) * 100;
-        const isMemoryOverloaded = heapUsedPercentage > 85; // Warning threshold at 85% utilization
+        const isMemoryOverloaded = heapUsedPercentage > 85; 
 
-        // 4. Database & Cache Health
         const dbStatus = mongoose.connection.readyState === 1 ? 'Connected' : 'Disconnected';
         let redisStatus = 'Not Configured';
         
         if (redisClient) {
             try {
-                await redisClient.ping();
+                // Prevent Redis ping from freezing the response if offline by wrapping it in a 1-second timeout
+                await Promise.race([
+                    redisClient.ping(),
+                    new Promise((_, rej) => setTimeout(() => rej(new Error('Timeout')), 1000))
+                ]);
                 redisStatus = 'Connected';
             } catch (e) {
                 redisStatus = 'Disconnected';
@@ -83,17 +76,15 @@ module.exports = async function (fastify, options) {
         };
         
         if (systemHealth.status !== 'Healthy') {
-            // Signal to Railway to pull this instance out of the load balancer
-            reply.status(503).send(systemHealth);
-        } else {
-            reply.send(systemHealth);
-        }
+            return reply.status(503).send(systemHealth);
+        } 
+        return reply.send(systemHealth);
     });
 
     fastify.get('/', async (request, reply) => {
         return { 
             status: 'Active',
-            message: 'Supermarket Fastify Backend MVP is running and connected!' 
+            message: 'DailyPick Fastify Backend MVP is running and connected!' 
         };
     });
 };
