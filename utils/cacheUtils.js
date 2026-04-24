@@ -13,14 +13,24 @@ exports.getClient = () => {
     return redisCache;
 };
 
-exports.generateKey = (prefix, queryObj) => {
-    let stringifiedData;
+// ENTERPRISE FIX: Recursive Deterministic Stringifier
+// Resolves severe cache collisions where nested object structures were corrupted/ignored by standard JSON.stringify replacers.
+const stringifyDeterministic = (obj) => {
+    if (obj === null || typeof obj !== 'object') return JSON.stringify(obj);
+    if (Array.isArray(obj)) return `[${obj.map(stringifyDeterministic).join(',')}]`;
     
-    if (queryObj && typeof queryObj === 'object') {
-        stringifiedData = JSON.stringify(queryObj, Object.keys(queryObj).sort());
-    } else {
-        stringifiedData = String(queryObj); 
+    const keys = Object.keys(obj).sort();
+    let result = '{';
+    for (let i = 0; i < keys.length; i++) {
+        const key = keys[i];
+        result += `"${key}":${stringifyDeterministic(obj[key])}`;
+        if (i < keys.length - 1) result += ',';
     }
+    return result + '}';
+};
+
+exports.generateKey = (prefix, queryObj) => {
+    const stringifiedData = typeof queryObj === 'object' ? stringifyDeterministic(queryObj) : String(queryObj); 
     
     // OPTIMIZATION: Upgraded from MD5 to SHA-256. Hardware accelerated on modern CPUs, faster and prevents collision attacks.
     const hash = crypto.createHash('sha256').update(stringifiedData).digest('hex');
@@ -41,8 +51,7 @@ exports.getCachedData = async (key) => {
 exports.setCachedData = async (key, data, ttlSeconds = 3600) => {
     if (!redisCache || !key) return;
 
-    // OPTIMIZATION: Pre-serialization heuristic. Stringifying massive JSON blocks the Node event loop synchronously.
-    // We reject massive arrays upfront before wasting CPU cycles locking the thread.
+    // OPTIMIZATION: Pre-serialization heuristic. We reject massive arrays upfront before wasting CPU cycles locking the thread.
     if (Array.isArray(data) && data.length > 5000) {
         console.warn(`[CACHE UTILS] Payload exceeds safe array length for key ${key}. Bypassing cache to protect Event Loop.`);
         return;
@@ -79,7 +88,12 @@ exports.invalidateByPattern = async (pattern) => {
             const [newCursor, keys] = await redisCache.scan(cursor, 'MATCH', pattern, 'COUNT', 100);
             cursor = newCursor;
             if (keys.length > 0) {
-                await redisCache.pipeline().unlink(...keys).exec();
+                // ENTERPRISE FIX: Safe chunking to prevent "Maximum call stack size exceeded" V8 engine crashes
+                const CHUNK_SIZE = 500;
+                for (let i = 0; i < keys.length; i += CHUNK_SIZE) {
+                    const chunk = keys.slice(i, i + CHUNK_SIZE);
+                    await redisCache.pipeline().unlink(...chunk).exec();
+                }
             }
         } while (cursor !== '0');
     } catch(e) {
