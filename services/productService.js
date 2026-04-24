@@ -20,29 +20,23 @@ exports.getPaginatedProducts = async (queryParams) => {
     const cacheKey = cacheUtils.generateKey('products', queryParams);
     
     // OPTIMIZATION: Cold Start / Cache Stampede Protection
-    // Wraps the heavy DB aggregation in the coalescing engine to ensure concurrent traffic spikes only trigger 1 database read.
+    // Wraps the heavy DB queries in the coalescing engine to ensure concurrent traffic spikes only trigger 1 database read.
     return await fetchWithCoalescing(cacheKey, CACHE_TTL, async () => {
         const filter = buildProductQuery(queryParams); 
         const { limit, skip } = getPaginationOptions(queryParams);
         const sortQuery = getSortQuery(queryParams.sort);
         
-        // OPTIMIZATION: Single-pass aggregation replacing find() and countDocuments()
-        // ENTERPRISE FIX: allowDiskUse(true) prevents the 100MB RAM limit crash on large collections utilizing $facet
-        const result = await Product.aggregate([
-            { $match: filter },
-            { $facet: {
-                metadata: [ { $count: "total" } ],
-                data: [
-                    { $sort: sortQuery || { createdAt: -1 } },
-                    { $skip: skip },
-                    { $limit: limit || 50 },
-                    { $project: { "variants.purchaseHistory": 0, "variants.returnHistory": 0 } }
-                ]
-            }}
-        ]).allowDiskUse(true);
-
-        const products = result[0].data;
-        const total = result[0].metadata[0]?.total || 0;
+        // OPTIMIZATION: Concurrent Queries (Enterprise Scale)
+        // Replaced single-thread $facet with Promise.all() to utilize DB indexes and reduce CPU overhead.
+        const [total, products] = await Promise.all([
+            Product.countDocuments(filter),
+            Product.find(filter)
+                .sort(sortQuery || { createdAt: -1 })
+                .skip(skip)
+                .limit(limit || 50)
+                .select('-variants.purchaseHistory -variants.returnHistory') // Replaces $project exclusion
+                .lean() // Zero-hydration performance boost
+        ]);
 
         return { success: true, message: 'Products fetched successfully', count: products.length, total: total, data: products };
     });
