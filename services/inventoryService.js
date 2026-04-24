@@ -1,6 +1,7 @@
 /* services/inventoryService.js */
 
-const Product = require('../models/Product');
+const MasterProduct = require('../models/MasterProduct');
+const StoreInventory = require('../models/StoreInventory');
 const Order = require('../models/Order'); 
 const distributorService = require('./distributorService'); 
 const { withTransaction } = require('../utils/dbUtils'); 
@@ -13,31 +14,14 @@ const { invalidateProductCache } = require('./productCacheService');
 // --- HELPER FUNCTIONS ---
 // ==========================================
 
-const getProductAndVariant = async (productId, variantId, session = null) => {
-    // OPTIMIZATION: .lean() added. We do not need a hydrated document just to read current stock levels.
-    const query = Product.findById(productId).lean();
+const getInventoryRecord = async (masterProductId, variantId, storeId, session = null) => {
+    const query = StoreInventory.findOne({ masterProductId, variantId, storeId }).lean();
     if (session) query.session(session);
     
-    const product = await query;
-    if (!product) throw new AppError('Product not found', 404);
+    const inventory = await query;
+    if (!inventory) throw new AppError('Local store inventory not found for this product', 404);
     
-    // OPTIMIZATION: Replaced heavy Mongoose .id() method with native JS .find() since the object is now a POJO.
-    const variant = product.variants.find(v => v._id.toString() === variantId.toString());
-    if (!variant) throw new AppError('Variant not found', 404);
-    
-    return { product, variant };
-};
-
-const addLocationStockQuery = (updateQuery, arrayFilters, variant, storeId, quantity, locIdentifier = 'loc') => {
-    const hasStore = (variant.locationInventory || []).some(l => l.storeId && l.storeId.toString() === storeId.toString());
-    if (hasStore) {
-        updateQuery.$inc = updateQuery.$inc || {};
-        updateQuery.$inc[`variants.$[var].locationInventory.$[${locIdentifier}].stock`] = Number(quantity);
-        arrayFilters.push({ [`${locIdentifier}.storeId`]: storeId });
-    } else {
-        updateQuery.$push = updateQuery.$push || {};
-        updateQuery.$push["variants.$[var].locationInventory"] = { storeId: storeId, stock: Number(quantity) };
-    }
+    return inventory;
 };
 
 // ==========================================
@@ -45,87 +29,52 @@ const addLocationStockQuery = (updateQuery, arrayFilters, variant, storeId, quan
 // ==========================================
 
 exports.restoreInventory = async (items, storeId, session) => {
-    const bulkOperations = [];
-    for (const item of items) {
-        if (storeId) {
-            bulkOperations.push({ 
-                updateOne: { 
-                    filter: { _id: item.productId }, 
-                    update: { $inc: { "variants.$[var].stock": item.qty, "variants.$[var].locationInventory.$[loc].stock": item.qty } }, 
-                    arrayFilters: [{ "var._id": item.variantId }, { "loc.storeId": storeId }] 
-                } 
-            });
-        } else {
-            bulkOperations.push({ 
-                updateOne: { 
-                    filter: { _id: item.productId, "variants._id": item.variantId }, 
-                    update: { $inc: { "variants.$.stock": item.qty } } 
-                } 
-            });
-        }
-    }
+    if (!storeId) throw new AppError('Tenant Isolation Error: Store ID is required for stock restoration', 400);
+
+    const bulkOperations = items.map(item => ({
+        updateOne: { 
+            // We now update the local store document directly, zero array-parsing required
+            filter: { masterProductId: item.productId, variantId: item.variantId, storeId: storeId }, 
+            update: { $inc: { stock: item.qty } } 
+        } 
+    }));
+
     if (bulkOperations.length > 0) {
-        await Product.bulkWrite(bulkOperations, { session });
+        await StoreInventory.bulkWrite(bulkOperations, { session });
         await invalidateProductCache();
     }
 };
 
 exports.deductInventory = async (items, storeId, session) => {
-    const productIds = items.map(item => item.productId);
-    
-    const bulkOperations = [];
+    if (!storeId) throw new AppError('Tenant Isolation Error: Store ID is required for checkout deduction', 400);
 
-    for (const item of items) {
-        if (storeId) {
-            bulkOperations.push({
-                updateOne: {
-                    filter: { _id: item.productId },
-                    update: { 
-                        $inc: { 
-                            "variants.$[var].stock": -item.qty,
-                            "variants.$[var].locationInventory.$[loc].stock": -item.qty 
-                        } 
-                    },
-                    arrayFilters: [
-                        { "var._id": item.variantId, "var.stock": { $gte: item.qty } }, 
-                        { "loc.storeId": storeId, "loc.stock": { $gte: item.qty } }
-                    ]
-                }
-            });
-        } else {
-            bulkOperations.push({
-                updateOne: {
-                    filter: { _id: item.productId },
-                    update: { $inc: { "variants.$[var].stock": -item.qty } },
-                    arrayFilters: [{ "var._id": item.variantId, "var.stock": { $gte: item.qty } }]
-                }
-            });
+    const bulkOperations = items.map(item => ({
+        updateOne: {
+            filter: { 
+                masterProductId: item.productId, 
+                variantId: item.variantId, 
+                storeId: storeId,
+                stock: { $gte: item.qty } // Atomic safety lock prevents overselling
+            },
+            update: { $inc: { stock: -item.qty } }
         }
-    }
+    }));
 
     if (bulkOperations.length > 0) {
-        const bulkResult = await Product.bulkWrite(bulkOperations, { session });
+        const bulkResult = await StoreInventory.bulkWrite(bulkOperations, { session });
         
         if (bulkResult.modifiedCount !== items.length) {
-            const currentStock = await Product.find({ _id: { $in: productIds } }).select('name variants').session(session).lean();
+            // Find exactly which item failed for a graceful error
             let failedItemName = 'an item in your cart';
-            
-            const stockMap = new Map(currentStock.map(p => [p._id.toString(), p]));
-
             for (const item of items) {
-                const prod = stockMap.get(item.productId.toString());
-                if (prod) {
-                    const variantMap = new Map(prod.variants.map(v => [v._id.toString(), v]));
-                    const variant = variantMap.get(item.variantId.toString());
-                    
-                    if (variant && variant.stock < item.qty) {
-                        failedItemName = `${prod.name} (${variant.weightOrVolume})`;
-                        break;
-                    }
+                const inv = await StoreInventory.findOne({ masterProductId: item.productId, variantId: item.variantId, storeId }).session(session).lean();
+                if (!inv || inv.stock < item.qty) {
+                    const master = await MasterProduct.findById(item.productId).lean();
+                    failedItemName = master ? master.name : failedItemName;
+                    break;
                 }
             }
-            
-            return { success: false, message: `Oversell Prevented: "${failedItemName}" does not have enough stock remaining. Another customer just purchased it.` };
+            return { success: false, message: `Oversell Prevented: "${failedItemName}" does not have enough local stock remaining.` };
         }
         await invalidateProductCache();
     }
@@ -137,90 +86,75 @@ exports.deductInventory = async (items, storeId, session) => {
 // ==========================================
 
 exports.getExpiringProducts = async (days = 7) => {
-    const targetDate = new Date();
-    targetDate.setDate(targetDate.getDate() + days);
-
-    return await Product.aggregate([
-        { $match: { isActive: true, "variants.expiryDate": { $ne: null } } },
-        { $unwind: "$variants" },
-        { $match: { "variants.expiryDate": { $lte: targetDate }, "variants.stock": { $gt: 0 } } },
-        { $project: {
-            _id: 0,
-            productId: "$_id",
-            name: 1,
-            variant: "$variants.weightOrVolume",
-            stock: "$variants.stock",
-            expiryDate: "$variants.expiryDate"
-        }}
-    ]).allowDiskUse(true);
+    // Requires migration to track expiry locally per store if needed. 
+    // Currently returns empty until expiry is modeled at the StoreInventory level.
+    return []; 
 };
 
 exports.calculateSalesVelocityAndStock = async (velocityDays, lowStockThreshold, deadStockQty, deadStockDays) => {
     const dateAgo = new Date();
     dateAgo.setDate(dateAgo.getDate() - velocityDays);
 
+    // Aggregate velocity PER store inventory
     const velocityAgg = await Order.aggregate([
         { $match: { createdAt: { $gte: dateAgo }, status: { $in: ['Completed', 'Dispatched'] } } },
-        { $project: { items: 1 } },
+        { $project: { items: 1, storeId: 1 } },
         { $unwind: "$items" },
-        { $group: { _id: "$items.variantId", totalSold: { $sum: "$items.qty" } } }
+        { $group: { 
+            _id: { storeId: "$storeId", variantId: "$items.variantId" }, 
+            totalSold: { $sum: "$items.qty" } 
+        }}
     ]).allowDiskUse(true); 
 
     let variantSales = {};
     velocityAgg.forEach(v => {
-        if (v._id) variantSales[v._id.toString()] = v.totalSold;
+        if (v._id) variantSales[`${v._id.storeId}_${v._id.variantId}`] = v.totalSold;
     });
 
-    const productCursor = Product.find({ isActive: true }).select('name variants').lean().cursor();
+    const inventoryCursor = StoreInventory.find({ isActive: true }).lean().cursor();
     
     let lowStockItems = [];
     let deadStockItems = [];
     let bulkOps = []; 
     const BATCH_SIZE = 500; 
     
-    for await (let p of productCursor) {
-        if (p.variants) {
-            p.variants.forEach((v) => {
-                const totalSold = variantSales[v._id.toString()] || 0;
-                const dailyAvg = totalSold / velocityDays;
-                
-                const avgDailySalesFixed = Number(dailyAvg.toFixed(2));
-                const daysOfStockFixed = dailyAvg > 0 ? Number((v.stock / dailyAvg).toFixed(1)) : 999;
+    for await (let inv of inventoryCursor) {
+        const key = `${inv.storeId}_${inv.variantId}`;
+        const totalSold = variantSales[key] || 0;
+        const dailyAvg = totalSold / velocityDays;
+        
+        const avgDailySalesFixed = Number(dailyAvg.toFixed(2));
+        const daysOfStockFixed = dailyAvg > 0 ? Number((inv.stock / dailyAvg).toFixed(1)) : 999;
 
-                // ENTERPRISE FIX: Replaced dangerous Array-Index mutation with strict arrayFilter matching.
-                // Prevents corrupting the wrong variant if an admin reorders or deletes a variant mid-cron run.
-                bulkOps.push({
-                    updateOne: {
-                        filter: { _id: p._id },
-                        update: { 
-                            $set: { 
-                                "variants.$[var].averageDailySales": avgDailySalesFixed,
-                                "variants.$[var].daysOfStock": daysOfStockFixed
-                            } 
-                        },
-                        arrayFilters: [{ "var._id": v._id }]
-                    }
-                });
+        bulkOps.push({
+            updateOne: {
+                filter: { _id: inv._id },
+                update: { 
+                    $set: { 
+                        averageDailySales: avgDailySalesFixed,
+                        daysOfStock: daysOfStockFixed
+                    } 
+                }
+            }
+        });
 
-                if (v.stock <= (v.lowStockThreshold || lowStockThreshold) || (daysOfStockFixed < 3 && v.stock > 0)) {
-                    lowStockItems.push({ name: p.name, variant: v.weightOrVolume, stock: v.stock, daysLeft: daysOfStockFixed });
-                }
-                
-                if (v.stock > deadStockQty && daysOfStockFixed > deadStockDays) {
-                    deadStockItems.push({ name: p.name, variant: v.weightOrVolume, stock: v.stock, daysLeft: daysOfStockFixed });
-                }
-            });
+        if (inv.stock <= (inv.lowStockThreshold || lowStockThreshold) || (daysOfStockFixed < 3 && inv.stock > 0)) {
+            lowStockItems.push({ variantId: inv.variantId, storeId: inv.storeId, stock: inv.stock, daysLeft: daysOfStockFixed });
+        }
+        
+        if (inv.stock > deadStockQty && daysOfStockFixed > deadStockDays) {
+            deadStockItems.push({ variantId: inv.variantId, storeId: inv.storeId, stock: inv.stock, daysLeft: daysOfStockFixed });
         }
 
         if (bulkOps.length >= BATCH_SIZE) {
-            await Product.bulkWrite(bulkOps);
+            await StoreInventory.bulkWrite(bulkOps);
             bulkOps = []; 
             await new Promise(resolve => setImmediate(resolve));
         }
     }
 
     if (bulkOps.length > 0) {
-        await Product.bulkWrite(bulkOps);
+        await StoreInventory.bulkWrite(bulkOps);
     }
 
     return { lowStockItems, deadStockItems };
@@ -230,12 +164,12 @@ exports.calculateSalesVelocityAndStock = async (velocityDays, lowStockThreshold,
 // --- SERVICE EXPORTS ---
 // ==========================================
 
-exports.processRestock = async (productId, payload) => {
+exports.processRestock = async (masterProductId, payload) => {
     return withTransaction(async (session) => {
         const { variantId, invoiceNumber, addedQuantity, purchasingPrice, newSellingPrice, paymentStatus, storeId } = payload;
         
-        const { product, variant } = await getProductAndVariant(productId, variantId, session);
-        
+        if (!storeId) throw new AppError('Tenant Isolation Error: Store ID is required', 400);
+
         const purchaseHistoryEntry = { 
             invoiceNumber, 
             addedQuantity: Number(addedQuantity), 
@@ -245,131 +179,104 @@ exports.processRestock = async (productId, payload) => {
         };
 
         const updateQuery = {
-            // ENTERPRISE FIX: Native capped arrays via $slice prevents 16MB BSON Document Crash over time.
             $push: { 
-                "variants.$[var].purchaseHistory": {
-                    $each: [purchaseHistoryEntry],
-                    $slice: -50 // Keep only the latest 50 entries to preserve DB memory limits
-                } 
+                purchaseHistory: { $each: [purchaseHistoryEntry], $slice: -50 } 
             },
-            $inc: { "variants.$[var].stock": Number(addedQuantity) },
-            $set: { "variants.$[var].price": Number(newSellingPrice) }
+            $inc: { stock: Number(addedQuantity) },
+            $set: { sellingPrice: Number(newSellingPrice) }
         };
         
-        const arrayFilters = [{ "var._id": variantId }];
-
-        if (storeId) {
-            addLocationStockQuery(updateQuery, arrayFilters, variant, storeId, addedQuantity, 'loc');
-        }
-
-        const updatedProduct = await Product.findOneAndUpdate(
-            { _id: productId },
+        const updatedInventory = await StoreInventory.findOneAndUpdate(
+            { masterProductId, variantId, storeId },
             updateQuery,
-            { new: true, arrayFilters, session }
-        ).lean(); // OPTIMIZATION: Zero hydration overhead
+            { new: true, session, upsert: true } // If they restock a master item they didn't have, create the store link
+        ).lean(); 
         
-        if (paymentStatus === 'Credit' && updatedProduct.distributorName) {
+        if (paymentStatus === 'Credit') {
             const totalCost = Number(addedQuantity) * Number(purchasingPrice);
-            await distributorService.incrementPendingAmount(updatedProduct.distributorName, totalCost, session);
+            // Warning: Distributor linkage will need an update to handle multi-tenant logic
+            // await distributorService.incrementPendingAmount(updatedProduct.distributorName, totalCost, session);
         }
 
         appEvents.emit('PRODUCT_UPDATED', { 
-            productId: updatedProduct._id, 
-            message: 'Stock Refilled', 
+            productId: masterProductId, 
+            message: 'Local Stock Refilled', 
             storeId: storeId 
         });
 
         await invalidateProductCache();
-        return updatedProduct;
+        return updatedInventory;
     });
 };
 
-exports.processRTV = async (productId, payload) => {
+exports.processRTV = async (masterProductId, payload) => {
     return withTransaction(async (session) => {
         const { variantId, distributorName, returnedQuantity, refundAmount, reason, storeId } = payload;
         
-        const { product, variant } = await getProductAndVariant(productId, variantId, session);
+        if (!storeId) throw new AppError('Tenant Isolation Error: Store ID is required', 400);
+
+        const inventory = await getInventoryRecord(masterProductId, variantId, storeId, session);
         
-        if (variant.stock < returnedQuantity) {
-            throw new AppError('Not enough stock to return', 400);
+        if (inventory.stock < returnedQuantity) {
+            throw new AppError('Not enough stock to return locally', 400);
         }
 
         const returnHistoryEntry = { distributorName, returnedQuantity: Number(returnedQuantity), refundAmount: Number(refundAmount), reason, storeId };
 
         const updateQuery = {
-            // ENTERPRISE FIX: Native capped arrays via $slice.
             $push: { 
-                "variants.$[var].returnHistory": {
-                    $each: [returnHistoryEntry],
-                    $slice: -50
-                } 
+                returnHistory: { $each: [returnHistoryEntry], $slice: -50 } 
             },
-            $inc: { "variants.$[var].stock": -Number(returnedQuantity) }
+            $inc: { stock: -Number(returnedQuantity) }
         };
         
-        const arrayFilters = [{ "var._id": variantId }];
-
-        if (storeId) {
-            let locStock = (variant.locationInventory || []).find(l => l.storeId && l.storeId.toString() === storeId);
-            if (locStock && locStock.stock >= returnedQuantity) {
-                updateQuery.$inc["variants.$[var].locationInventory.$[loc].stock"] = -Number(returnedQuantity);
-                arrayFilters.push({ "loc.storeId": storeId });
-            }
-        }
-        
-        const updatedProduct = await Product.findOneAndUpdate(
-            { _id: productId },
+        const updatedInventory = await StoreInventory.findOneAndUpdate(
+            { masterProductId, variantId, storeId },
             updateQuery,
-            { new: true, arrayFilters, session }
-        ).lean(); // OPTIMIZATION: Zero hydration overhead
+            { new: true, session }
+        ).lean(); 
 
         appEvents.emit('PRODUCT_UPDATED', { 
-            productId: updatedProduct._id, 
-            message: 'Stock Returned', 
+            productId: masterProductId, 
+            message: 'Local Stock Returned', 
             storeId: storeId 
         });
 
         await invalidateProductCache();
-        return updatedProduct;
+        return updatedInventory;
     });
 };
 
 exports.processTransfer = async (payload, username, logError) => {
     return withTransaction(async (session) => {
-        const { productId, variantId, fromStoreId, toStoreId, quantity } = payload;
+        const { productId: masterProductId, variantId, fromStoreId, toStoreId, quantity } = payload;
         
-        if (!productId || !variantId || !fromStoreId || !toStoreId || !quantity || quantity <= 0) {
+        if (!masterProductId || !variantId || !fromStoreId || !toStoreId || !quantity || quantity <= 0) {
             throw new AppError('Invalid transfer parameters.', 400);
         }
 
-        const { product, variant } = await getProductAndVariant(productId, variantId, session);
+        // Deduct from Source Store
+        const sourceInventory = await StoreInventory.findOneAndUpdate(
+            { masterProductId, variantId, storeId: fromStoreId, stock: { $gte: quantity } },
+            { $inc: { stock: -Number(quantity) } },
+            { new: true, session }
+        ).lean();
 
-        let fromLoc = (variant.locationInventory || []).find(l => l.storeId.toString() === fromStoreId);
-        if (!fromLoc || fromLoc.stock < quantity) {
+        if (!sourceInventory) {
             throw new AppError('Insufficient stock at source location.', 400);
         }
 
-        const updateQuery = {
-            $inc: { "variants.$[var].locationInventory.$[fromLoc].stock": -Number(quantity) }
-        };
-        
-        const arrayFilters = [
-            { "var._id": variantId },
-            { "fromLoc.storeId": fromStoreId }
-        ];
-
-        addLocationStockQuery(updateQuery, arrayFilters, variant, toStoreId, quantity, 'toLoc');
-
-        const updatedProduct = await Product.findOneAndUpdate(
-            { _id: productId },
-            updateQuery,
-            { new: true, arrayFilters, session }
-        ).lean(); // OPTIMIZATION: Zero hydration overhead
+        // Add to Destination Store
+        const targetInventory = await StoreInventory.findOneAndUpdate(
+            { masterProductId, variantId, storeId: toStoreId },
+            { $inc: { stock: Number(quantity) } },
+            { new: true, upsert: true, session }
+        ).lean();
         
         await auditService.logEvent({
             action: 'STOCK_TRANSFER',
-            targetType: 'Product',
-            targetId: updatedProduct._id.toString(),
+            targetType: 'StoreInventory',
+            targetId: masterProductId.toString(),
             username: username,
             details: { variantId, fromStoreId, toStoreId, quantity },
             session,
@@ -377,11 +284,11 @@ exports.processTransfer = async (payload, username, logError) => {
         });
 
         appEvents.emit('PRODUCT_UPDATED', { 
-            productId: updatedProduct._id, 
-            message: 'Stock Transferred' 
+            productId: masterProductId, 
+            message: 'Stock Transferred Between Stores' 
         });
         
         await invalidateProductCache();
-        return updatedProduct;
+        return { sourceInventory, targetInventory };
     });
 };
