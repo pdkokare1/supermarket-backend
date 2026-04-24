@@ -1,5 +1,4 @@
 /* models/User.js */
-
 const mongoose = require('mongoose');
 
 const userSchema = new mongoose.Schema({
@@ -16,17 +15,19 @@ const userSchema = new mongoose.Schema({
         type: String, 
         required: true 
     },
-    assignedStores: [{ 
+    // Multi-Tenancy Strict Boundary
+    tenantId: { 
         type: mongoose.Schema.Types.ObjectId, 
-        ref: 'Store' 
-    }],
+        ref: 'Store',
+        default: null // null indicates a Platform SuperAdmin
+    },
     defaultRegisterId: { 
         type: mongoose.Schema.Types.ObjectId, 
         ref: 'Register' 
     },
     role: { 
         type: String, 
-        enum: ['Admin', 'Cashier'], 
+        enum: ['SuperAdmin', 'StoreAdmin', 'Cashier', 'Distributor', 'Delivery_Agent'], 
         default: 'Cashier' 
     },
     isActive: { 
@@ -46,13 +47,10 @@ const userSchema = new mongoose.Schema({
     }
 }, { 
     timestamps: true,
-    // ENTERPRISE FIX: Ensure virtual fields are included when document is serialized to the frontend or Redis
     toJSON: { virtuals: true },
     toObject: { virtuals: true }
 });
 
-// ENTERPRISE SECURITY FIX: Dynamic lock state calculation.
-// Without this, the `if (user.isLocked)` check in authService.js will always fail, rendering brute-force protection useless.
 userSchema.virtual('isLocked').get(function() {
     return !!(this.lockUntil && this.lockUntil > Date.now());
 });
