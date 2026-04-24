@@ -6,21 +6,24 @@ const productService = require('../services/productService');
 const productCacheService = require('../services/productCacheService');
 
 exports.getProducts = async (request, reply) => {
-    
-    // OPTIMIZATION: High-Performance Read-Through Catalog Caching with Deterministic Keys
-    const sortedQuery = Object.keys(request.query || {}).sort().reduce((result, key) => {
-        result[key] = request.query[key];
+    // ENFORCING TENANT BOUNDARY: Auto-inject storeId so users only see their store's inventory
+    const queryPayload = { ...request.query };
+    if (request.user && request.user.tenantId) {
+        queryPayload.storeId = request.user.tenantId;
+    }
+
+    const sortedQuery = Object.keys(queryPayload).sort().reduce((result, key) => {
+        result[key] = queryPayload[key];
         return result;
     }, {});
     
     const cacheKey = `products:catalog:${JSON.stringify(sortedQuery)}`;
     const productData = await productCacheService.fetchWithCoalescing(
         cacheKey,
-        300, // 5 min TTL
-        async () => await productService.getPaginatedProducts(request.query)
+        300, 
+        async () => await productService.getPaginatedProducts(queryPayload)
     );
 
-    // OPTIMIZATION: Standardized response wrapper.
     return { 
         success: true, 
         message: productData.message || 'Products fetched successfully', 
@@ -31,13 +34,24 @@ exports.getProducts = async (request, reply) => {
 };
 
 exports.createProduct = async (request, reply) => {
-    const newProduct = await productService.createProduct(request.body);
+    // ENFORCING TENANT BOUNDARY
+    const payload = { ...request.body };
+    if (request.user && request.user.tenantId) {
+        payload.storeId = request.user.tenantId;
+    }
+
+    const newProduct = await productService.createProduct(payload);
     await productCacheService.invalidateProductCache();
     return { success: true, message: 'Product added', data: newProduct };
 };
 
 exports.updateProduct = async (request, reply) => {
-    const updatedProduct = await productService.updateProduct(request.params.id, { ...request.body });
+    const payload = { ...request.body };
+    if (request.user && request.user.tenantId) {
+        payload.storeId = request.user.tenantId;
+    }
+
+    const updatedProduct = await productService.updateProduct(request.params.id, payload);
     if (!updatedProduct) return reply.status(404).send({ success: false, message: 'Product Not found' });
     
     await productCacheService.invalidateProductCache();
@@ -61,12 +75,22 @@ exports.toggleProductStatus = async (request, reply) => {
 };
 
 exports.restockProduct = async (request, reply) => {
-    const product = await inventoryService.processRestock(request.params.id, request.body);
+    const payload = { ...request.body };
+    if (request.user && request.user.tenantId) {
+        payload.storeId = request.user.tenantId;
+    }
+
+    const product = await inventoryService.processRestock(request.params.id, payload);
     return { success: true, message: 'Restock processed successfully', data: product };
 };
 
 exports.rtvProduct = async (request, reply) => {
-    const product = await inventoryService.processRTV(request.params.id, request.body);
+    const payload = { ...request.body };
+    if (request.user && request.user.tenantId) {
+        payload.storeId = request.user.tenantId;
+    }
+
+    const product = await inventoryService.processRTV(request.params.id, payload);
     return { success: true, message: 'RTV processed successfully', data: product };
 };
 
