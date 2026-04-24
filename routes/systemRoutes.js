@@ -5,8 +5,8 @@ const os = require('os');
 const v8 = require('v8'); 
 const mongoose = require('mongoose');
 const { monitorEventLoopDelay } = require('perf_hooks');
+const threatDefenseService = require('../services/threatDefenseService');
 
-// OPTIMIZATION: Initialize Native Event Loop Monitor to catch CPU choking
 const hld = monitorEventLoopDelay({ resolution: 10 });
 hld.enable();
 
@@ -27,8 +27,6 @@ module.exports = async function (fastify, options) {
         return { success: true, data: { lowStock: [], deadStock: [], lastGenerated: null }, cached: false };
     });
 
-    // OPTIMIZATION: Shifted deep structural health checks to a dedicated metrics endpoint.
-    // Preserves advanced diagnostics safely without interfering with Railway's mandatory startup pings.
     fastify.get('/api/system/metrics', async (request, reply) => {
         if (fastify.isShuttingDown) {
             return reply.status(503).send({ status: 'Shutting Down', message: 'Container is draining traffic.' });
@@ -46,7 +44,6 @@ module.exports = async function (fastify, options) {
         
         if (redisClient) {
             try {
-                // Prevent Redis ping from freezing the response if offline by wrapping it in a 1-second timeout
                 await Promise.race([
                     redisClient.ping(),
                     new Promise((_, rej) => setTimeout(() => rej(new Error('Timeout')), 1000))
@@ -87,4 +84,15 @@ module.exports = async function (fastify, options) {
             message: 'DailyPick Fastify Backend MVP is running and connected!' 
         };
     });
+
+    // TEMPORARY FIX: Emergency route to unban your IP from the honeypot false-positive
+    fastify.get('/api/system/unban', async (request, reply) => {
+        await threatDefenseService.clearLockout(request.ip, 'system_unban');
+        return { success: true, message: `IP ${request.ip} has been successfully removed from the blocklist.` };
+    });
 };
+
+// ENTERPRISE FIX: Disable Fastify-Autoload file prefixing.
+// This forces all routes in this file to mount EXACTLY at the strings provided above,
+// rather than being automatically pushed to `/systemRoutes/api/...`
+module.exports.autoPrefix = '/';
