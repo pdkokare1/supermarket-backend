@@ -8,7 +8,9 @@
   },
   "scripts": {
     "start": "NODE_ENV=production node --max-old-space-size=1024 server.js",
-    "dev": "NODE_ENV=development nodemon server.js"
+    "dev": "NODE_ENV=development nodemon server.js",
+    "audit:prod": "npm audit --production --audit-level=high",
+    "audit:fix": "npm audit fix --production"
   },
   "dependencies": {
     "@fastify/under-pressure": "^8.3.0",
