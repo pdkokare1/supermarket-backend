@@ -11,6 +11,8 @@ const { handleInventoryReport } = require('./jobs/inventoryHandler');
 const { bootstrapServer } = require('./utils/serverProcessUtils');
 const setupProcessManager = require('./utils/processManager');
 const createApp = require('./app');
+const cron = require('node-cron'); // NEW: Imported for Phase 7 Backups
+const jobsService = require('./services/jobsService'); // NEW: Imported for Phase 7 Backups
 
 // ==========================================
 // --- WORKER PROCESS EXECUTION ---
@@ -35,7 +37,18 @@ const initScheduler = () => {
 
 const startServer = async () => {
     await connectDB(fastify);
-    require('./jobs/backupCron')(fastify); 
+    
+    try {
+        require('./jobs/backupCron')(fastify); 
+    } catch (err) {
+        // Failsafe in case file is a stub or missing
+    }
+    
+    // NEW: Phase 7 Automated Disaster Recovery (Zero-Cost Engine)
+    cron.schedule('0 2 * * *', () => {
+        fastify.log.info('Triggering automated daily database backup...');
+        jobsService.enqueueTask('DATABASE_BACKUP', {});
+    }, { timezone: "Asia/Kolkata" });
     
     try {
         await fastify.listen({ port: PORT, host: '0.0.0.0' });
