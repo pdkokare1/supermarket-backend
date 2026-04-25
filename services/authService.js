@@ -46,12 +46,14 @@ exports.setupDefaultAdmin = async (envSetupKey, queryKey, isProduction) => {
 
     const defaultPin = process.env.DEFAULT_ADMIN_PIN || '1234';
     const hashedPin = await securityService.hashPassword(defaultPin);
-    let admin = await User.findOne({ role: 'Admin' });
+    
+    // SCHEMA ALIGNMENT FIX: Query and assign the 'SuperAdmin' role 
+    let admin = await User.findOne({ role: 'SuperAdmin' });
     
     if (!admin) {
-        admin = new User({ name: 'Super Admin', username: 'admin', pin: hashedPin, role: 'Admin', isActive: true });
+        admin = new User({ name: 'Super Admin', username: 'admin', pin: hashedPin, role: 'SuperAdmin', isActive: true });
         await admin.save();
-        return { message: `Default Admin created. Username: 'admin', PIN: '${defaultPin}'` };
+        return { message: `Default SuperAdmin created. Username: 'admin', PIN: '${defaultPin}'` };
     } else {
         admin.pin = hashedPin;
         admin.username = 'admin'; 
@@ -64,7 +66,7 @@ exports.setupDefaultAdmin = async (envSetupKey, queryKey, isProduction) => {
             try { await redis.del(`cache:user:${admin._id.toString()}`); } catch (e) {}
         }
 
-        return { message: `Existing Admin FORCE RESET. All old sessions revoked. Username: 'admin', PIN: '${defaultPin}'` };
+        return { message: `Existing SuperAdmin FORCE RESET. All old sessions revoked. Username: 'admin', PIN: '${defaultPin}'` };
     }
 };
 
