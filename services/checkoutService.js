@@ -3,6 +3,8 @@
 const crypto = require('crypto'); // ENTERPRISE FIX: Native crypto for unique idempotency lock tracking
 const mongoose = require('mongoose');
 const Order = require('../models/Order');
+const Store = require('../models/Store'); // NEW: For routing logic
+const StoreInventory = require('../models/StoreInventory'); // NEW: For anti-tampering
 const customerService = require('./customerService'); 
 const inventoryService = require('./inventoryService'); 
 const notificationService = require('./notificationService'); 
@@ -125,16 +127,69 @@ exports.processExternalCheckout = async (payload, externalSession = null) => {
 
 exports.processOnlineCheckout = async (payload, externalSession = null) => {
     return await withIdempotency(payload.idempotencyKey, async () => {
-        const { customerName, customerPhone, deliveryAddress, items, totalAmount, deliveryType, scheduleTime, paymentMethod, notes, storeId } = payload;
+        const { customerName, customerPhone, deliveryAddress, items, deliveryType, scheduleTime, paymentMethod, notes, storeId } = payload;
         
         const coreLogic = async (session) => {
-            const orderData = { notes: notes || '', customerName, customerPhone, deliveryAddress, totalAmount, paymentMethod: paymentMethod || 'Cash on Delivery', deliveryType: deliveryType || 'Instant', scheduleTime: scheduleTime || 'ASAP' };
+            
+            // --- NEW: STRICT AGGREGATOR TENANT VALIDATION ---
+            if (!storeId) throw new AppError('Tenant Isolation Error: Target store must be specified for checkout', 400);
+
+            const store = await Store.findById(storeId).session(session).lean();
+            if (!store) throw new AppError('Target store not found', 404);
+
+            let calculatedTotal = 0;
+            const validatedItems = [];
+
+            // --- NEW: ANTI-TAMPER & ISOLATED CART ENFORCER ---
+            for (const item of items) {
+                // We completely ignore the frontend pricing and query the local store's actual database row
+                const localStock = await StoreInventory.findOne({
+                    storeId: storeId,
+                    masterProductId: item.productId, // Legacy payload mapping
+                    variantId: item.variantId
+                }).session(session).lean();
+
+                if (!localStock) {
+                    throw new AppError(`Isolated Cart Error: An item in your cart does not belong to the selected store. Please clear cart and checkout from one store at a time.`, 400);
+                }
+
+                calculatedTotal += (localStock.sellingPrice * item.qty);
+                
+                validatedItems.push({
+                    ...item,
+                    masterProductId: item.productId,
+                    storeInventoryId: localStock._id,
+                    price: localStock.sellingPrice // Lock in the strictly verified price
+                });
+            }
+
+            // --- NEW: SMART FULFILLMENT ROUTING ---
+            let assignedFulfillmentType = 'PICKUP';
+            if (deliveryType && deliveryType.toLowerCase().includes('delivery') || deliveryType === 'Instant') {
+                if (store.fulfillmentOptions && store.fulfillmentOptions.includes('STORE_DELIVERY')) {
+                    assignedFulfillmentType = 'STORE_DELIVERY'; // Send to Enterprise API
+                } else {
+                    assignedFulfillmentType = 'PLATFORM_DELIVERY'; // Send to our Rider Fleet
+                }
+            }
+
+            const orderData = { 
+                notes: notes || '', 
+                customerName, 
+                customerPhone, 
+                deliveryAddress, 
+                totalAmount: calculatedTotal, // Security Fix: Overriding frontend payload entirely
+                paymentMethod: paymentMethod || 'Cash on Delivery', 
+                deliveryType: deliveryType || 'Instant', 
+                scheduleTime: scheduleTime || 'ASAP',
+                fulfillmentType: assignedFulfillmentType,
+                fulfillmentStatus: 'Pending'
+            };
             
             // OPTIMIZATION: Customer profile update and Order Finalization are completely independent. 
-            // Running them in Promise.all saves an entire network round-trip.
             const [_, newOrder] = await Promise.all([
-                customerService.processOnlineCheckoutProfile(customerPhone, customerName, totalAmount, paymentMethod, session),
-                finalizeAndSaveOrder(session, items, storeId, 'ORD', orderData)
+                customerService.processOnlineCheckoutProfile(customerPhone, customerName, calculatedTotal, paymentMethod, session),
+                finalizeAndSaveOrder(session, validatedItems, storeId, 'ORD', orderData)
             ]);
 
             return newOrder;
@@ -144,7 +199,7 @@ exports.processOnlineCheckout = async (payload, externalSession = null) => {
 
         appEvents.emit('NEW_ORDER', { order: newOrder, storeId, source: 'Online' });
 
-        const msg = `DailyPick Order Received! 🛒\nOrder ID: ${newOrder.orderNumber}\nTotal: Rs ${totalAmount}\nDelivery: ${scheduleTime || 'ASAP'}\nThanks for shopping!`;
+        const msg = `DailyPick Order Received! 🛒\nOrder ID: ${newOrder.orderNumber}\nTotal: Rs ${newOrder.totalAmount}\nDelivery: ${scheduleTime || 'ASAP'}\nThanks for shopping!`;
         notificationService.sendWhatsAppMessage(customerPhone, msg).catch(() => {}); 
 
         return newOrder;
@@ -163,7 +218,8 @@ exports.processPosCheckout = async (payload, externalSession = null) => {
                 finalCustomerName = await customerService.processPosCheckoutProfile(customerPhone, totalAmount, paymentMethod, pointsRedeemed, session);
             }
 
-            const orderData = { registerId: registerId || null, notes: notes || '', customerName: finalCustomerName, customerPhone: customerPhone || '', deliveryAddress: 'In-Store Purchase', totalAmount, taxAmount: taxAmount || 0, discountAmount: discountAmount || 0, paymentMethod, splitDetails: splitDetails || { cash: 0, upi: 0 }, deliveryType: 'Instant', status: 'Completed' };
+            // POS inherently accepts the totalAmount payload to allow cashiers to do manual complex overrides and discounts on the floor
+            const orderData = { registerId: registerId || null, notes: notes || '', customerName: finalCustomerName, customerPhone: customerPhone || '', deliveryAddress: 'In-Store Purchase', totalAmount, taxAmount: taxAmount || 0, discountAmount: discountAmount || 0, paymentMethod, splitDetails: splitDetails || { cash: 0, upi: 0 }, deliveryType: 'Instant', status: 'Completed', fulfillmentType: 'PICKUP', fulfillmentStatus: 'Delivered' };
             return await finalizeAndSaveOrder(session, items, storeId, 'ORD', orderData);
         };
 
