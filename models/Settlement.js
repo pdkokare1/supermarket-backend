@@ -41,11 +41,22 @@ const settlementSchema = new mongoose.Schema({
     },
     status: {
         type: String,
-        enum: ['Pending', 'Processed', 'Disputed', 'Refunded'],
+        // EXPANDED: Added 'Paid' and 'Voided' to support the new automated controller logic
+        enum: ['Pending', 'Processed', 'Paid', 'Disputed', 'Refunded', 'Voided'],
         default: 'Pending'
     },
     settlementDate: {
         type: Date,
+        default: null
+    },
+    // NEW: Timestamp for when the manual or automated payout occurred
+    processedAt: {
+        type: Date,
+        default: null
+    },
+    // NEW: Stores the banking reference ID from the payment gateway
+    transactionId: {
+        type: String,
         default: null
     },
     // Links to the return/dispute flow
