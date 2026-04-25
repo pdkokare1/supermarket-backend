@@ -3,6 +3,13 @@
 
 const Settlement = require('../models/Settlement');
 const AppError = require('../utils/AppError');
+const Razorpay = require('razorpay');
+
+// NEW: Initialize Razorpay securely via Railway Variables
+const razorpay = new Razorpay({
+    key_id: process.env.RAZORPAY_KEY_ID || 'dummy_key',
+    key_secret: process.env.RAZORPAY_KEY_SECRET || 'dummy_secret',
+});
 
 // ==========================================
 // SUPERADMIN HQ SETTLEMENT ROUTES
@@ -42,12 +49,29 @@ exports.processSettlement = async (request, reply) => {
 
     const { id } = request.params;
     
-    const settlement = await Settlement.findById(id);
+    const settlement = await Settlement.findById(id).populate('storeId');
     if (!settlement) {
         throw new AppError('Settlement record not found', 404);
     }
 
-    // Mark as paid
+    // NEW: Attempt automated Razorpay Payout if keys are present
+    if (process.env.RAZORPAY_KEY_ID) {
+        try {
+            const transfer = await razorpay.transfers.create({
+                account: settlement.storeId.razorpayAccountId || 'acc_dummy', 
+                amount: settlement.amount * 100, // Razorpay expects paise (Rs * 100)
+                currency: "INR",
+                notes: { settlement_id: settlement._id.toString() }
+            });
+
+            settlement.transactionId = transfer.id;
+        } catch (error) {
+            request.server.log.error(`Razorpay Error: ${error.message}`);
+            throw new AppError('Gateway failed, but manual payout is still available.', 500);
+        }
+    }
+
+    // Mark as paid (Executes whether automated or manual)
     settlement.status = 'Paid';
     settlement.processedAt = new Date();
     await settlement.save();
