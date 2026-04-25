@@ -9,9 +9,12 @@ async function storeRoutes(fastify, options) {
     // ADMIN ONLY: Create a new store
     fastify.post('/api/stores', { preHandler: [fastify.authenticate, fastify.verifyAdmin] }, storeController.createStore);
 
-    // --- NEW: TENANT DISPUTE ENDPOINT ---
-    // STORE TENANT ONLY: Raise a dispute for a returned/damaged order to freeze automated payouts
+    // STORE TENANT ONLY: Raise a dispute
     fastify.post('/api/stores/dispute', { preHandler: [fastify.authenticate] }, storeController.raiseDispute);
+
+    // --- NEW: ENTERPRISE KEY GENERATOR ---
+    // SUPERADMIN ONLY: Generate Webhook Key for Enterprise Partners
+    fastify.post('/api/stores/:id/api-key', { preHandler: [fastify.authenticate, fastify.verifyAdmin] }, storeController.generateEnterpriseKey);
 }
 
 module.exports = storeRoutes;
