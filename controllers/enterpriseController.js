@@ -55,7 +55,7 @@ exports.updateFulfillmentStatus = async (request, reply) => {
         throw new AppError('Order not found or does not belong to this Enterprise Tenant', 404);
     }
 
-    // Trigger platform-wide event so the B2C Frontend (The Gamut) updates live for the customer
+    // Trigger platform-wide event so the B2C Frontend updates live for the customer
     appEvents.emit('ORDER_UPDATED', { 
         orderId: order._id, 
         status: order.fulfillmentStatus, 
@@ -69,26 +69,50 @@ exports.updateFulfillmentStatus = async (request, reply) => {
 // Called hourly or end-of-day by legacy ERPs to push thousands of price/stock changes
 exports.batchUpdateInventory = async (request, reply) => {
     const store = await authenticateEnterprise(request);
-    const { inventoryUpdates } = request.body; // Expects array of { variantId, stock, price }
+    const { inventoryUpdates } = request.body; 
 
     if (!Array.isArray(inventoryUpdates) || inventoryUpdates.length === 0) {
         throw new AppError('inventoryUpdates array is required and cannot be empty', 400);
     }
 
-    // Construct highly optimized bulk operations to prevent database locking
-    const bulkOps = inventoryUpdates.map(update => ({
-        updateOne: {
-            filter: { storeId: store._id, variantId: update.variantId },
-            update: { 
-                $set: { 
-                    stock: Number(update.stock) || 0,
-                    sellingPrice: Number(update.price) || 0
-                } 
+    // --- NEW: FAT FINGER GUARDRAIL (ANOMALY DETECTION) ---
+    const variantIds = inventoryUpdates.map(u => u.variantId);
+    const existingInventory = await StoreInventory.find({ storeId: store._id, variantId: { $in: variantIds } }).lean();
+
+    const bulkOps = [];
+    let blockedCount = 0;
+
+    for (const update of inventoryUpdates) {
+        const currentItem = existingInventory.find(inv => inv.variantId.toString() === update.variantId.toString());
+        
+        if (currentItem && currentItem.sellingPrice > 0) {
+            const dropPercentage = ((currentItem.sellingPrice - Number(update.price)) / currentItem.sellingPrice) * 100;
+            
+            // If price drops by more than 30%, reject this specific item update to prevent massive platform losses
+            if (dropPercentage > 30) {
+                console.warn(`[GUARDRAIL] Blocked >30% price drop for ${update.variantId}. Old: Rs ${currentItem.sellingPrice}, New: Rs ${update.price}`);
+                blockedCount++;
+                continue; // Skip safely without crashing the rest of the batch
             }
         }
-    }));
 
-    await StoreInventory.bulkWrite(bulkOps);
+        // Construct highly optimized bulk operations to prevent database locking
+        bulkOps.push({
+            updateOne: {
+                filter: { storeId: store._id, variantId: update.variantId },
+                update: { 
+                    $set: { 
+                        stock: Number(update.stock) || 0,
+                        sellingPrice: Number(update.price) || 0
+                    } 
+                }
+            }
+        });
+    }
+
+    if (bulkOps.length > 0) {
+        await StoreInventory.bulkWrite(bulkOps);
+    }
     
     // Update the health-check timestamp on the Store profile
     await Store.findByIdAndUpdate(store._id, { $set: { "apiIntegration.lastSync": new Date() } });
@@ -97,5 +121,10 @@ exports.batchUpdateInventory = async (request, reply) => {
     const { invalidateProductCache } = require('../services/productCacheService');
     await invalidateProductCache();
 
-    return { success: true, message: `Successfully synced ${bulkOps.length} inventory items.` };
+    let message = `Successfully synced ${bulkOps.length} inventory items.`;
+    if (blockedCount > 0) {
+        message += ` WARNING: ${blockedCount} items were blocked by the Anomaly Guardrail due to a price drop exceeding 30%.`;
+    }
+
+    return { success: true, message };
 };
