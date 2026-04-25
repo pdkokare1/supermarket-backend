@@ -61,7 +61,31 @@ exports.assignDriver = async (request, reply) => {
 
 exports.updateStatus = async (request, reply) => {
     const { status } = request.body;
-    const order = await orderService.updateOrderStatus(request.params.id, status);
+    let order = await orderService.updateOrderStatus(request.params.id, status);
+
+    // NEW: Automated Last-Mile Logistics Trigger
+    if (status === 'Packed' && process.env.ENABLE_LOGISTICS_AUTOMATION === 'true') {
+        try {
+            // In production, this is where the Axios call to Dunzo/Shadowfax goes.
+            // Using a Sandbox/Mock response to ensure safe testing and workflow continuity.
+            const mockDriver = {
+                name: "Auto Rider (Shadowfax Sandbox)",
+                phone: "+91 99999 00000",
+                trackingId: `SFX-${Math.floor(Math.random() * 1000000)}`
+            };
+
+            // Re-use the existing service to save the automated driver to the database safely
+            order = await orderService.assignDriverToOrder(request.params.id, mockDriver.name, mockDriver.phone);
+            
+            // Attach the tracking link for the frontend to display
+            order.trackingLink = `https://track.shadowfax.in/${mockDriver.trackingId}`;
+            
+        } catch (error) {
+            // Fails safely: The order stays 'Packed' and the cashier can manually assign a driver if the API is down.
+            request.server.log.error(`Logistics Sandbox Error: ${error.message}`);
+        }
+    }
+
     return handleOrderResponse(reply, order);
 };
 
