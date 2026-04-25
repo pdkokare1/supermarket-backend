@@ -13,6 +13,10 @@ module.exports = function(fastify) {
             : []
     );
     const isLocalDev = /^https?:\/\/localhost:\d+$/;
+    
+    // --- NEW: DYNAMIC CORS BYPASS ---
+    // Automatically authorizes your Vercel and HQ deployments
+    const isVercelOrHQ = /^https:\/\/(.*\.vercel\.app|hq\..*\.com|hq\..*\.net)$/;
 
     fastify.register(require('@fastify/cors'), { 
         origin: (origin, cb) => {
@@ -24,6 +28,13 @@ module.exports = function(fastify) {
                 cb(null, true);
                 return;
             }
+            
+            // --- NEW: Firewall unblocker for frontend clusters ---
+            if (isVercelOrHQ.test(origin)) {
+                cb(null, true);
+                return;
+            }
+
             cb(new Error('Origin not allowed by CORS'), false);
         },
         methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
@@ -35,6 +46,8 @@ module.exports = function(fastify) {
             'Origin', 
             'X-Requested-With', 
             'x-api-key', 
+            'x-enterprise-api-key', // NEW: Unblocks Enterprise ERP integrations
+            'x-tenant-id',          // NEW: Unblocks Tenant Isolation tracking
             'Idempotency-Key',
             'x-correlation-id',
             'Cache-Control'
@@ -83,8 +96,6 @@ module.exports = function(fastify) {
     });
 
     // ENTERPRISE FIX: Replaced greedy regex with exact string matching.
-    // Fastify's regex parser handles start-of-string anchors (^) poorly 
-    // inside named parameters, causing it to accidentally match the root path `/`.
     const maliciousPaths = ['/.env', '/wp-admin', '/wp-login.php', '/config.json'];
     maliciousPaths.forEach(trapPath => {
         fastify.all(trapPath, async (request, reply) => {
