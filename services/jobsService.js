@@ -57,6 +57,32 @@ exports.processTask = async (taskType, payload, retryCount = 0) => {
                 'Attached is the CSV export.',
                 [{ filename: 'orders_export.csv', content: csvContent }]
             );
+        } else if (taskType === 'DATABASE_BACKUP') {
+            // NEW: Phase 7 Automated Disaster Recovery (Zero-Cost Custom Engine)
+            const User = require('../models/User');
+            const Store = require('../models/Store');
+            const Settlement = require('../models/Settlement');
+            
+            const users = await User.find({}).lean();
+            const stores = await Store.find({}).lean();
+            const settlements = await Settlement.find({}).lean();
+            // Free tier safety limit: export the most recent 5,000 orders to avoid memory leaks
+            const recentOrders = await Order.find({}).sort({ createdAt: -1 }).limit(5000).lean();
+
+            const attachments = [
+                { filename: 'users_backup.json', content: JSON.stringify(users, null, 2) },
+                { filename: 'stores_backup.json', content: JSON.stringify(stores, null, 2) },
+                { filename: 'settlements_backup.json', content: JSON.stringify(settlements, null, 2) },
+                { filename: 'recent_orders_backup.json', content: JSON.stringify(recentOrders, null, 2) }
+            ];
+
+            await notificationService.executeAdminEmail(
+                null,
+                '🔒 The Gamut - Daily Database Snapshot',
+                '<p>Your automated daily database backup has completed successfully. The JSON snapshots are attached.</p>',
+                'Attached are the JSON backups.',
+                attachments
+            );
         }
     } catch (e) {
         console.error(`[BACKGROUND WORKER] Task ${taskType} Failed on attempt ${retryCount + 1}:`, e);
