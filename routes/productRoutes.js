@@ -21,6 +21,16 @@ async function productRoutes(fastify, options) {
     fastify.put('/api/products/:id/rtv', { preHandler: [fastify.authenticate, fastify.verifyAdmin], ...schemas.rtvSchema }, productController.rtvProduct);
     fastify.post('/api/products/transfer', { preHandler: [fastify.authenticate, fastify.verifyAdmin] }, productController.transferStock);
 
+    // ============================================================================
+    // B2B OMNICHANNEL ROUTES: THE GAMUT FRONTEND INTEGRATION
+    // ============================================================================
+    
+    // Fetch the global catalog to browse available master products
+    fastify.get('/api/b2b/catalog', { preHandler: [fastify.authenticate] }, productController.getGlobalCatalog);
+    
+    // 1-Click Onboard a master product into the tenant's local store
+    fastify.post('/api/b2b/onboard', { preHandler: [fastify.authenticate, fastify.verifyAdmin] }, productController.addMasterProductToStore);
+
 }
 
 module.exports = productRoutes;
