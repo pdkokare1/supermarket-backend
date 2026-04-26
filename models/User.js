@@ -7,9 +7,10 @@ const userSchema = new mongoose.Schema({
     pin: { type: String, required: true },
     tenantId: { type: mongoose.Schema.Types.ObjectId, ref: 'Store', default: null },
     defaultRegisterId: { type: mongoose.Schema.Types.ObjectId, ref: 'Register' },
+    // --- EDITED FOR PHASE 1: Added Enterprise and Brand roles ---
     role: { 
         type: String, 
-        enum: ['SuperAdmin', 'StoreAdmin', 'Cashier', 'Distributor', 'Delivery_Agent'], 
+        enum: ['SuperAdmin', 'StoreAdmin', 'Cashier', 'Distributor', 'Delivery_Agent', 'Enterprise', 'Brand'], 
         default: 'Cashier' 
     },
     
