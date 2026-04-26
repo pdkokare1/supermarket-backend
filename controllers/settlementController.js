@@ -59,7 +59,8 @@ exports.processSettlement = async (request, reply) => {
         try {
             const transfer = await razorpay.transfers.create({
                 account: settlement.storeId.razorpayAccountId || 'acc_dummy', 
-                amount: settlement.amount * 100, // Razorpay expects paise (Rs * 100)
+                // Mapped to safely fallback between legacy amount or the new strict schema netPayoutToStore
+                amount: (settlement.netPayoutToStore || settlement.amount || 0) * 100, // Razorpay expects paise (Rs * 100)
                 currency: "INR",
                 notes: { settlement_id: settlement._id.toString() }
             });
@@ -75,6 +76,16 @@ exports.processSettlement = async (request, reply) => {
     settlement.status = 'Paid';
     settlement.processedAt = new Date();
     await settlement.save();
+
+    // --- NEW: WEBSOCKET PUSH NOTIFICATION TO VENDOR ---
+    // Instantly alerts the specific store's dashboard that funds have cleared
+    if (request.server.broadcastToPOS) {
+        request.server.broadcastToPOS({
+            type: 'SETTLEMENT_PAID',
+            storeId: settlement.storeId._id ? settlement.storeId._id.toString() : settlement.storeId.toString(),
+            amount: settlement.netPayoutToStore || settlement.amount || 0
+        });
+    }
 
     return { success: true, message: 'Payout marked as complete', data: settlement };
 };
