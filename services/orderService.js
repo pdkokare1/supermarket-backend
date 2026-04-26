@@ -1,8 +1,10 @@
 /* services/orderService.js */
 
+const mongoose = require('mongoose'); // NEW: Required for strict ObjectId casting in isolation filters
 const Product = require('../models/Product');
 const Order = require('../models/Order');
 const Customer = require('../models/Customer');
+const Settlement = require('../models/Settlement'); // NEW: Financial Settlement tracking
 const { withTransaction } = require('../utils/dbUtils');
 const AppError = require('../utils/AppError');
 const auditService = require('./auditService'); 
@@ -61,6 +63,11 @@ exports.processPartialRefund = async (orderId, payload, user) => {
             if (diff > 0) parallelTasks.push(customerService.refundPayLaterCredit(order.customerPhone, diff, session));
         }
 
+        // --- NEW: LEDGER ADJUSTMENT ---
+        if (order.storeId) {
+            parallelTasks.push(Settlement.findOneAndUpdate({ orderId: orderId }, { status: 'Refunded', disputeReason: 'Partial Refund Processed' }, { session }));
+        }
+
         await Promise.all(parallelTasks);
 
         await auditService.logEvent({ action: 'PARTIAL_REFUND', targetType: 'Order', targetId: order._id.toString(), username: user.username, userId: user.id, details: { refundedItem: productId, qty: qtyToRefund }, session });
@@ -100,6 +107,11 @@ exports.processCancelOrder = async (orderId, reason, user) => {
         if (order.paymentMethod === 'Pay Later') {
             parallelTasks.push(customerService.refundPayLaterCredit(order.customerPhone, order.totalAmount, session));
         }
+
+        // --- NEW: LEDGER ADJUSTMENT ---
+        if (order.storeId) {
+            parallelTasks.push(Settlement.findOneAndUpdate({ orderId: orderId }, { status: 'Voided', disputeReason: `Order Cancelled: ${reason || 'User/Admin Action'}` }, { session }));
+        }
         
         await Promise.all(parallelTasks);
         
@@ -116,6 +128,11 @@ exports.getOrdersList = async (queryParams) => {
     let filter = {};
     if (queryParams.tab === 'Instant') filter.deliveryType = { $ne: 'Routine' };
     if (queryParams.tab === 'Routine') filter.deliveryType = 'Routine';
+
+    // --- NEW: TENANT ISOLATION SECURITY ---
+    if (queryParams.storeId) {
+        filter.storeId = new mongoose.Types.ObjectId(queryParams.storeId);
+    }
 
     const dateFilter = getFilterDates(queryParams.dateFilter);
     if (dateFilter) filter.createdAt = dateFilter;
@@ -163,8 +180,15 @@ exports.getOrdersList = async (queryParams) => {
     };
 };
 
-exports.getAllOrdersForExport = () => {
-    const cursor = Order.find()
+exports.getAllOrdersForExport = (queryParams = {}) => {
+    let filter = {};
+    
+    // --- NEW: TENANT ISOLATION SECURITY ---
+    if (queryParams.storeId) {
+        filter.storeId = new mongoose.Types.ObjectId(queryParams.storeId);
+    }
+
+    const cursor = Order.find(filter)
         .read('secondaryPreferred') 
         .select('orderNumber createdAt customerName customerPhone totalAmount status paymentMethod deliveryType')
         .sort({ createdAt: -1 })
