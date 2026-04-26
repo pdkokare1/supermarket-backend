@@ -29,9 +29,23 @@ exports.getPaginatedProducts = async (queryParams) => {
         if (queryParams.storeId) {
             const storeIdObj = new mongoose.Types.ObjectId(queryParams.storeId);
             
-            // Use the new localized query builder to handle stock filters (low, out, dead)
-            const inventoryMatch = buildInventoryQuery(queryParams, queryParams.storeId);
+            // --- NEW: B2B OMNICHANNEL SEARCH BRIDGE ---
+            // If the local store is searching by name/category, we must resolve those against the Master table first.
+            let masterIdFilter = {};
+            if (queryParams.search || (queryParams.category && queryParams.category !== 'All') || (queryParams.brand && queryParams.brand !== 'All')) {
+                const masterQuery = buildProductQuery({ ...queryParams, all: 'true' }); // Ignore master archive status for local search
+                const matchedMasters = await MasterProduct.find(masterQuery).select('_id').lean();
+                masterIdFilter = { $in: matchedMasters.map(m => m._id) };
+            }
             
+            // Use the localized query builder to handle stock filters (low, out, dead)
+            let inventoryMatch = buildInventoryQuery(queryParams, queryParams.storeId);
+            
+            // Inject the master ID filter if a text/category search was performed
+            if (Object.keys(masterIdFilter).length > 0) {
+                inventoryMatch.masterProductId = masterIdFilter;
+            }
+
             // Group the individual inventory SKUs back into logical products
             const pipeline = [
                 { $match: inventoryMatch },
@@ -68,7 +82,8 @@ exports.getPaginatedProducts = async (queryParams) => {
                         stock: localV ? localV.stock : 0,
                         lowStockThreshold: localV ? localV.lowStockThreshold : 5,
                         purchaseHistory: localV ? localV.purchaseHistory : [],
-                        returnHistory: localV ? localV.returnHistory : []
+                        returnHistory: localV ? localV.returnHistory : [],
+                        isActive: localV ? localV.isActive : false
                     };
                 });
                 
