@@ -56,6 +56,13 @@ const buildInventoryQuery = (queryObj, storeId) => {
         };
     }
 
+    // --- NEW: B2B Omnichannel Safety Check ---
+    // If the Master Query bridge found 0 matching master products, but a search term existed,
+    // we must force the inventory query to return 0 results instead of pulling everything.
+    if (queryObj.search && !filter.masterProductId && queryObj._masterSearchExecuted) {
+        filter.masterProductId = null; // Forces 0 matches
+    }
+
     return filter;
 };
 
