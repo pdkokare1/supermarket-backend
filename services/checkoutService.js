@@ -2,10 +2,11 @@
 
 const crypto = require('crypto'); // ENTERPRISE FIX: Native crypto for unique idempotency lock tracking
 const mongoose = require('mongoose');
-const axios = require('axios'); // NEW: For outbound enterprise webhooks
+const axios = require('axios'); // For outbound enterprise webhooks
 const Order = require('../models/Order');
-const Store = require('../models/Store'); // NEW: For routing logic
-const StoreInventory = require('../models/StoreInventory'); // NEW: For anti-tampering
+const Store = require('../models/Store'); // For routing logic
+const StoreInventory = require('../models/StoreInventory'); // For anti-tampering
+const Settlement = require('../models/Settlement'); // NEW: For Financial Ledger Automation
 const customerService = require('./customerService'); 
 const inventoryService = require('./inventoryService'); 
 const notificationService = require('./notificationService'); 
@@ -100,7 +101,7 @@ async function finalizeAndSaveOrder(session, items, storeId, orderPrefix, orderD
     return newOrder;
 }
 
-// --- NEW: B2B OMNICHANNEL WEBHOOK DISPATCHER ---
+// --- B2B OMNICHANNEL WEBHOOK DISPATCHER ---
 async function dispatchEnterpriseWebhook(store, order) {
     if (!store.apiIntegration || !store.apiIntegration.webhookUrl) return;
 
@@ -131,12 +132,38 @@ async function dispatchEnterpriseWebhook(store, order) {
             timeout: 5000 // Don't hang forever
         }).catch(err => {
             console.error(`[WEBHOOK FAILED] Failed to push order to Enterprise Store ${store.name}:`, err.message);
-            // In a production environment, you would log this to a dead-letter queue (e.g., SQS or BullMQ) to retry later.
         });
 
     } catch (error) {
         console.error(`[WEBHOOK ERROR] Internal error preparing webhook for store ${store.name}:`, error);
     }
+}
+
+// ==========================================
+// --- NEW: FINANCIAL SETTLEMENT HELPER ---
+// ==========================================
+async function generateSettlement(session, order, storeId) {
+    if (!storeId) return;
+    const store = await Store.findById(storeId).session(session).lean();
+    if (!store) return;
+
+    const commissionRate = store.financials?.commissionRate || 5.0; // Default 5% platform cut
+    const platformCommission = (order.totalAmount * commissionRate) / 100;
+    const gatewayFee = order.paymentMethod === 'Online' ? (order.totalAmount * 0.02) : 0; // standard 2% Razorpay processing fee
+    const netPayoutToStore = order.totalAmount - platformCommission - gatewayFee;
+
+    const settlement = new Settlement({
+        storeId: store._id,
+        orderId: order._id,
+        orderNumber: order.orderNumber,
+        totalOrderValue: order.totalAmount,
+        platformCommission,
+        gatewayFee,
+        netPayoutToStore,
+        status: 'Pending'
+    });
+    
+    await settlement.save({ session });
 }
 
 // ==========================================
@@ -155,7 +182,9 @@ exports.processExternalCheckout = async (payload, externalSession = null) => {
             const formattedNotes = `[${safeSource.toUpperCase()}] Ext ID: ${externalOrderId || 'N/A'}. ${notes || ''}`;
             const orderData = { notes: formattedNotes, customerName: customerName || `${safeSource} Customer`, customerPhone: customerPhone || '', deliveryAddress: deliveryAddress || `${safeSource} Pickup`, totalAmount, paymentMethod: paymentMethod || 'Prepaid External', deliveryType: 'Instant', status: 'Order Placed' };
             
-            return await finalizeAndSaveOrder(session, items, storeId, orderPrefix, orderData);
+            const newOrder = await finalizeAndSaveOrder(session, items, storeId, orderPrefix, orderData);
+            await generateSettlement(session, newOrder, storeId); // NEW: Lock the ledger
+            return newOrder;
         };
 
         const newOrder = externalSession ? await coreLogic(externalSession) : await withTransaction(coreLogic);
@@ -235,6 +264,8 @@ exports.processOnlineCheckout = async (payload, externalSession = null) => {
                 finalizeAndSaveOrder(session, validatedItems, storeId, 'ORD', orderData)
             ]);
 
+            await generateSettlement(session, newOrder, storeId); // NEW: Lock the ledger
+
             return newOrder;
         };
 
@@ -242,7 +273,7 @@ exports.processOnlineCheckout = async (payload, externalSession = null) => {
 
         appEvents.emit('NEW_ORDER', { order: newOrder, storeId, source: 'Online' });
 
-        // --- NEW: TRIGGER ENTERPRISE BRIDGE ---
+        // --- TRIGGER ENTERPRISE BRIDGE ---
         if (storeCache && newOrder.fulfillmentType === 'STORE_DELIVERY') {
             dispatchEnterpriseWebhook(storeCache, newOrder);
         }
@@ -268,7 +299,11 @@ exports.processPosCheckout = async (payload, externalSession = null) => {
 
             // POS inherently accepts the totalAmount payload to allow cashiers to do manual complex overrides and discounts on the floor
             const orderData = { registerId: registerId || null, notes: notes || '', customerName: finalCustomerName, customerPhone: customerPhone || '', deliveryAddress: 'In-Store Purchase', totalAmount, taxAmount: taxAmount || 0, discountAmount: discountAmount || 0, paymentMethod, splitDetails: splitDetails || { cash: 0, upi: 0 }, deliveryType: 'Instant', status: 'Completed', fulfillmentType: 'PICKUP', fulfillmentStatus: 'Delivered' };
-            return await finalizeAndSaveOrder(session, items, storeId, 'ORD', orderData);
+            
+            const newOrder = await finalizeAndSaveOrder(session, items, storeId, 'ORD', orderData);
+            await generateSettlement(session, newOrder, storeId); // NEW: Lock the ledger
+            
+            return newOrder;
         };
 
         const newOrder = externalSession ? await coreLogic(externalSession) : await withTransaction(coreLogic);
