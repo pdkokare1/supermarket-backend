@@ -2,6 +2,7 @@
 
 const crypto = require('crypto'); // ENTERPRISE FIX: Native crypto for unique idempotency lock tracking
 const mongoose = require('mongoose');
+const axios = require('axios'); // NEW: For outbound enterprise webhooks
 const Order = require('../models/Order');
 const Store = require('../models/Store'); // NEW: For routing logic
 const StoreInventory = require('../models/StoreInventory'); // NEW: For anti-tampering
@@ -99,6 +100,45 @@ async function finalizeAndSaveOrder(session, items, storeId, orderPrefix, orderD
     return newOrder;
 }
 
+// --- NEW: B2B OMNICHANNEL WEBHOOK DISPATCHER ---
+async function dispatchEnterpriseWebhook(store, order) {
+    if (!store.apiIntegration || !store.apiIntegration.webhookUrl) return;
+
+    try {
+        // Strip sensitive internal data before sending to partner
+        const payload = {
+            platformOrderId: order._id,
+            orderNumber: order.orderNumber,
+            customerName: order.customerName,
+            customerPhone: order.customerPhone,
+            deliveryAddress: order.deliveryAddress,
+            totalAmount: order.totalAmount,
+            paymentMethod: order.paymentMethod,
+            notes: order.notes,
+            items: order.items.map(i => ({
+                variantId: i.variantId,
+                qty: i.qty,
+                price: i.price
+            }))
+        };
+
+        // Fire and forget. We don't await this so it doesn't block the customer checkout flow.
+        axios.post(store.apiIntegration.webhookUrl, payload, {
+            headers: {
+                'Content-Type': 'application/json',
+                'x-gamut-signature': store.apiIntegration.apiSecretKey // Simple auth for the partner to verify us
+            },
+            timeout: 5000 // Don't hang forever
+        }).catch(err => {
+            console.error(`[WEBHOOK FAILED] Failed to push order to Enterprise Store ${store.name}:`, err.message);
+            // In a production environment, you would log this to a dead-letter queue (e.g., SQS or BullMQ) to retry later.
+        });
+
+    } catch (error) {
+        console.error(`[WEBHOOK ERROR] Internal error preparing webhook for store ${store.name}:`, error);
+    }
+}
+
 // ==========================================
 // --- CHECKOUT OPERATIONS ---
 // ==========================================
@@ -128,19 +168,22 @@ exports.processExternalCheckout = async (payload, externalSession = null) => {
 exports.processOnlineCheckout = async (payload, externalSession = null) => {
     return await withIdempotency(payload.idempotencyKey, async () => {
         const { customerName, customerPhone, deliveryAddress, items, deliveryType, scheduleTime, paymentMethod, notes, storeId } = payload;
+        let storeCache = null; // Store locally so we can access it outside the coreLogic scope
         
         const coreLogic = async (session) => {
             
-            // --- NEW: STRICT AGGREGATOR TENANT VALIDATION ---
+            // --- STRICT AGGREGATOR TENANT VALIDATION ---
             if (!storeId) throw new AppError('Tenant Isolation Error: Target store must be specified for checkout', 400);
 
             const store = await Store.findById(storeId).session(session).lean();
             if (!store) throw new AppError('Target store not found', 404);
+            
+            storeCache = store;
 
             let calculatedTotal = 0;
             const validatedItems = [];
 
-            // --- NEW: ANTI-TAMPER & ISOLATED CART ENFORCER ---
+            // --- ANTI-TAMPER & ISOLATED CART ENFORCER ---
             for (const item of items) {
                 // We completely ignore the frontend pricing and query the local store's actual database row
                 const localStock = await StoreInventory.findOne({
@@ -163,7 +206,7 @@ exports.processOnlineCheckout = async (payload, externalSession = null) => {
                 });
             }
 
-            // --- NEW: SMART FULFILLMENT ROUTING ---
+            // --- SMART FULFILLMENT ROUTING ---
             let assignedFulfillmentType = 'PICKUP';
             if (deliveryType && deliveryType.toLowerCase().includes('delivery') || deliveryType === 'Instant') {
                 if (store.fulfillmentOptions && store.fulfillmentOptions.includes('STORE_DELIVERY')) {
@@ -198,6 +241,11 @@ exports.processOnlineCheckout = async (payload, externalSession = null) => {
         const newOrder = externalSession ? await coreLogic(externalSession) : await withTransaction(coreLogic);
 
         appEvents.emit('NEW_ORDER', { order: newOrder, storeId, source: 'Online' });
+
+        // --- NEW: TRIGGER ENTERPRISE BRIDGE ---
+        if (storeCache && newOrder.fulfillmentType === 'STORE_DELIVERY') {
+            dispatchEnterpriseWebhook(storeCache, newOrder);
+        }
 
         const msg = `DailyPick Order Received! 🛒\nOrder ID: ${newOrder.orderNumber}\nTotal: Rs ${newOrder.totalAmount}\nDelivery: ${scheduleTime || 'ASAP'}\nThanks for shopping!`;
         notificationService.sendWhatsAppMessage(customerPhone, msg).catch(() => {}); 
