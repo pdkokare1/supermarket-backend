@@ -21,6 +21,18 @@ const masterProductSchema = new mongoose.Schema({
     searchTags: { type: String, default: '' },
     isActive: { type: Boolean, default: true },
     
+    // --- NEW: PHASE 1 CROWDSOURCED CATALOG PIPELINE ---
+    status: { 
+        type: String, 
+        enum: ['PENDING_APPROVAL', 'ACTIVE', 'REJECTED'], 
+        default: 'PENDING_APPROVAL' 
+    },
+    submittedBy: { 
+        type: mongoose.Schema.Types.ObjectId, 
+        ref: 'User', 
+        default: null 
+    },
+    
     variants: [masterVariantSchema] 
 }, { timestamps: true });
 
@@ -29,5 +41,7 @@ masterProductSchema.index({ name: 1, brand: 1 });
 masterProductSchema.index({ searchTags: 1 });
 masterProductSchema.index({ "variants.sku": 1 });
 masterProductSchema.index({ name: 'text', brand: 'text', searchTags: 'text' });
+// NEW INDEX: For fast querying of the Super-Admin Approval Queue
+masterProductSchema.index({ status: 1 });
 
 module.exports = mongoose.model('MasterProduct', masterProductSchema);
