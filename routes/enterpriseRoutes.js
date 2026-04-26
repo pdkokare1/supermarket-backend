@@ -2,6 +2,7 @@
 'use strict';
 
 const enterpriseController = require('../controllers/enterpriseController');
+const productController = require('../controllers/productController');
 
 module.exports = async function (fastify, opts) {
     // NOTE: These routes use a custom API Key header (x-enterprise-api-key) 
@@ -15,5 +16,19 @@ module.exports = async function (fastify, opts) {
     // Endpoint for partners to push massive stock/price updates
     fastify.post('/webhooks/inventory-sync', async (request, reply) => {
         return await enterpriseController.batchUpdateInventory(request, reply);
+    });
+
+    // ============================================================================
+    // ENTERPRISE B2B ROUTES: ERP SYSTEM INTEGRATION
+    // ============================================================================
+
+    // Allow ERPs to pull the global master catalog to map their internal SKUs
+    fastify.get('/api/enterprise/catalog', async (request, reply) => {
+        return await productController.getGlobalCatalog(request, reply);
+    });
+
+    // Allow ERPs to programmatically map and onboard a product to their specific store
+    fastify.post('/api/enterprise/onboard', async (request, reply) => {
+        return await productController.addMasterProductToStore(request, reply);
     });
 };
