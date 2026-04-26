@@ -34,6 +34,13 @@ const storeSchema = new mongoose.Schema({
         upiId: { type: String, default: '' }
     },
 
+    // --- NEW: PHASE 1 DYNAMIC COMMERCIAL TERMS ---
+    // Calculates platform cut and payouts strictly in Rs
+    commercialTerms: {
+        commissionType: { type: String, enum: ['PERCENTAGE', 'FLAT_FEE', 'SUBSCRIPTION'], default: 'PERCENTAGE' },
+        commissionValue: { type: Number, default: 5.0, min: 0 } 
+    },
+
     // --- NEW: MARKETPLACE TRUST ---
     metrics: {
         rating: { type: Number, default: 0, min: 0, max: 5 },
