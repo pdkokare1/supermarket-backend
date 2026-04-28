@@ -4,6 +4,7 @@
 const Order = require('../models/Order');
 const Store = require('../models/Store');
 const StoreInventory = require('../models/StoreInventory');
+const MasterProduct = require('../models/MasterProduct'); // --- ADDED FOR PHASE 2 ---
 const AppError = require('../utils/AppError');
 const appEvents = require('../utils/eventEmitter');
 
@@ -127,4 +128,73 @@ exports.batchUpdateInventory = async (request, reply) => {
     }
 
     return { success: true, message };
+};
+
+// --- NEW: PHASE 2 UPSERT INVENTORY CONTROLLER ---
+// Cross-references the Gamut Master Catalog and upserts local inventory.
+exports.upsertCatalogAndInventory = async (request, reply) => {
+    const store = await authenticateEnterprise(request);
+    // Payload expects: { products: [{ sku: "8901234567890", stock: 50, priceRs: 2500 }, ...] }
+    const { products } = request.body; 
+
+    if (!Array.isArray(products) || products.length === 0) {
+        throw new AppError('products array is required and cannot be empty', 400);
+    }
+
+    const bulkOps = [];
+    let addedNewCount = 0;
+    let updatedCount = 0;
+    let notFoundInMasterCount = 0;
+
+    for (const item of products) {
+        // Find the global product variant by SKU (Barcode)
+        const masterDoc = await MasterProduct.findOne({ "variants.sku": item.sku, isActive: true });
+        
+        if (!masterDoc) {
+            console.warn(`[CATALOG MISSING] SKU ${item.sku} not found in Master Catalog.`);
+            notFoundInMasterCount++;
+            continue; // Skip to next item, wait for internal team to approve/add the MasterProduct
+        }
+
+        // Locate the exact sub-variant ID to attach to the store's local pool
+        const variant = masterDoc.variants.find(v => v.sku === item.sku);
+
+        if (variant) {
+            bulkOps.push({
+                updateOne: {
+                    filter: { 
+                        storeId: store._id, 
+                        masterProductId: masterDoc._id, 
+                        variantId: variant._id 
+                    },
+                    update: {
+                        $set: {
+                            stock: Number(item.stock) || 0,
+                            // Ensure the value is tracked in Rs locally for accurate checkout calculation
+                            sellingPrice: Number(item.priceRs) || 0 
+                        }
+                    },
+                    upsert: true // Insert if it's a newly stocked item, update if existing
+                }
+            });
+        }
+    }
+
+    if (bulkOps.length > 0) {
+        const result = await StoreInventory.bulkWrite(bulkOps);
+        updatedCount = result.modifiedCount || 0;
+        addedNewCount = result.upsertedCount || 0;
+    }
+
+    // Ping the health-check
+    await Store.findByIdAndUpdate(store._id, { $set: { "apiIntegration.lastSync": new Date() } });
+
+    // Clear platform cache for B2C users
+    const { invalidateProductCache } = require('../services/productCacheService');
+    await invalidateProductCache();
+
+    return { 
+        success: true, 
+        message: `B2B Sync Complete. Updated existing: ${updatedCount}, Onboarded new: ${addedNewCount}. SKUs waiting on Master Catalog approval: ${notFoundInMasterCount}.` 
+    };
 };
