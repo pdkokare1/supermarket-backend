@@ -4,17 +4,25 @@ const mongoose = require('mongoose');
 const userSchema = new mongoose.Schema({
     name: { type: String, required: true },
     username: { type: String, required: true, unique: true },
-    pin: { type: String, required: true },
+    // --- EDITED FOR PHASE 4: Dual Auth System ---
+    // StoreManagers use a complex password, Cashiers use a fast 4-digit PIN
+    pin: { type: String, required: true }, 
+    
+    // --- NEW: TENANT ISOLATION ---
+    // Links this user to a specific Enterprise Store (e.g., Reliance Smart - Pune)
+    // If null, they are an HQ SuperAdmin
+    storeId: { type: mongoose.Schema.Types.ObjectId, ref: 'Store', default: null, index: true },
     tenantId: { type: mongoose.Schema.Types.ObjectId, ref: 'Store', default: null },
     defaultRegisterId: { type: mongoose.Schema.Types.ObjectId, ref: 'Register' },
-    // --- EDITED FOR PHASE 1: Added Enterprise and Brand roles ---
+    
+    // --- EDITED: STRICT RBAC HIERARCHY ---
     role: { 
         type: String, 
-        enum: ['SuperAdmin', 'StoreAdmin', 'Cashier', 'Distributor', 'Delivery_Agent', 'Enterprise', 'Brand'], 
+        enum: ['SuperAdmin', 'StoreManager', 'StoreAdmin', 'Cashier', 'Distributor', 'Delivery_Agent', 'Enterprise', 'Brand'], 
         default: 'Cashier' 
     },
     
-    // --- NEW: FLEET GEOSPATIAL TRACKING ---
+    // --- EXISTING: FLEET GEOSPATIAL TRACKING ---
     liveLocation: {
         lat: { type: Number, default: null },
         lng: { type: Number, default: null },
@@ -57,8 +65,5 @@ userSchema.post('findOneAndUpdate', function(doc) {
         } catch (e) { console.warn('[CACHE] Failed to clear user cache', e.message); }
     });
 });
-
-// Geospatial index for hyper-fast Rider assignment
-userSchema.index({ "liveLocation.lat": 1, "liveLocation.lng": 1 });
 
 module.exports = mongoose.model('User', userSchema);
