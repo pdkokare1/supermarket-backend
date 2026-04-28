@@ -3,34 +3,44 @@
 
 require('dotenv').config();
 const mongoose = require('mongoose');
-const MasterProduct = require('../models/MasterProduct');
-const StoreInventory = require('../models/StoreInventory');
-const Store = require('../models/Store');
-const Order = require('../models/Order');
+
+// MODIFIED: Pointing to the new B2B Omnichannel Master Catalog
+const MasterProduct = require('../models/MasterProduct'); 
+const StoreInventory = require('../models/StoreInventory'); // Added for Omni-Cart
+const Store = require('../models/Store'); // Added for Geospatial
+const Order = require('../models/Order'); // Added for HQ Ledger
 
 async function buildIndexes() {
     try {
-        console.log('🔗 Connecting to Production Database...');
-        await mongoose.connect(process.env.MONGODB_URI);
-        console.log('✅ Connected successfully.\n');
+        await mongoose.connect(process.env.MONGO_URI);
+        console.log('Connected to MongoDB.');
 
-        console.log('⏳ Building Text Indexes for AI Catalog...');
-        // Allows for ultra-fast full-text search on the Master Catalog
+        console.log('Building Text Indexes for The Gamut Master Catalog...');
+        
+        // This command forces MongoDB to build a text index on name, brand, and searchTags.
+        // We assign weights so that a match in 'name' scores higher than a match in 'searchTags'.
         await MasterProduct.collection.createIndex(
-            { name: "text", brand: "text", searchTags: "text", category: "text" },
-            { name: "Global_Catalog_Text_Index", background: true }
+            { 
+                name: "text", 
+                brand: "text", 
+                searchTags: "text" 
+            },
+            { 
+                weights: { name: 10, brand: 5, searchTags: 2 },
+                name: "Master_Catalog_Search_Index"
+            }
         );
-        console.log('✅ Master Catalog text indexes applied.');
 
-        console.log('⏳ Building Geospatial Indexes for B2C Location...');
+        // --- NEW: APPENDED INDEXES FOR PRODUCTION LAUNCH ---
+
+        console.log('Building Geospatial Indexes for B2C Location...');
         // Allows the B2C App to find nearby stores using lat/lng coordinates
         await Store.collection.createIndex(
             { location: "2dsphere" },
             { name: "Store_Location_2dsphere", background: true }
         );
-        console.log('✅ Store Geospatial indexes applied.');
 
-        console.log('⏳ Building Compound Indexes for Omni-Cart Engine...');
+        console.log('Building Compound Indexes for Omni-Cart Engine...');
         // Crucial for performance: Allows the backend to instantly verify stock across multiple stores
         await StoreInventory.collection.createIndex(
             { storeId: 1, masterProductId: 1, variantId: 1 },
@@ -40,9 +50,8 @@ async function buildIndexes() {
             { storeId: 1, stock: 1 },
             { name: "Low_Stock_Scanner", background: true }
         );
-        console.log('✅ Omni-Cart Compound indexes applied.');
 
-        console.log('⏳ Building Ledger & Order Indexes...');
+        console.log('Building Ledger & Order Indexes...');
         // Speeds up the HQ financial dashboard when querying large order volumes
         await Order.collection.createIndex(
             { storeId: 1, status: 1, createdAt: -1 },
@@ -52,12 +61,11 @@ async function buildIndexes() {
             { splitShipmentGroupId: 1 },
             { name: "Omni_Group_Tracker", background: true, sparse: true }
         );
-        console.log('✅ Ledger indexes applied.\n');
 
-        console.log('🚀 ALL PRODUCTION INDEXES BUILT SUCCESSFULLY.');
+        console.log('Indexes built successfully! Global catalog search is now heavily optimized.');
         process.exit(0);
     } catch (error) {
-        console.error('❌ FATAL ERROR building indexes:', error);
+        console.error('Error building indexes:', error);
         process.exit(1);
     }
 }
