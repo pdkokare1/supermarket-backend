@@ -37,4 +37,10 @@ module.exports = async function (fastify, opts) {
     fastify.post('/api/enterprise/inventory/upsert', async (request, reply) => {
         return await enterpriseController.upsertCatalogAndInventory(request, reply);
     });
+
+    // --- NEW: B2B PROCUREMENT AUTOMATION ---
+    // Shop instantly drafts a PO dynamically routed to the cheapest local distributor
+    fastify.post('/api/enterprise/procurement/create-po', async (request, reply) => {
+        return await enterpriseController.createB2BPurchaseOrder(request, reply);
+    });
 };
