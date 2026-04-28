@@ -7,7 +7,8 @@ const appEvents = require('../utils/eventEmitter'); // Added for event-driven up
 const cacheUtils = require('../utils/cacheUtils'); // OPTIMIZATION: Added for caching
 
 exports.createStaff = async (payload) => {
-    const { name, username, pin, role } = payload;
+    // --- EDITED: Added storeId for Tenant Isolation ---
+    const { name, username, pin, role, storeId } = payload;
     
     if (!name || !username || !pin) {
         throw new AppError('Missing required fields.', 400);
@@ -25,6 +26,7 @@ exports.createStaff = async (payload) => {
         username: username.trim(),
         pin: hashedPin,
         role: role || 'Cashier',
+        storeId: storeId || null, // Link to the specific enterprise branch
         isActive: true
     });
 
@@ -34,9 +36,9 @@ exports.createStaff = async (payload) => {
     await cacheUtils.deleteKey('staff:all');
 
     // EVENT: Notify system of new staff creation
-    appEvents.emit('STAFF_CREATED', { username: newUser.username });
+    appEvents.emit('STAFF_CREATED', { username: newUser.username, role: newUser.role });
 
-    return { name: newUser.name, username: newUser.username, role: newUser.role };
+    return { name: newUser.name, username: newUser.username, role: newUser.role, storeId: newUser.storeId };
 };
 
 exports.getAllStaff = async () => {
@@ -47,6 +49,7 @@ exports.getAllStaff = async () => {
     if (!staffList) {
         staffList = await User.find({ isActive: true })
             .select('-pin -tokenVersion -lockUntil -failedLoginAttempts')
+            .populate('storeId', 'name') // Pull in the store name for UI mapping
             .lean();
         await cacheUtils.setCachedData(CACHE_KEY, staffList, 86400); // Cache for 24 hours (rarely changes)
     }
