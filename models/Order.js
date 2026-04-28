@@ -64,6 +64,11 @@ const orderSchema = new mongoose.Schema({
         type: String,
         default: null // Links multiple backend orders into one frontend B2C Cart
     },
+    // --- NEW: PHASE 3 OMNI-CART TOTAL ---
+    masterCartTotalRs: {
+        type: Number,
+        default: null // Tracks the total Rs value of the entire combined multi-store cart
+    },
     partnerTrackingId: {
         type: String,
         default: null // For Croma / Reliance API integrations
