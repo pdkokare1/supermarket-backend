@@ -39,6 +39,18 @@ const settlementSchema = new mongoose.Schema({
         required: true,
         min: 0
     },
+    
+    // --- NEW: PHASE 3 DYNAMIC LEDGER TRACKING ---
+    commissionTypeApplied: { 
+        type: String, 
+        enum: ['PERCENTAGE', 'FLAT_FEE', 'SUBSCRIPTION'], 
+        default: 'PERCENTAGE' 
+    },
+    currency: {
+        type: String,
+        default: 'Rs'
+    },
+
     status: {
         type: String,
         // EXPANDED: Added 'Paid' and 'Voided' to support the new automated controller logic
