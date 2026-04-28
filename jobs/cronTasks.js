@@ -18,6 +18,9 @@ const auditService = require('../services/auditService');
 const analyticsService = require('../services/analyticsService'); 
 const notificationService = require('../services/notificationService'); 
 
+// --- NEW IMPORT FOR INGESTION WORKER ---
+const inventoryHandler = require('./inventoryHandler');
+
 cloudinary.config({
     cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
     api_key: process.env.CLOUDINARY_API_KEY,
@@ -32,48 +35,18 @@ const CronLock = mongoose.models.CronLock || mongoose.model('CronLock', lockSche
 // ==========================================
 
 async function runWithLock(jobName, fastify, task) {
-    // OPTIMIZATION: Enterprise Redis Distributed Lock
-    // Uses atomic SET NX (Not eXists) to guarantee only ONE core in the cluster acquires the lock.
     const lockKey = `cron_lock:${jobName}`;
-    const lockTTLSeconds = 10 * 60; // 10 minutes max lock time
-    
+    const lockTTLSeconds = 10 * 60; 
     try {
         const acquired = await fastify.redis.set(lockKey, 'LOCKED', 'EX', lockTTLSeconds, 'NX');
-        
         if (!acquired) {
             fastify.log.info(`[CRON] ${jobName} skipped (locked by another cluster worker via Redis).`);
             return;
         }
-
-        // DEPRECATION CONSULTATION:
-        // The MongoDB locking logic below has been replaced by the Redis lock above for faster, atomic operations.
-        // It is commented out rather than deleted per your strict requirements.
-        /*
-        await CronLock.updateOne({ jobName }, { $setOnInsert: { jobName, lockedAt: null } }, { upsert: true }).catch(() => true);
-
-        const tenMinsAgo = new Date(Date.now() - 10 * 60 * 1000);
-        const lock = await CronLock.findOneAndUpdate(
-            { jobName, $or: [{ lockedAt: null }, { lockedAt: { $lt: tenMinsAgo } }] },
-            { $set: { lockedAt: new Date() } }
-        );
-
-        if (!lock) {
-            fastify.log.info(`[CRON] ${jobName} skipped (locked by another server instance).`);
-            return; 
-        }
-        */
-
         await task();
-        
-        // MongoDB lock release (Commented out)
-        // await CronLock.updateOne({ jobName }, { $set: { lockedAt: null } });
-
     } catch (error) {
         fastify.log.error(`[CRON] Lock Error in ${jobName}:`, error);
-        // MongoDB error fallback (Commented out)
-        // if (CronLock) await CronLock.updateOne({ jobName }, { $set: { lockedAt: null } }).catch(() => true);
     } finally {
-        // OPTIMIZATION: Guarantee lock release via Redis even if the task fails
         await fastify.redis.del(lockKey).catch(() => true);
     }
 }
@@ -87,38 +60,21 @@ const createBackupFile = async (model, filename, query = {}) => {
     gzipStream.write('[\n');
     
     const cursor = model.find(query).lean().cursor();
-    
     let isFirst = true;
-    let docCount = 0; // ENTERPRISE FIX: Tracking iteration count for CPU batching
+    let docCount = 0; 
     
     for await (const doc of cursor) {
         docCount++;
-        
         if (!isFirst) {
             const canWriteComma = gzipStream.write(',\n');
             if (!canWriteComma) await new Promise(resolve => gzipStream.once('drain', resolve));
         }
-        
-        // DEPRECATION CONSULTATION:
-        // Ignoring backpressure causes silent Out-Of-Memory crashes.
-        /*
-        gzipStream.write(JSON.stringify(doc));
-        isFirst = false;
-        counter++;
-        if (counter % 100 === 0) {
-            await new Promise(resolve => setImmediate(resolve));
-        }
-        */
-
-        // OPTIMIZED: Strict memory backpressure handling
         const canWrite = gzipStream.write(JSON.stringify(doc));
         isFirst = false;
         
         if (!canWrite) {
             await new Promise(resolve => gzipStream.once('drain', resolve));
         } else if (docCount % 500 === 0) {
-            // ENTERPRISE FIX: Yield to event loop occasionally to keep main thread responsive,
-            // but not on every single document to save CPU context switching overhead.
             await new Promise(resolve => setImmediate(resolve));
         }
     }
@@ -154,7 +110,6 @@ async function runExpiryMonitor(fastify) {
     fastify.log.info('Running 12:00 AM Expiry & Wastage Monitor CRON Job...');
     try {
         const expiringItems = await inventoryService.getExpiringProducts(7);
-
         if (expiringItems.length > 0) {
             fastify.log.warn(`[WASTAGE WARNING] ${expiringItems.length} items expiring within 7 days.`);
             if (fastify.broadcastToPOS) {
@@ -175,7 +130,6 @@ async function runDataRetentionCleanup(fastify) {
     try {
         const deletedOrders = await jobsService.deleteOldCancelledOrders(90);
         const deletedLogs = await auditService.deleteOldAuditLogs(90);
-
         fastify.log.info(`[CLEANUP] Deleted ${deletedOrders.deletedCount} old cancelled orders and ${deletedLogs.deletedCount} old audit logs.`);
     } catch(err) {
         fastify.log.error('Data Retention Cleanup Error:', err);
@@ -283,7 +237,6 @@ async function runEODBackup(fastify) {
         } catch (cloudinaryErr) {
             fastify.log.error('Cloudinary Backup Failed:', cloudinaryErr);
             emailAppend = `\n\n(Warning: Secure Cloudinary Backups failed. Check API Keys.)`;
-            
             await notificationService.sendAdminWhatsApp(fastify, `CRITICAL: Cloudinary Backup Failed for ${dateString}.`);
         } finally {
             if (productsPath && fs.existsSync(productsPath)) fs.unlinkSync(productsPath);
@@ -325,6 +278,29 @@ async function runCloudinaryCleanup(fastify) {
     }
 }
 
+// --- NEW: PHASE 1 MASSIVE DATA INGESTION PIPELINE ---
+// Scheduled job to pull legacy ERP dumps from a specific URL or S3 bucket overnight
+async function runEnterpriseIngestionSync(fastify) {
+    fastify.log.info('Running 2:00 AM Enterprise Ingestion Sync...');
+    try {
+        // In production, this would query a configuration table to find active Enterprise SFTP drops.
+        // Firing the background worker without blocking the event loop:
+        const mockPayload = {
+            storeId: process.env.ENTERPRISE_SYNC_STORE_ID || 'DEFAULT_ENTERPRISE_ID',
+            fileUrl: process.env.ENTERPRISE_SYNC_CSV_URL || 'https://example.com/daily-dump.csv'
+        };
+
+        if (mockPayload.fileUrl !== 'https://example.com/daily-dump.csv') {
+            await inventoryHandler.processEnterpriseBatchUpload(fastify, mockPayload);
+        } else {
+            fastify.log.info('[CRON] Ingestion Sync skipped: No active CSV URL configured in environment variables.');
+        }
+
+    } catch(err) {
+        fastify.log.error('Enterprise Ingestion Sync Error:', err);
+    }
+}
+
 module.exports = {
     runWithLock,
     runExpiryMonitor,
@@ -332,5 +308,6 @@ module.exports = {
     runRoutineDeliveries,
     runDailyInventory,
     runEODBackup,
-    runCloudinaryCleanup
+    runCloudinaryCleanup,
+    runEnterpriseIngestionSync
 };
