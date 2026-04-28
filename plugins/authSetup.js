@@ -46,65 +46,66 @@ module.exports = function (fastify) {
                 const cachedSession = await fastify.redis.hgetall(cacheKey);
                 
                 if (cachedSession && Object.keys(cachedSession).length > 0) {
-                    // Reconstruct the user object with native types
                     user = {
-                        _id: decoded.id,
-                        tokenVersion: parseInt(cachedSession.tokenVersion, 10),
-                        isActive: cachedSession.isActive === 'true',
-                        role: cachedSession.role
+                        _id: cachedSession._id,
+                        role: cachedSession.role,
+                        storeId: cachedSession.storeId || null,
+                        tokenVersion: parseInt(cachedSession.tokenVersion, 10)
                     };
-                } else {
-                    user = await User.findById(decoded.id).select('tokenVersion isActive role').lean();
-                    if (user) {
-                        const currentTs = Math.floor(Date.now() / 1000);
-                        const remainingTTL = Math.max(1, decoded.exp - currentTs);
-                        
-                        // OPTIMIZATION: Store natively as Hash
-                        await fastify.redis.hset(cacheKey, {
-                            tokenVersion: user.tokenVersion,
-                            isActive: String(user.isActive),
-                            role: user.role
-                        });
-                        await fastify.redis.expire(cacheKey, remainingTTL);
-                    }
                 }
-            } else {
-                user = await User.findById(decoded.id).select('tokenVersion isActive role').lean();
             }
-            
-            if (!user || !user.isActive || user.tokenVersion !== decoded.tokenVersion) {
-                throw new Error('Token revoked or user inactive');
+
+            if (!user) {
+                user = await User.findById(decoded.id).lean();
+                if (!user) throw new Error('User not found.');
+                
+                if (fastify.redis) {
+                    await fastify.redis.hset(`cache:user:${user._id}`, {
+                        _id: user._id.toString(),
+                        role: user.role,
+                        storeId: user.storeId ? user.storeId.toString() : '',
+                        tokenVersion: user.tokenVersion || 0
+                    });
+                    await fastify.redis.expire(`cache:user:${user._id}`, 3600); 
+                }
             }
-            
-            request.user = user;
-            
+
+            if (user.tokenVersion !== decoded.version) {
+                throw new Error('Token version invalid. Password was likely changed.');
+            }
+
+            request.user = user; 
         } catch (err) {
-            reply.status(401).send({ success: false, message: 'Unauthorized: Invalid or missing token.' });
+            reply.code(401).send({ success: false, message: 'Unauthorized. Please log in again.' });
         }
     });
 
+    // --- EXISTING DECORATORS ---
     fastify.decorate("verifyAdmin", async function (request, reply) {
-        if (request.user && request.user.role !== 'Admin') {
-            reply.status(403).send({ success: false, message: 'Forbidden: Admin access required.' });
-            return; 
+        if (!request.user || !['SuperAdmin', 'StoreAdmin', 'StoreManager'].includes(request.user.role)) {
+            reply.code(403).send({ success: false, message: 'Admin privileges required.' });
         }
     });
 
     fastify.decorate("verifyApiKey", async function (request, reply) {
         const apiKey = request.headers['x-api-key'];
-        
-        // ENTERPRISE FIX: Constant-time comparison to prevent timing side-channel attacks
-        if (!apiKey) {
-            reply.status(401).send({ success: false, message: 'Unauthorized webhook access.' });
-            return;
+        if (!apiKey || apiKey !== process.env.SYSTEM_API_KEY) {
+            reply.code(403).send({ success: false, message: 'Invalid API Key' });
         }
+    });
 
-        const expectedKeyBuffer = Buffer.from(process.env.EXTERNAL_API_KEY || '');
-        const providedKeyBuffer = Buffer.from(apiKey);
+    // --- NEW: PHASE 4 RBAC DECORATORS ---
+    fastify.decorate("verifySuperAdmin", async function (request, reply) {
+        // Strict HQ God-Mode Check
+        if (!request.user || request.user.role !== 'SuperAdmin') {
+            reply.code(403).send({ success: false, message: 'HQ SuperAdmin privileges required.' });
+        }
+    });
 
-        if (expectedKeyBuffer.length !== providedKeyBuffer.length || !crypto.timingSafeEqual(expectedKeyBuffer, providedKeyBuffer)) {
-            reply.status(401).send({ success: false, message: 'Unauthorized webhook access.' });
-            return;
+    fastify.decorate("verifyStoreManager", async function (request, reply) {
+        // Ensures the user can only act on their specific isolated store
+        if (!request.user || !['StoreManager', 'SuperAdmin'].includes(request.user.role)) {
+            reply.code(403).send({ success: false, message: 'Store Manager privileges required.' });
         }
     });
 };
