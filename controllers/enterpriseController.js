@@ -131,7 +131,7 @@ exports.batchUpdateInventory = async (request, reply) => {
 };
 
 // --- NEW: PHASE 2 UPSERT INVENTORY CONTROLLER ---
-// Cross-references the Gamut Master Catalog and upserts local inventory.
+// Cross-references the DailyPick Master Catalog and upserts local inventory.
 exports.upsertCatalogAndInventory = async (request, reply) => {
     const store = await authenticateEnterprise(request);
     // Payload expects: { products: [{ sku: "8901234567890", stock: 50, priceRs: 2500 }, ...] }
