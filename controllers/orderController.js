@@ -123,6 +123,7 @@ exports.omniCartCheckout = async (request, reply) => {
                 ...payload,
                 storeId: storeCart.storeId,
                 items: storeCart.items,
+                deliveryType: storeCart.deliveryType || payload.deliveryType, // Added: Granular routing per cart for Store-in-Store vs Local
                 idempotencyKey: `${payload.idempotencyKey}-${storeCart.storeId}`,
                 splitShipmentGroupId: splitShipmentGroupId // Groups them together
             };
