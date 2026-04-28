@@ -4,7 +4,8 @@
 const Order = require('../models/Order');
 const Store = require('../models/Store');
 const StoreInventory = require('../models/StoreInventory');
-const MasterProduct = require('../models/MasterProduct'); // --- ADDED FOR PHASE 2 ---
+const MasterProduct = require('../models/MasterProduct'); 
+const Distributor = require('../models/Distributor'); // Added for B2B Procurement
 const AppError = require('../utils/AppError');
 const appEvents = require('../utils/eventEmitter');
 
@@ -196,5 +197,64 @@ exports.upsertCatalogAndInventory = async (request, reply) => {
     return { 
         success: true, 
         message: `B2B Sync Complete. Updated existing: ${updatedCount}, Onboarded new: ${addedNewCount}. SKUs waiting on Master Catalog approval: ${notFoundInMasterCount}.` 
+    };
+};
+
+// --- NEW: B2B PROCUREMENT ENGINE ---
+exports.createB2BPurchaseOrder = async (request, reply) => {
+    const { storeId, masterProductId, variantId, requestedQty, deliveryPincode } = request.body;
+    
+    // Automatically use the tenantId if authenticated
+    const targetStoreId = request.user && request.user.tenantId ? request.user.tenantId : storeId;
+
+    if (!targetStoreId || !masterProductId || !variantId || !requestedQty || !deliveryPincode) {
+        throw new AppError('Missing required parameters for B2B procurement', 400);
+    }
+
+    // Find Distributors serving this pincode who have this master product in their wholesale catalog
+    const distributors = await Distributor.find({ 
+        isActive: true,
+        serviceablePincodes: deliveryPincode,
+        "wholesaleCatalog.masterProductId": masterProductId
+    }).lean();
+
+    if (!distributors || distributors.length === 0) {
+        throw new AppError('No distributors found serving this product to your pincode', 404);
+    }
+
+    // Automatically find the best bulk price
+    let bestDistributor = null;
+    let lowestPrice = Infinity;
+
+    for (const dist of distributors) {
+        const item = dist.wholesaleCatalog.find(c => c.masterProductId.toString() === masterProductId.toString());
+        if (item && item.bulkPriceRs < lowestPrice) {
+            lowestPrice = item.bulkPriceRs;
+            bestDistributor = dist;
+        }
+    }
+
+    if (!bestDistributor) {
+        throw new AppError('Product found in distributor catalog but no valid pricing available', 400);
+    }
+
+    // Generate the B2B Purchase Order Draft Data
+    const b2bOrderDetails = {
+        poNumber: `PO-${Date.now()}`,
+        storeId: targetStoreId,
+        distributorId: bestDistributor._id,
+        distributorName: bestDistributor.name,
+        masterProductId: masterProductId,
+        variantId: variantId,
+        qty: requestedQty,
+        unitPriceRs: lowestPrice,
+        totalValueRs: lowestPrice * requestedQty,
+        status: 'DRAFT'
+    };
+
+    return {
+        success: true,
+        message: 'Optimal B2B Distributor found and Purchase Order drafted.',
+        data: b2bOrderDetails
     };
 };
