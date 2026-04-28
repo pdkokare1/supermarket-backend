@@ -187,5 +187,6 @@ module.exports = {
     statusSchema,
     cancelSchema,
     assignDriverSchema,
-    getOrdersSchema
+    getOrdersSchema,
+    omniCartCheckoutSchema
 };
