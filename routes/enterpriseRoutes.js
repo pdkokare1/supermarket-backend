@@ -31,4 +31,10 @@ module.exports = async function (fastify, opts) {
     fastify.post('/api/enterprise/onboard', async (request, reply) => {
         return await productController.addMasterProductToStore(request, reply);
     });
+
+    // --- NEW: PHASE 2 ENTERPRISE UPSERT ROUTE ---
+    // Push array of SKUs to dynamically upsert against the Master Catalog
+    fastify.post('/api/enterprise/inventory/upsert', async (request, reply) => {
+        return await enterpriseController.upsertCatalogAndInventory(request, reply);
+    });
 };
