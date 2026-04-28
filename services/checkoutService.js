@@ -127,7 +127,7 @@ async function dispatchEnterpriseWebhook(store, order) {
         axios.post(store.apiIntegration.webhookUrl, payload, {
             headers: {
                 'Content-Type': 'application/json',
-                'x-gamut-signature': store.apiIntegration.apiSecretKey // Simple auth for the partner to verify us
+                'x-enterprise-signature': store.apiIntegration.apiSecretKey // Changed to neutral identifier
             },
             timeout: 5000 // Don't hang forever
         }).catch(err => {
@@ -148,7 +148,7 @@ async function generateSettlement(session, order, storeId) {
     if (!store) return;
 
     // --- PHASE 3: DYNAMIC COMMERCIAL TERMS ---
-    // Reads Gamut's polymorphic contracts to ensure fair and accurate payouts
+    // Reads platform polymorphic contracts to ensure fair and accurate payouts
     const commType = store.commercialTerms?.commissionType || 'PERCENTAGE';
     const commValue = store.commercialTerms?.commissionValue || 5.0; // Fallback to legacy
 
@@ -334,7 +334,7 @@ exports.processOnlineCheckout = async (payload, externalSession = null) => {
         // Send a single combined notification to the customer protecting their unified experience
         if (generatedOrders.length > 0) {
             const orderReference = generatedOrders.length > 1 ? `Omni-Cart (${generatedOrders.length} Shipments)` : generatedOrders[0].orderNumber;
-            const msg = `The Gamut Order Received! 🛒\nReference: ${orderReference}\nTotal: Rs ${totalMasterCartRs}\nThanks for shopping!`;
+            const msg = `DailyPick Order Received! 🛒\nReference: ${orderReference}\nTotal: Rs ${totalMasterCartRs}\nThanks for shopping!`;
             notificationService.sendWhatsAppMessage(customerPhone, msg).catch(() => {}); 
         }
 
@@ -369,7 +369,7 @@ exports.processPosCheckout = async (payload, externalSession = null) => {
         appEvents.emit('NEW_ORDER', { order: newOrder, storeId, source: 'POS' });
 
         const loyaltyMsg = pointsRedeemed > 0 ? ` Points Redeemed: ${pointsRedeemed}.` : '';
-        const msg = `Thank you for shopping at The Gamut! 🛒\nOrder: ${newOrder.orderNumber}\nTotal: Rs ${totalAmount}\n${loyaltyMsg}\nVisit again!`;
+        const msg = `Thank you for shopping at DailyPick! 🛒\nOrder: ${newOrder.orderNumber}\nTotal: Rs ${totalAmount}\n${loyaltyMsg}\nVisit again!`;
         notificationService.sendWhatsAppMessage(customerPhone, msg).catch(() => {}); 
 
         return newOrder;
