@@ -5,7 +5,7 @@ const inventoryService = require('../services/inventoryService');
 const productService = require('../services/productService');
 const productCacheService = require('../services/productCacheService');
 
-// --- NEW IMPORTS FOR B2B OMNICHANNEL (THE GAMUT) ---
+// --- NEW IMPORTS FOR B2B OMNICHANNEL ---
 const MasterProduct = require('../models/MasterProduct');
 const StoreInventory = require('../models/StoreInventory');
 
@@ -105,7 +105,7 @@ exports.transferStock = async (request, reply) => {
 };
 
 // ============================================================================
-// NEW B2B OMNICHANNEL FUNCTIONS: THE DAILYPICK MASTER CATALOG INTEGRATION
+// NEW B2B OMNICHANNEL FUNCTIONS: THE PLATFORM MASTER CATALOG INTEGRATION
 // ============================================================================
 
 exports.getGlobalCatalog = async (request, reply) => {
@@ -155,13 +155,26 @@ exports.addMasterProductToStore = async (request, reply) => {
         return reply.status(400).send({ success: false, message: 'Product already exists in your local store inventory' });
     }
 
+    // Fetch Master Product to enforce compliance linkage for billing and taxonomy
+    const masterProduct = await MasterProduct.findById(masterProductId);
+    if (!masterProduct) {
+        return reply.status(404).send({ success: false, message: 'Master Product not found' });
+    }
+
+    const variantDetails = masterProduct.variants.id(variantId) || masterProduct.variants.find(v => v._id.toString() === variantId.toString());
+    if (!variantDetails) {
+         return reply.status(404).send({ success: false, message: 'Variant not found in Master Catalog' });
+    }
+
     const newStoreInventory = new StoreInventory({
         storeId,
         masterProductId,
         variantId,
         sellingPrice, // Stores set their own local Rs price
         stock: stock || 0,
-        lowStockThreshold: lowStockThreshold || 5
+        lowStockThreshold: lowStockThreshold || 5,
+        categorySnapshot: masterProduct.category, // NEW: B2B Compliance Linkage
+        hsnCodeSnapshot: variantDetails.hsnCode // NEW: B2B Billing Linkage
     });
 
     await newStoreInventory.save();
