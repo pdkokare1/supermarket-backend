@@ -13,42 +13,28 @@ const { withTransaction } = require('../utils/dbUtils'); // OPTIMIZATION: Import
 // ==========================================
 
 exports.externalCheckout = async (request, reply) => {
-    // OPTIMIZATION: Extracting Idempotency Key from headers to prevent double-charges on network retries
     const payload = { ...request.body, idempotencyKey: request.headers['idempotency-key'] || request.body.idempotencyKey };
-    
-    // OPTIMIZATION: API Key validation moved to route middleware for separation of concerns
-    // OPTIMIZATION: Wrap in ACID Transaction
     const newOrder = await withTransaction(async (session) => {
         return await checkoutService.processExternalCheckout(payload, session);
     });
-    
-    // OPTIMIZATION: Added explicit 201 Created status for enterprise REST compliance
     reply.code(201);
     return { success: true, message: `External Order Accepted from ${request.body.source}`, orderId: newOrder._id, orderNumber: newOrder.orderNumber };
 };
 
 exports.onlineCheckout = async (request, reply) => {
-    // OPTIMIZATION: Secure Idempotency Injection
     const payload = { ...request.body, idempotencyKey: request.headers['idempotency-key'] || request.body.idempotencyKey };
-    
-    // OPTIMIZATION: Wrap in ACID Transaction
     const newOrder = await withTransaction(async (session) => {
         return await checkoutService.processOnlineCheckout(payload, session);
     });
-    
     reply.code(201);
     return { success: true, message: 'Order Placed Successfully', orderId: newOrder._id };
 };
 
 exports.posCheckout = async (request, reply) => {
-    // OPTIMIZATION: Secure Idempotency Injection for POS endpoints
     const payload = { ...request.body, idempotencyKey: request.headers['idempotency-key'] || request.body.idempotencyKey };
-    
-    // OPTIMIZATION: Wrap in ACID Transaction
     const newOrder = await withTransaction(async (session) => {
         return await checkoutService.processPosCheckout(payload, session);
     });
-    
     reply.code(201);
     return { success: true, message: 'POS Transaction Complete', orderId: newOrder._id, orderData: newOrder };
 };
@@ -63,29 +49,20 @@ exports.updateStatus = async (request, reply) => {
     const { status } = request.body;
     let order = await orderService.updateOrderStatus(request.params.id, status);
 
-    // NEW: Automated Last-Mile Logistics Trigger
+    // AUTOMATED LAST-MILE LOGISTICS TRIGGER
     if (status === 'Packed' && process.env.ENABLE_LOGISTICS_AUTOMATION === 'true') {
         try {
-            // In production, this is where the Axios call to Dunzo/Shadowfax goes.
-            // Using a Sandbox/Mock response to ensure safe testing and workflow continuity.
             const mockDriver = {
                 name: "Auto Rider (Shadowfax Sandbox)",
                 phone: "+91 99999 00000",
                 trackingId: `SFX-${Math.floor(Math.random() * 1000000)}`
             };
-
-            // Re-use the existing service to save the automated driver to the database safely
             order = await orderService.assignDriverToOrder(request.params.id, mockDriver.name, mockDriver.phone);
-            
-            // Attach the tracking link for the frontend to display
             order.trackingLink = `https://track.shadowfax.in/${mockDriver.trackingId}`;
-            
         } catch (error) {
-            // Fails safely: The order stays 'Packed' and the cashier can manually assign a driver if the API is down.
             request.server.log.error(`Logistics Sandbox Error: ${error.message}`);
         }
     }
-
     return handleOrderResponse(reply, order);
 };
 
@@ -109,12 +86,10 @@ exports.getOrders = async (request, reply) => {
 };
 
 exports.exportOrders = async (request, reply) => {
-    // OPTIMIZATION: Asynchronous Task Queuing. Offloads heavy CSV generation to background worker.
     await jobsService.enqueueTask('EXPORT_ORDERS', { 
         email: request.user?.email || process.env.TARGET_EMAIL,
         query: request.query 
     });
-
     reply.code(202);
     return { success: true, message: 'Export job queued securely. You will receive the CSV via email shortly.' };
 };
@@ -122,4 +97,59 @@ exports.exportOrders = async (request, reply) => {
 exports.getOrderById = async (request, reply) => {
     const order = await orderService.getOrderById(request.params.id);
     return handleOrderResponse(reply, order);
+};
+
+// ==========================================
+// --- NEW: PHASE 3 OMNI-CART CHECKOUT ---
+// ==========================================
+
+exports.omniCartCheckout = async (request, reply) => {
+    // Handles a single transaction containing items from multiple independent stores
+    const payload = { ...request.body, idempotencyKey: request.headers['idempotency-key'] || request.body.idempotencyKey };
+    
+    // Payload expectation: payload.carts = [{ storeId: "DMART", items: [...] }, { storeId: "KIRANA", items: [...] }]
+    if (!payload.carts || !Array.isArray(payload.carts)) {
+        throw new AppError('Omni-Cart requires an array of store-specific carts.', 400);
+    }
+
+    const splitShipmentGroupId = `OMNI-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+    let masterCartTotalRs = 0;
+    const generatedOrders = [];
+
+    await withTransaction(async (session) => {
+        for (const storeCart of payload.carts) {
+            // Re-map the payload to utilize existing checkout architecture silently
+            const subPayload = {
+                ...payload,
+                storeId: storeCart.storeId,
+                items: storeCart.items,
+                idempotencyKey: `${payload.idempotencyKey}-${storeCart.storeId}`,
+                splitShipmentGroupId: splitShipmentGroupId // Groups them together
+            };
+            
+            // Send sub-order to existing trusted checkout service
+            const newOrder = await checkoutService.processOnlineCheckout(subPayload, session);
+            masterCartTotalRs += newOrder.totalAmount; // Accumulate Rs total
+            generatedOrders.push(newOrder);
+        }
+        
+        // Once all individual store sub-orders are secure, stamp them with the Unified Total
+        if (generatedOrders.length > 0) {
+            const Order = require('../models/Order');
+            await Order.updateMany(
+                { splitShipmentGroupId: splitShipmentGroupId },
+                { $set: { masterCartTotalRs: masterCartTotalRs } },
+                { session }
+            );
+        }
+    });
+
+    reply.code(201);
+    return { 
+        success: true, 
+        message: 'Omni-Cart Checkout Complete', 
+        splitShipmentGroupId: splitShipmentGroupId,
+        masterCartTotalRs: masterCartTotalRs,
+        totalShipments: generatedOrders.length
+    };
 };
