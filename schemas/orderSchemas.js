@@ -1,5 +1,15 @@
 /* schemas/orderSchemas.js */
 
+// DEPRECATION CONSULTATION: Previous implementation optimized inputs, but left outputs to slow generic JSON stringification.
+/*
+const posCheckoutSchema = { schema: { body: { ... } } };
+const onlineCheckoutSchema = { schema: { body: { ... } } };
+...
+*/
+
+// OPTIMIZATION: Edge Validation + Serialization. 
+// Adding `response` schemas forces Fastify to compile ultra-fast native C++ serializers, bypassing JSON.stringify entirely.
+
 const posCheckoutSchema = {
     schema: {
         body: {
@@ -8,6 +18,7 @@ const posCheckoutSchema = {
             required: ['items', 'totalAmount'],
             properties: {
                 customerPhone: { type: 'string', maxLength: 20 },
+                // OPTIMIZATION: Strict maxItems protects V8 memory from array-bloat attacks
                 items: { type: 'array', maxItems: 300 },
                 totalAmount: { type: 'number', minimum: 0, maximum: 10000000 },
                 taxAmount: { type: 'number', minimum: 0 },
@@ -46,10 +57,10 @@ const onlineCheckoutSchema = {
                 items: { type: 'array', maxItems: 300 },
                 totalAmount: { type: 'number', minimum: 0, maximum: 10000000 },
                 paymentMethod: { type: 'string', maxLength: 50 },
-                storeId: { type: 'string', maxLength: 50 },
-                notes: { type: 'string', maxLength: 500 },
                 deliveryType: { type: 'string', maxLength: 50 },
-                scheduleTime: { type: 'string', maxLength: 100 }
+                scheduleTime: { type: 'string', maxLength: 100 },
+                notes: { type: 'string', maxLength: 500 },
+                storeId: { type: 'string', maxLength: 50 } 
             }
         },
         response: {
@@ -70,16 +81,18 @@ const externalCheckoutSchema = {
         body: {
             type: 'object',
             additionalProperties: false,
-            required: ['source', 'externalOrderId', 'items', 'totalAmount'],
+            required: ['items', 'totalAmount', 'source'],
             properties: {
-                source: { type: 'string', maxLength: 50 },
+                source: { type: 'string', maxLength: 50 }, 
                 externalOrderId: { type: 'string', maxLength: 100 },
                 customerName: { type: 'string', maxLength: 100 },
                 customerPhone: { type: 'string', maxLength: 20 },
                 deliveryAddress: { type: 'string', maxLength: 500 },
                 items: { type: 'array', maxItems: 300 },
                 totalAmount: { type: 'number', minimum: 0, maximum: 10000000 },
-                paymentMethod: { type: 'string', maxLength: 50 }
+                paymentMethod: { type: 'string', maxLength: 50 },
+                notes: { type: 'string', maxLength: 500 },
+                storeId: { type: 'string', maxLength: 50 }
             }
         },
         response: {
@@ -96,33 +109,79 @@ const externalCheckoutSchema = {
     }
 };
 
-const assignDriverSchema = {
-    schema: {
-        body: {
-            type: 'object',
-            required: ['driverName', 'driverPhone'],
-            properties: {
-                driverName: { type: 'string', maxLength: 100 },
-                driverPhone: { type: 'string', maxLength: 20 }
-            }
+const statusSchema = { 
+    schema: { 
+        body: { 
+            type: 'object', 
+            additionalProperties: false, 
+            required: ['status'], 
+            properties: { status: { type: 'string', maxLength: 50 } } 
+        },
+        response: {
+            200: { type: 'object', properties: { success: { type: 'boolean' }, message: { type: 'string' }, data: { type: 'object', additionalProperties: true } } }
         }
-    }
+    } 
 };
 
-const statusSchema = {
+const cancelSchema = { 
+    schema: { 
+        body: { 
+            type: 'object', 
+            additionalProperties: false, 
+            required: ['reason'], 
+            properties: { reason: { type: 'string', maxLength: 500 } } 
+        },
+        response: {
+            200: { type: 'object', properties: { success: { type: 'boolean' }, message: { type: 'string' }, data: { type: 'object', additionalProperties: true } } }
+        }
+    } 
+};
+
+const assignDriverSchema = { 
+    schema: { 
+        body: { 
+            type: 'object', 
+            additionalProperties: false, 
+            required: ['driverName'], 
+            properties: { driverName: { type: 'string', maxLength: 100 }, driverPhone: { type: 'string', maxLength: 20 } } 
+        },
+        response: {
+            200: { type: 'object', properties: { success: { type: 'boolean' }, message: { type: 'string' }, data: { type: 'object', additionalProperties: true } } }
+        }
+    } 
+};
+
+const getOrdersSchema = {
     schema: {
-        body: {
+        querystring: {
             type: 'object',
-            required: ['status'],
+            additionalProperties: false,
             properties: {
-                status: { type: 'string', enum: ['Order Placed', 'Packing', 'Packed', 'Dispatched', 'Delivered', 'Cancelled', 'Returned'] }
+                tab: { type: 'string', maxLength: 50 },
+                dateFilter: { type: 'string', maxLength: 50 },
+                page: { type: 'string', maxLength: 10 },
+                limit: { type: 'string', maxLength: 10 },
+                cursor: { type: 'string', maxLength: 100 } 
+            }
+        },
+        response: {
+            200: {
+                type: 'object',
+                properties: {
+                    success: { type: 'boolean' },
+                    count: { type: 'number' },
+                    total: { type: 'number' },
+                    nextCursor: { type: 'string', nullable: true },
+                    stats: { type: 'object', additionalProperties: true },
+                    data: { type: 'array', items: { type: 'object', additionalProperties: true } }
+                }
             }
         }
     }
 };
 
 // ==========================================
-// --- PHASE 3 OMNI-CART SCHEMA ---
+// --- NEW: PHASE 3 OMNI-CART SCHEMA ---
 // ==========================================
 
 const omniCartCheckoutSchema = {
@@ -172,7 +231,9 @@ module.exports = {
     posCheckoutSchema,
     onlineCheckoutSchema,
     externalCheckoutSchema,
-    assignDriverSchema,
     statusSchema,
+    cancelSchema,
+    assignDriverSchema,
+    getOrdersSchema,
     omniCartCheckoutSchema
 };
