@@ -22,19 +22,19 @@ async function orderRoutes(fastify, options) {
     fastify.post('/api/orders', { preHandler: [fastify.authenticate], ...schemas.onlineCheckoutSchema }, orderController.onlineCheckout);
     fastify.post('/api/orders/pos', { preHandler: [fastify.authenticate, fastify.verifyAdmin], ...schemas.posCheckoutSchema }, orderController.posCheckout);
 
+    // --- NEW: PHASE 3 OMNI-CART GATEWAY ---
+    fastify.post('/api/orders/omni-checkout', { preHandler: [fastify.authenticate], ...schemas.omniCartCheckoutSchema }, orderController.omniCartCheckout);
+
     // --- Order Operations (Admin) ---
     fastify.put('/api/orders/:id/driver', { preHandler: [fastify.authenticate, fastify.verifyAdmin], ...schemas.assignDriverSchema }, orderController.assignDriver);
     fastify.put('/api/orders/:id/status', { preHandler: [fastify.authenticate, fastify.verifyAdmin], ...schemas.statusSchema }, orderController.updateStatus);
     fastify.put('/api/orders/:id/dispatch', { preHandler: [fastify.authenticate, fastify.verifyAdmin] }, orderController.dispatchOrder);
     fastify.put('/api/orders/:id/partial-refund', { preHandler: [fastify.authenticate, fastify.verifyAdmin] }, orderController.partialRefund);
-    fastify.put('/api/orders/:id/cancel', { preHandler: [fastify.authenticate, fastify.verifyAdmin], ...schemas.cancelSchema }, orderController.cancelOrder);
+    fastify.put('/api/orders/:id/cancel', { preHandler: [fastify.authenticate, fastify.verifyAdmin] }, orderController.cancelOrder);
 
-    // --- Analytics & Fetching ---
-    fastify.get('/api/orders/analytics', { preHandler: [fastify.authenticate, fastify.verifyAdmin] }, analyticsController.getOrdersAnalytics);
+    // --- Fetch Operations ---
+    fastify.get('/api/orders', { preHandler: [fastify.authenticate, fastify.verifyAdmin] }, orderController.getOrders);
     fastify.get('/api/orders/export', { preHandler: [fastify.authenticate, fastify.verifyAdmin] }, orderController.exportOrders);
-    fastify.get('/api/orders', { preHandler: [fastify.authenticate, fastify.verifyAdmin], ...schemas.getOrdersSchema }, orderController.getOrders);
-    
-    // --- Tracking (Customer) ---
     fastify.get('/api/orders/:id', { preHandler: [fastify.authenticate] }, orderController.getOrderById);
 }
 
