@@ -105,7 +105,7 @@ exports.transferStock = async (request, reply) => {
 };
 
 // ============================================================================
-// NEW B2B OMNICHANNEL FUNCTIONS: THE GAMUT MASTER CATALOG INTEGRATION
+// NEW B2B OMNICHANNEL FUNCTIONS: THE DAILYPICK MASTER CATALOG INTEGRATION
 // ============================================================================
 
 exports.getGlobalCatalog = async (request, reply) => {
