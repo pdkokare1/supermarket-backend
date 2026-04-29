@@ -272,8 +272,6 @@ exports.dispatchOrder = async (request, reply) => {
     
     await Order.findByIdAndUpdate(request.params.id, { deliveryOtp: otp });
     
-    // (In production, the notificationService would immediately text this OTP to the customer)
-    
     return await originalDispatchOrderPhase9(request, reply);
 };
 
@@ -290,7 +288,6 @@ exports.updateStatus = async (request, reply) => {
 
     // 1. Proof of Delivery (OTP Check)
     if (status === 'Delivered' && order.deliveryOtp) {
-        // If the user requesting the update is a Rider, they MUST provide the OTP
         if (request.user && request.user.role === 'Delivery_Agent') {
             if (!otp || order.deliveryOtp !== otp.toString()) {
                 throw new AppError('Invalid Delivery OTP. Please ask the customer for their 4-digit PIN.', 400);
@@ -300,7 +297,6 @@ exports.updateStatus = async (request, reply) => {
 
     // 2. Fraud Shield (COD Rejection Tracking)
     if ((status === 'Returned' || status === 'Failed') && order.paymentMethod === 'Cash on Delivery') {
-        // Punish the customer's Trust Score for wasting logistics resources
         await Customer.findOneAndUpdate(
             { phone: order.customerPhone },
             { $inc: { codRejections: 1, trustScore: -10 } }
@@ -308,4 +304,56 @@ exports.updateStatus = async (request, reply) => {
     }
 
     return await originalUpdateStatusPhase9(request, reply);
+};
+
+// ============================================================================
+// --- NEW: PHASE 10 AUTOMATED GATEWAY REFUNDS ---
+// ============================================================================
+const originalCancelOrderPhase10 = exports.cancelOrder;
+
+exports.cancelOrder = async (request, reply) => {
+    const result = await originalCancelOrderPhase10(request, reply);
+    
+    if (result.success && result.data && result.data.paymentMethod === 'Online' && result.data.transactionId) {
+        try {
+            const Razorpay = require('razorpay');
+            const razorpay = new Razorpay({
+                key_id: process.env.RAZORPAY_KEY_ID || 'dummy_key',
+                key_secret: process.env.RAZORPAY_KEY_SECRET || 'dummy_secret',
+            });
+            // Automate the refund API call instantly
+            await razorpay.payments.refund(result.data.transactionId, { amount: Math.round(result.data.totalAmount * 100) });
+            result.message += ' (Refund processed securely via Razorpay)';
+        } catch (e) {
+            request.server.log.error(`Razorpay Refund Error: ${e.message}`);
+            result.message += ' (Manual Razorpay dashboard refund required)';
+        }
+    }
+    return result;
+};
+
+const originalPartialRefundPhase10 = exports.partialRefund;
+
+exports.partialRefund = async (request, reply) => {
+    const Order = require('../models/Order');
+    const preOrder = await Order.findById(request.params.id);
+    const originalAmount = preOrder ? preOrder.totalAmount : 0;
+    
+    const result = await originalPartialRefundPhase10(request, reply);
+    
+    if (result.success && result.data && result.data.paymentMethod === 'Online' && result.data.transactionId && originalAmount > result.data.totalAmount) {
+        const refundAmountRs = originalAmount - result.data.totalAmount;
+        try {
+            const Razorpay = require('razorpay');
+            const razorpay = new Razorpay({
+                key_id: process.env.RAZORPAY_KEY_ID || 'dummy_key',
+                key_secret: process.env.RAZORPAY_KEY_SECRET || 'dummy_secret',
+            });
+            await razorpay.payments.refund(result.data.transactionId, { amount: Math.round(refundAmountRs * 100) });
+            result.message += ` (Rs ${refundAmountRs} refunded via Razorpay)`;
+        } catch (e) {
+            request.server.log.error(`Razorpay Partial Refund Error: ${e.message}`);
+        }
+    }
+    return result;
 };
