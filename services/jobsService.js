@@ -177,3 +177,45 @@ exports.generateRoutineDeliveries = async () => {
     }
     return routineOrders.length;
 };
+
+// ============================================================================
+// --- NEW: PHASE 10 BACKGROUND ERP WORKER (THE DATA CRUNCHER) ---
+// ============================================================================
+const originalProcessTaskPhase10 = exports.processTask;
+
+exports.processTask = async (taskType, payload, retryCount = 0) => {
+    if (taskType === 'ERP_FTP_SYNC') {
+        try {
+            console.log(`[BACKGROUND WORKER] Commencing Heavy FTP CSV Sync for Enterprise Store ID: ${payload.storeId}`);
+            const fs = require('fs');
+            const path = require('path');
+            const csvUtils = require('../utils/csvUtils');
+            
+            // Note: In production, this fileStream would originate directly from the Enterprise's secure FTP socket or AWS S3 SDK.
+            // We simulate the stream fetch from a local /tmp drops folder for the architecture.
+            const simulatedFtpFilePath = path.join(__dirname, '..', 'tmp', `erp_drop_${payload.erpStoreId}.csv`);
+            
+            if (fs.existsSync(simulatedFtpFilePath)) {
+                const fileStream = fs.createReadStream(simulatedFtpFilePath);
+                
+                // Pushes the heavy parsing onto the worker, keeping Vercel API responses lightning fast
+                const updatedRecordsCount = await csvUtils.parseEnterpriseInventoryDrop(fileStream, payload.storeId);
+                
+                console.log(`[BACKGROUND WORKER] SUCCESS: Synced ${updatedRecordsCount} SKUs for Store ${payload.storeId} securely.`);
+                
+                // Cleanup processed drop file
+                fs.unlinkSync(simulatedFtpFilePath);
+            } else {
+                console.log(`[BACKGROUND WORKER] No pending CSV drops found for Store ${payload.storeId} on this cycle.`);
+            }
+        } catch (e) {
+            console.error(`[BACKGROUND WORKER] ERP_FTP_SYNC Error: ${e.message}`);
+            // Let the DLQ handle it if it fails repeatedly by throwing it down to the original error wrapper
+            throw e; 
+        }
+        return; // Exit securely since we handled this specific task type in isolation
+    }
+
+    // Pass all other legacy jobs down the chain perfectly untouched
+    return await originalProcessTaskPhase10(taskType, payload, retryCount);
+};
