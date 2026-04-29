@@ -70,3 +70,44 @@ exports.processCsvStream = async (fileStream, batchSize = 500, processBatchCallb
         await processBatchCallback(batch);
     }
 };
+
+// ============================================================================
+// --- NEW: PHASE 10 ENTERPRISE ERP BACKGROUND PARSER ---
+// ============================================================================
+exports.parseEnterpriseInventoryDrop = async (fileStream, storeId) => {
+    const StoreInventory = require('../models/StoreInventory');
+    let totalUpdated = 0;
+
+    // Use the memory-safe streamer to process batches of 1,000 SKUs at a time
+    await exports.processCsvStream(fileStream, 1000, async (batch) => {
+        const bulkOps = batch.map(row => {
+            // Expected CSV headers from legacy ERP systems: "SKU", "STOCK", "PRICE"
+            const erpSku = row['SKU'] || row['sku'];
+            const newStock = Number(row['STOCK'] || row['stock']);
+            const newPrice = Number(row['PRICE'] || row['price']);
+
+            // Safely drop malformed data rows instead of crashing the batch
+            if (!erpSku || isNaN(newStock)) return null;
+
+            return {
+                updateOne: {
+                    filter: { storeId: storeId, 'erpIntegration.erpSku': erpSku },
+                    update: { 
+                        $set: { 
+                            stock: newStock, 
+                            ...(newPrice ? { sellingPrice: newPrice } : {}), // Update price only if provided
+                            'erpIntegration.lastErpSync': new Date() 
+                        } 
+                    }
+                }
+            };
+        }).filter(Boolean);
+
+        if (bulkOps.length > 0) {
+            const result = await StoreInventory.bulkWrite(bulkOps, { ordered: false });
+            totalUpdated += result.modifiedCount;
+        }
+    });
+
+    return totalUpdated;
+};
