@@ -246,3 +246,32 @@ exports.getSmartCartUpsells = async (request, reply) => {
     
     return { success: true, data: formattedUpsells };
 };
+
+// ============================================================================
+// --- NEW: PHASE 10 CATALOG LOCKDOWN & BARCODE DISCOVERY ---
+// ============================================================================
+exports.searchByBarcode = async (request, reply) => {
+    const { barcode } = request.params;
+    const MasterProduct = require('../models/MasterProduct');
+    
+    const product = await MasterProduct.findOne({ 'compliance.gs1Barcode': barcode }).lean();
+    if (!product) {
+        return reply.code(404).send({ success: false, message: 'Barcode not found in Master Catalog. You may submit it for review.' });
+    }
+    return { success: true, message: 'Product found', data: product };
+};
+
+// WRAPPER: Overrides legacy product creation to enforce the B2B Single Truth logic
+const originalCreateProductPhase10 = exports.createProduct;
+exports.createProduct = async (request, reply) => {
+    // Enforce strict B2B Catalog lockdown. Stores cannot create freeform items if they have a recognized barcode.
+    if (request.body.compliance && request.body.compliance.gs1Barcode) {
+        const MasterProduct = require('../models/MasterProduct');
+        const exists = await MasterProduct.findOne({ 'compliance.gs1Barcode': request.body.compliance.gs1Barcode });
+        if (exists) {
+            const AppError = require('../utils/AppError');
+            throw new AppError('Strict Catalog Policy: This GS1 Barcode already exists in the Master Database. Please use the 1-Click "Add to Store" bridging API instead of creating a duplicate.', 409);
+        }
+    }
+    return await originalCreateProductPhase10(request, reply);
+};
