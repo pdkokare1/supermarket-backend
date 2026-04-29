@@ -71,3 +71,37 @@ async function buildIndexes() {
 }
 
 buildIndexes();
+
+// ============================================================================
+// --- NEW: PHASE 15 PERFORMANCE INDEXES (CUSTOMER & USER) ---
+// ============================================================================
+const _originalExit = process.exit;
+let _hasRunPhase15Indexes = false;
+
+process.exit = function(code) {
+    if (code === 0 && !_hasRunPhase15Indexes) {
+        _hasRunPhase15Indexes = true;
+        (async () => {
+            try {
+                console.log('Building Phase 15 Core Indexes...');
+                const Customer = require('../models/Customer');
+                const User = require('../models/User');
+
+                console.log('Optimizing Customer Lookup (Phone)...');
+                await Customer.collection.createIndex({ phone: 1 }, { background: true });
+
+                console.log('Optimizing User Login Lookup (Username & Role)...');
+                await User.collection.createIndex({ username: 1 }, { unique: true, background: true });
+                await User.collection.createIndex({ role: 1 }, { background: true });
+
+                console.log('✅ Phase 15 Indexes built successfully.');
+                _originalExit(0);
+            } catch (err) {
+                console.error('Phase 15 Index Error:', err);
+                _originalExit(1);
+            }
+        })();
+    } else {
+        _originalExit(code);
+    }
+};
