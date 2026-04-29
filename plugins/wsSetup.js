@@ -169,20 +169,20 @@ module.exports = function (fastify) {
 };
 
 // ============================================================================
-// --- NEW: BI-DIRECTIONAL FLEET TRACKING WEBSOCKETS ---
+// --- NEW: PHASE 13 BI-DIRECTIONAL FLEET TRACKING & CONSUMER MAP WEBSOCKETS ---
 // ============================================================================
-const originalWsSetup = module.exports;
+const originalWsSetupPhase13 = module.exports;
 module.exports = function (fastify) {
-    originalWsSetup(fastify);
+    originalWsSetupPhase13(fastify);
 
     fastify.register(async function (instance) {
+        // 1. RIDER INGESTION: Receives GPS from the Rider PWA and pushes to Redis
         instance.get('/api/ws/rider', { websocket: true }, (connection, req) => {
             const ws = connection.socket || connection;
             
             ws.on('message', message => {
                 try {
                     const data = JSON.parse(message.toString());
-                    // Broadcast live GPS to frontend consumers tracking this specific order
                     if (data.type === 'GPS_UPDATE' && data.orderId) {
                         if (fastify.redis) {
                             fastify.redis.publish(`TRACKING_${data.orderId}`, JSON.stringify({
@@ -195,6 +195,37 @@ module.exports = function (fastify) {
                     }
                 } catch (e) {
                     fastify.log.warn('Dropped malformed rider GPS frame.');
+                }
+            });
+        });
+
+        // 2. CONSUMER SUBSCRIPTION: Streams Redis GPS updates down to the Customer's map
+        instance.get('/api/ws/track', { websocket: true }, (connection, req) => {
+            const ws = connection.socket || connection;
+            const orderId = req.query.orderId;
+            let consumerRedisSub = null;
+
+            if (!orderId) {
+                ws.terminate();
+                return;
+            }
+
+            if (fastify.redis) {
+                const Redis = require('ioredis');
+                consumerRedisSub = new Redis(process.env.REDIS_URL);
+                
+                consumerRedisSub.subscribe(`TRACKING_${orderId}`);
+                consumerRedisSub.on('message', (channel, messageStr) => {
+                    if (ws.readyState === 1) {
+                        ws.send(messageStr);
+                    }
+                });
+            }
+
+            ws.on('close', () => {
+                if (consumerRedisSub) {
+                    consumerRedisSub.unsubscribe(`TRACKING_${orderId}`);
+                    consumerRedisSub.quit();
                 }
             });
         });
