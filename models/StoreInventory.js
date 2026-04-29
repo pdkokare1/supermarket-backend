@@ -55,4 +55,10 @@ storeInventorySchema.index({ storeId: 1, masterProductId: 1, variantId: 1 }, { u
 storeInventorySchema.index({ storeId: 1, stock: 1 }); // For fast "low stock" queries per store
 storeInventorySchema.index({ storeId: 1, isActive: 1 });
 
+// ============================================================================
+// --- NEW: PHASE 8 COMPOUND DATABASE INDEXING FOR PERFORMANCE ---
+// ============================================================================
+// High-performance compound index to prevent full collection scans on cron-jobs and B2B lookups
+storeInventorySchema.index({ storeId: 1, masterProductId: 1, stock: 1, isActive: 1 });
+
 module.exports = mongoose.model('StoreInventory', storeInventorySchema);
