@@ -426,3 +426,24 @@ exports.processOnlineCheckout = async (payload, externalSession = null) => {
         }
     }
 };
+
+// ============================================================================
+// --- NEW: PHASE 9 FRAUD & COD ABUSE SHIELD (CHECKOUT INTERCEPTOR) ---
+// ============================================================================
+const originalProcessOnlineCheckoutPhase9 = exports.processOnlineCheckout;
+
+exports.processOnlineCheckout = async (payload, externalSession = null) => {
+    // If the customer attempts to pay via COD, check their trust score first
+    if (payload.paymentMethod === 'Cash on Delivery' || payload.paymentMethod === 'Cash') {
+        const Customer = require('../models/Customer');
+        const cust = await Customer.findOne({ phone: payload.customerPhone }).lean();
+        
+        // If a customer has rejected 3 or more COD orders at the door, block COD
+        if (cust && cust.codRejections >= 3) {
+            throw new AppError('Cash on Delivery is currently disabled for this account due to previous return history. Please select Pay Online.', 403);
+        }
+    }
+    
+    // If safe, proceed with normal checkout
+    return await originalProcessOnlineCheckoutPhase9(payload, externalSession);
+};
