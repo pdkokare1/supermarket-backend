@@ -96,3 +96,29 @@ exports.executeWhatsAppMessage = async (phone, messageText, fastify = null) => {
     }
     return false;
 };
+
+// ============================================================================
+// --- NEW: PHASE 10 ASYNCHRONOUS REDIS NOTIFICATION QUEUE ---
+// ============================================================================
+const originalSendWhatsAppPhase10 = exports.sendWhatsAppMessage;
+
+exports.sendWhatsAppMessage = async (phone, messageText, fastify = null) => {
+    try {
+        // Instantly offload to Redis to guarantee zero blocking on the checkout thread
+        const cacheUtils = require('../utils/cacheUtils');
+        const redisClient = cacheUtils.getClient();
+        if (redisClient) {
+            await redisClient.lpush('queue:notifications:whatsapp', JSON.stringify({
+                phone,
+                messageText,
+                timestamp: Date.now()
+            }));
+            return true;
+        }
+    } catch (e) {
+        if (fastify) fastify.log.warn('Redis queue unavailable, falling back to standard jobsService.');
+    }
+    
+    // Fallback to legacy queue if Redis is temporarily unreachable
+    return await originalSendWhatsAppPhase10(phone, messageText, fastify);
+};
