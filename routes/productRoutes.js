@@ -31,6 +31,9 @@ async function productRoutes(fastify, options) {
     // 1-Click Onboard a master product into the tenant's local store
     fastify.post('/api/b2b/onboard', { preHandler: [fastify.authenticate, fastify.verifyAdmin] }, productController.addMasterProductToStore);
 
+    // --- NEW: PILLAR B - DISTRIBUTOR WHOLESALE SUBMISSION ---
+    fastify.post('/api/b2b/distributor-submit', { preHandler: [fastify.authenticate] }, productController.submitWholesaleItem);
+
 }
 
 module.exports = productRoutes;
