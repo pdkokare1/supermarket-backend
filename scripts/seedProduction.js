@@ -68,3 +68,57 @@ async function runSeed() {
 }
 
 runSeed();
+
+// ============================================================================
+// --- NEW: PHASE 15 PLATFORM STORE & GLOBAL SETTINGS SEED ---
+// ============================================================================
+const _originalSeedExit = process.exit;
+let _hasRunPhase15Seed = false;
+
+process.exit = function(code) {
+    if (code === 0 && !_hasRunPhase15Seed) {
+        _hasRunPhase15Seed = true;
+        (async () => {
+            try {
+                console.log('🌱 Initiating Phase 15 Core Configuration Seed...');
+                const Settings = require('../models/Settings');
+
+                // 1. Create the Default "DailyPick Platform" Store
+                const platformStoreExists = await Store.findOne({ name: 'DailyPick Platform' });
+                if (!platformStoreExists) {
+                    await Store.create({
+                        name: 'DailyPick Platform',
+                        location: 'Global HQ',
+                        storeType: 'PLATFORM',
+                        fulfillmentOptions: ['INSTANT_DELIVERY', 'ROUTINE_DELIVERY'],
+                        isActive: true
+                    });
+                    console.log('✅ Default Platform Store Created.');
+                }
+
+                // 2. Initialize Global Economics Settings
+                const settingsExist = await Settings.findOne({ key: 'GLOBAL_ECONOMICS' });
+                if (!settingsExist) {
+                    await Settings.create({
+                        key: 'GLOBAL_ECONOMICS',
+                        value: {
+                            deliveryFeeRs: 20,
+                            platformCommissionPct: 2.5,
+                            loyaltyEarnRatePct: 1.0,
+                            surgeMultiplier: 1.0
+                        }
+                    });
+                    console.log('✅ Global Economics Settings Initialized.');
+                }
+
+                console.log('🚀 PHASE 15 SEED COMPLETE.');
+                _originalSeedExit(0);
+            } catch (err) {
+                console.error('Phase 15 Seed Error:', err);
+                _originalSeedExit(1);
+            }
+        })();
+    } else {
+        _originalSeedExit(code);
+    }
+};
