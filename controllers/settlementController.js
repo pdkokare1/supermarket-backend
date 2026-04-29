@@ -177,3 +177,61 @@ exports.processB2BWholesaleSettlement = async (request, reply) => {
         data: settlementDoc
     };
 };
+
+// ============================================================================
+// --- NEW: PHASE 11 AUTOMATED B2B TAX INVOICE EMAILING ---
+// ============================================================================
+const originalProcessB2BSettlementPhase11 = exports.processB2BWholesaleSettlement;
+
+exports.processB2BWholesaleSettlement = async (request, reply) => {
+    const result = await originalProcessB2BSettlementPhase11(request, reply);
+    
+    // Automatically trigger the secure invoice email when the backend payment clears
+    if (result.success && result.data) {
+        setImmediate(async () => {
+            try {
+                const { poId, localStoreId, totalValueRs } = request.body;
+                
+                const Order = require('../models/Order');
+                const Store = require('../models/Store');
+                const notificationService = require('../services/notificationService');
+                
+                const store = await Store.findById(localStoreId);
+                const order = await Order.findById(poId);
+                
+                if (store && store.contactEmail && order) {
+                    // System-generated Digital Invoice 
+                    const htmlInvoice = `
+                        <h2>DailyPick B2B Wholesale Tax Invoice</h2>
+                        <p><strong>Invoice Number:</strong> ${order.orderNumber || order._id}</p>
+                        <p><strong>Date:</strong> ${new Date().toLocaleDateString()}</p>
+                        <p><strong>Billed To:</strong> ${store.name}</p>
+                        <hr/>
+                        <h3>Total Amount Paid: Rs ${totalValueRs}</h3>
+                        ${order.taxBreakdown ? `
+                            <p>CGST: Rs ${order.taxBreakdown.cgstRs}</p>
+                            <p>SGST: Rs ${order.taxBreakdown.sgstRs}</p>
+                            <p><strong>Total Tax: Rs ${order.taxBreakdown.totalTaxRs}</strong></p>
+                        ` : ''}
+                        <hr/>
+                        <p style="font-size: 11px; color: #64748B;">This is a system generated B2B tax invoice. You may use this for your Input Tax Credit (ITC) filings.</p>
+                    `;
+                    
+                    // Dispatch instantly via background queue
+                    await notificationService.sendAdminEmail(
+                        request.server, 
+                        `B2B Tax Invoice - ${order.orderNumber || order._id}`, 
+                        htmlInvoice, 
+                        `Your B2B tax invoice for Rs ${totalValueRs} is attached.`
+                    );
+                    
+                    console.log(`[B2B AUTOMATION] Tax Invoice automatically emailed to ${store.contactEmail}`);
+                }
+            } catch (e) {
+                console.error("[B2B AUTOMATION ERROR] Failed to email invoice:", e.message);
+            }
+        });
+    }
+    
+    return result;
+};
