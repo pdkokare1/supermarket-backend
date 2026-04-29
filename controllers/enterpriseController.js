@@ -354,3 +354,40 @@ exports.retryFailedWebhook = async (request, reply) => {
         return { success: false, message: 'Retry failed again: ' + e.message };
     }
 };
+
+// ============================================================================
+// --- NEW: PHASE 7 ENTERPRISE API RATE LIMITING & BACKGROUND QUEUE ---
+// ============================================================================
+const originalBatchUpdateInventoryPhase7 = exports.batchUpdateInventory;
+
+exports.batchUpdateInventory = async (request, reply) => {
+    const { inventoryUpdates } = request.body;
+    
+    // If the ERP pushes an absolutely massive payload, queue it safely
+    if (inventoryUpdates && inventoryUpdates.length > 500) {
+        setImmediate(async () => {
+            try {
+                const chunkSize = 500;
+                for (let i = 0; i < inventoryUpdates.length; i += chunkSize) {
+                    const chunk = inventoryUpdates.slice(i, i + chunkSize);
+                    // Synthesize a chunked request
+                    const chunkReq = { ...request, body: { inventoryUpdates: chunk } };
+                    await originalBatchUpdateInventoryPhase7(chunkReq, reply);
+                    
+                    // 1-second breather for the Mongo Connection Pool
+                    await new Promise(res => setTimeout(res, 1000));
+                }
+                console.log(`[BACKGROUND QUEUE] Successfully processed ${inventoryUpdates.length} massive Enterprise items.`);
+            } catch(e) {
+                console.error("[BACKGROUND QUEUE ERROR] Batch Update failed:", e.message);
+            }
+        });
+        
+        // Return 202 Accepted immediately so the Enterprise ERP doesn't timeout
+        reply.code(202);
+        return { success: true, message: `Payload too large for synchronous execution. Queued ${inventoryUpdates.length} items for safe background batch processing.` };
+    }
+    
+    // Normal synchronous processing for standard payloads
+    return await originalBatchUpdateInventoryPhase7(request, reply);
+};
