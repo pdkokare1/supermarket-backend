@@ -67,3 +67,48 @@ const simulateFlow = async () => {
 };
 
 simulateFlow();
+
+// ============================================================================
+// --- NEW: PHASE 14 LIVE WORKER HEALTH PING ---
+// ============================================================================
+const runLivePing = async () => {
+    console.log("\n==========================================");
+    console.log("🌐 PINGING LIVE RAILWAY WORKER...");
+    
+    const TARGET_URL = "https://dailypick-backend-production-05d6.up.railway.app";
+    
+    try {
+        console.log("   -> Testing /api/health endpoint...");
+        const healthRes = await fetch(`${TARGET_URL}/api/health`);
+        if (healthRes.ok) {
+            console.log("   ✅ Connection Established! Server is UP.");
+        } else {
+            console.log("   ❌ Server unreachable.");
+        }
+
+        console.log("   -> Testing /api/config/gateway for dummy keys...");
+        const gatewayRes = await fetch(`${TARGET_URL}/api/config/gateway`);
+        if (gatewayRes.ok) {
+            const data = await gatewayRes.json();
+            console.log(`   ✅ Dynamic Key Provisioning Active. Current Gateway Key: ${data.key}`);
+        } else {
+            console.log("   ❌ Gateway configuration failed.");
+        }
+
+        console.log("   -> Testing Telemetry & Load Shedding Engine...");
+        const metricsRes = await fetch(`${TARGET_URL}/api/system/metrics`);
+        if (metricsRes.ok) {
+            const metrics = await metricsRes.json();
+            console.log(`   ✅ Telemetry OK. Container Status: ${metrics.status} | DB: ${metrics.database}`);
+        }
+        
+    } catch (e) {
+        console.log("   ⚠️ Live Ping Failed. Ensure Railway container is deployed and not sleeping.");
+        console.log(`   Error: ${e.message}`);
+    }
+};
+
+// Auto-execute live ping if run in Node 18+ environment
+if (typeof fetch !== 'undefined') {
+    runLivePing();
+}
