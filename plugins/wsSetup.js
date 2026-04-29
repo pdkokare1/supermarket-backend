@@ -167,3 +167,36 @@ module.exports = function (fastify) {
         });
     });
 };
+
+// ============================================================================
+// --- NEW: BI-DIRECTIONAL FLEET TRACKING WEBSOCKETS ---
+// ============================================================================
+const originalWsSetup = module.exports;
+module.exports = function (fastify) {
+    originalWsSetup(fastify);
+
+    fastify.register(async function (instance) {
+        instance.get('/api/ws/rider', { websocket: true }, (connection, req) => {
+            const ws = connection.socket || connection;
+            
+            ws.on('message', message => {
+                try {
+                    const data = JSON.parse(message.toString());
+                    // Broadcast live GPS to frontend consumers tracking this specific order
+                    if (data.type === 'GPS_UPDATE' && data.orderId) {
+                        if (fastify.redis) {
+                            fastify.redis.publish(`TRACKING_${data.orderId}`, JSON.stringify({
+                                lat: data.lat,
+                                lng: data.lng,
+                                heading: data.heading,
+                                timestamp: Date.now()
+                            }));
+                        }
+                    }
+                } catch (e) {
+                    fastify.log.warn('Dropped malformed rider GPS frame.');
+                }
+            });
+        });
+    });
+};
