@@ -160,4 +160,11 @@ orderSchema.index({ location: '2dsphere', status: 1 });
 // High-performance Compound Index to prevent full collection scans when HQ Heatmap loads
 orderSchema.index({ fulfillmentType: 1, status: 1, createdAt: -1 });
 
+// ============================================================================
+// --- NEW: PHASE 9 PROOF OF DELIVERY (SECURE OTP) ---
+// ============================================================================
+orderSchema.add({
+    deliveryOtp: { type: String, default: null }
+});
+
 module.exports = mongoose.model('Order', orderSchema);
