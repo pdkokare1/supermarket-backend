@@ -400,3 +400,25 @@ exports.rateOrder = async (request, reply) => {
     
     return { success: true, message: 'Thank you for your feedback!' };
 };
+
+// ============================================================================
+// --- NEW: PHASE 10 SPATIAL RIDER LOCATION PING (Mapbox Bridge) ---
+// ============================================================================
+exports.updateRiderLocation = async (request, reply) => {
+    const { riderId, lat, lng } = request.body;
+    
+    // Update Shift's spatial location for the $geoNear routing queries
+    const Shift = require('../models/Shift');
+    await Shift.findByIdAndUpdate(riderId, {
+        spatialLocation: {
+            type: 'Point',
+            coordinates: [lng, lat]
+        }
+    });
+    
+    // Fire event so Firebase Realtime DB / SSE can pick it up to animate the Mapbox UI
+    const appEvents = require('../utils/eventEmitter');
+    appEvents.emit('RIDER_LOCATION_UPDATED', { riderId, coordinates: [lng, lat] });
+    
+    return reply.code(200).send({ success: true, message: 'Location synced' });
+};
