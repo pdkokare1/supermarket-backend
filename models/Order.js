@@ -129,6 +129,12 @@ const orderSchema = new mongoose.Schema({
     dateString: {
         type: String,
         index: true
+    },
+    
+    // --- NEW: PHASE 10 B2B LOGISTICS & ERP TRACKING ---
+    b2bLogistics: {
+        erpSyncStatus: { type: String, enum: ['PENDING', 'SYNCED', 'FAILED', 'NOT_REQUIRED'], default: 'NOT_REQUIRED' },
+        externalCourierId: { type: String, default: null } // e.g., Croma's internal delivery van ID
     }
 }, { timestamps: true });
 
