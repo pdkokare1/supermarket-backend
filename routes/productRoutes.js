@@ -36,4 +36,13 @@ async function productRoutes(fastify, options) {
 
 }
 
-module.exports = productRoutes;
+// ============================================================================
+// --- NEW: PHASE 10 EXPOSE SMART CART UPSELLS ROUTE ---
+// ============================================================================
+const originalProductRoutesPhase10 = productRoutes;
+module.exports = async function(fastify, options) {
+    await originalProductRoutesPhase10(fastify, options);
+    
+    // Expose the zero-cost Heuristic Association Engine to the consumer frontend
+    fastify.post('/api/products/smart-upsells', productController.getSmartCartUpsells);
+};
