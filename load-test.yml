@@ -38,3 +38,11 @@ scenarios:
             totalAmount: 170
             deliveryType: "Instant"
             scheduleTime: "ASAP"
+
+# ============================================================================
+# --- NEW: CACHE EDGE NETWORK STRESS TEST ---
+# ============================================================================
+  - name: "Edge Cache Autocomplete Stress"
+    flow:
+      - get:
+          url: "/api/products/autocomplete?q=milk"
