@@ -92,3 +92,41 @@ module.exports = function(fastify, updateInventoryReport) {
         done();
     });
 };
+
+// ============================================================================
+// --- NEW: PHASE 10 LEGACY ERP FTP/CSV SYNC SCHEDULER ---
+// ============================================================================
+const originalCronSchedulerPhase10 = module.exports;
+
+module.exports = function(fastify, updateInventoryReport) {
+    originalCronSchedulerPhase10(fastify, updateInventoryReport);
+    
+    const cron = require('node-cron');
+    const cronOptions = { timezone: process.env.TZ || 'Asia/Kolkata' };
+    
+    // Run every 30 minutes to pull legacy CSV drops from Big-Box retailers
+    const legacySyncJob = cron.schedule('*/30 * * * *', async () => {
+        if (fastify.isShuttingDown) return;
+        
+        try {
+            const Store = require('../models/Store');
+            const legacyStores = await Store.find({ 'erpIntegration.legacySyncMethod': 'FTP_CSV', isActive: true });
+            
+            if (legacyStores.length > 0) {
+                fastify.log.info(`[ERP CRON] Found ${legacyStores.length} stores awaiting FTP CSV sync. Offloading to worker queue.`);
+                const jobsService = require('../services/jobsService');
+                for (const store of legacyStores) {
+                    // This securely delegates the heavy CSV parsing/FTP download to Railway background workers
+                    await jobsService.enqueueTask('ERP_FTP_SYNC', { storeId: store._id, erpStoreId: store.erpIntegration.erpStoreId });
+                }
+            }
+        } catch (err) {
+            fastify.log.error('[ERP CRON] FTP Sync Error: ' + err.message);
+        }
+    }, cronOptions);
+    
+    fastify.addHook('onClose', async (instance, done) => {
+        legacySyncJob.stop();
+        done();
+    });
+};
