@@ -83,6 +83,11 @@ const createApp = (opts = {}) => {
         await threatDefenseService.clearLockout(request.ip, 'system_unban');
         return { success: true, message: `IP ${request.ip} has been successfully removed from the blocklist.` };
     });
+    
+    // NEW: Dynamic Configuration Gateway
+    fastify.get('/api/config/gateway', async (request, reply) => {
+        return { success: true, key: process.env.RAZORPAY_KEY || 'rzp_test_dummykey' };
+    });
 
     fastify.get('/api/system/metrics', async (request, reply) => {
         if (fastify.isShuttingDown) {
@@ -151,8 +156,7 @@ const createApp = (opts = {}) => {
     // ==========================================
     fastify.addHook('onSend', async (request, reply, payload) => {
         if (request.method === 'GET' && request.routeOptions.url) {
-            if (request.routeOptions.url.includes('/api/categories') || request.routeOptions.url.includes('/api/products')) {
-                // Cache at the Vercel Edge for 15 minutes, allow background revalidation for 1 hour
+            if (request.routeOptions.url.includes('/api/categories') || request.request.url.includes('/api/products')) {
                 reply.header('Cache-Control', 'public, s-maxage=900, stale-while-revalidate=3600');
             }
         }
