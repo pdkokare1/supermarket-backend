@@ -44,4 +44,17 @@ masterProductSchema.index({ name: 'text', brand: 'text', searchTags: 'text' });
 // NEW INDEX: For fast querying of the Super-Admin Approval Queue
 masterProductSchema.index({ status: 1 });
 
+// ============================================================================
+// --- NEW: PHASE 10 SINGLE SOURCE OF TRUTH (CATALOG LOCKDOWN) ---
+// ============================================================================
+masterProductSchema.add({
+    compliance: {
+        gs1Barcode: { type: String, sparse: true, unique: true }, // Strict GS1/UPC global enforcement
+        isStrictlyVerified: { type: Boolean, default: false } // Verified centrally by HQ
+    }
+});
+
+// Spatial lookup index for immediate barcode scanning from POS / Retailer App
+masterProductSchema.index({ "compliance.gs1Barcode": 1 });
+
 module.exports = mongoose.model('MasterProduct', masterProductSchema);
