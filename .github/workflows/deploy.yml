@@ -41,3 +41,15 @@ jobs:
         with:
           railway_token: ${{ secrets.RAILWAY_TOKEN }}
           service: "DailyPick-Backend"
+
+      # ============================================================================
+      # --- NEW: POST-DEPLOYMENT HEALTH VERIFICATION ---
+      # ============================================================================
+      - name: Health Check Railway Container
+        if: github.ref == 'refs/heads/main'
+        run: |
+          echo "Waiting 30 seconds for new container to spin up and replace the old one..."
+          sleep 30
+          echo "Verifying /api/health endpoint..."
+          curl -f https://dailypick-backend-production-05d6.up.railway.app/api/health || exit 1
+          echo "Deployment successful and reporting Healthy!"
