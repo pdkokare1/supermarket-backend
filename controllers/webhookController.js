@@ -133,3 +133,35 @@ exports.razorpayWebhook = async (request, reply) => {
     // 2. Run the original webhook logic to finalize status updates
     return await originalRazorpayWebhookPhase8(request, reply);
 };
+
+// ============================================================================
+// --- NEW: PHASE 10 B2B ENTERPRISE ERP INVENTORY SYNC API ---
+// ============================================================================
+exports.enterpriseInventorySync = async (request, reply) => {
+    const { erpStoreId, skus } = request.body; // Array of { sku: '...', stock: 100, price: 50 }
+    const Store = require('../models/Store');
+    const StoreInventory = require('../models/StoreInventory');
+
+    const store = await Store.findOne({ 'erpIntegration.erpStoreId': erpStoreId });
+    if (!store) throw new AppError('Enterprise Store not found. Invalid erpStoreId.', 404);
+
+    let updatedCount = 0;
+    for (const item of skus) {
+        // Find local variant mapping to the enterprise's global SKU
+        const updated = await StoreInventory.findOneAndUpdate(
+            { storeId: store._id, 'erpIntegration.erpSku': item.sku },
+            { 
+                $set: { 
+                    stock: item.stock, 
+                    sellingPrice: item.price,
+                    'erpIntegration.lastErpSync': new Date()
+                } 
+            },
+            { new: true }
+        );
+        if (updated) updatedCount++;
+    }
+
+    request.server.log.info(`[ERP SYNC] Store ${store.name} synchronized ${updatedCount} SKUs via API.`);
+    return reply.code(200).send({ success: true, updatedCount, message: 'ERP Sync Complete' });
+};
