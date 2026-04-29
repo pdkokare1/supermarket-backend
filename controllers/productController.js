@@ -185,3 +185,20 @@ exports.addMasterProductToStore = async (request, reply) => {
         data: newStoreInventory
     };
 };
+
+// --- NEW: PILLAR B - DISTRIBUTOR WHOLESALE SUBMISSION ---
+exports.submitWholesaleItem = async (request, reply) => {
+    const payload = { ...request.body };
+    
+    // Enforce B2B Distributor tracking
+    payload.submittedBy = request.user && request.user.tenantId ? request.user.tenantId : (request.user ? request.user._id : null);
+    
+    // Hardcode strict queue governance 
+    payload.status = 'PENDING_APPROVAL';
+    payload.isActive = false; // Hidden until HQ SuperAdmin approves
+    
+    const newMasterProduct = new MasterProduct(payload);
+    await newMasterProduct.save();
+
+    return { success: true, message: 'Wholesale item submitted to HQ for approval.', data: newMasterProduct };
+};
