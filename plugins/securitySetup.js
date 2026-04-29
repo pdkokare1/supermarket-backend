@@ -104,3 +104,34 @@ module.exports = function(fastify) {
         });
     });
 };
+
+// ============================================================================
+// --- NEW: PHASE 14 STRICT MULTI-FRONTEND FIREWALL ---
+// ============================================================================
+const originalSecuritySetupPhase14 = module.exports;
+
+module.exports = function(fastify) {
+    originalSecuritySetupPhase14(fastify);
+
+    // Hardened pre-flight origin check
+    fastify.addHook('onRequest', async (request, reply) => {
+        const origin = request.headers.origin;
+        if (!origin) return; // Allow backend-to-backend / cURL traffic
+
+        const isProduction = process.env.NODE_ENV === 'production';
+        if (!isProduction) return; // Bypass in local dev
+
+        const strictAllowedDomains = process.env.FRONTEND_URLS 
+            ? process.env.FRONTEND_URLS.split(',').map(url => url.trim())
+            : [];
+
+        if (strictAllowedDomains.length > 0 && !strictAllowedDomains.includes(origin)) {
+            fastify.log.warn(`[FIREWALL] Blocked unauthorized cross-origin request from: ${origin}`);
+            return reply.status(403).send({ 
+                success: false, 
+                error: "Access Denied", 
+                message: "This domain is not whitelisted in the DailyPick infrastructure." 
+            });
+        }
+    });
+};
