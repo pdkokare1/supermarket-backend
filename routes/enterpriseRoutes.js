@@ -50,3 +50,48 @@ module.exports = async function (fastify, opts) {
         return await enterpriseController.syncStoreInventory(request, reply);
     });
 };
+
+// ============================================================================
+// --- NEW: PHASE 15 DEAD LETTER QUEUE (DLQ) HQ ROUTES ---
+// ============================================================================
+const originalEnterpriseRoutes = module.exports;
+
+module.exports = async function (fastify, opts) {
+    // 1. Register all original legacy routes securely
+    await originalEnterpriseRoutes(fastify, opts);
+
+    // 2. Safely inject the new DLQ monitoring routes
+    fastify.get('/api/enterprise/webhooks/failed', { 
+        preHandler: [fastify.authenticate, fastify.verifySuperAdmin] 
+    }, async (request, reply) => {
+        try {
+            const webhookService = require('../services/webhookService');
+            const failedLogs = await webhookService.getFailedWebhooks();
+            
+            if (!failedLogs || failedLogs.length === 0) {
+                return reply.code(404).send({ success: false, message: 'System Healthy. No failed webhooks detected.' });
+            }
+            return reply.send({ success: true, data: failedLogs });
+        } catch (e) {
+            fastify.log.error('Failed to fetch DLQ:', e);
+            return reply.code(500).send({ success: false, message: 'Server error' });
+        }
+    });
+
+    fastify.post('/api/enterprise/webhooks/retry/:id', {
+        preHandler: [fastify.authenticate, fastify.verifySuperAdmin]
+    }, async (request, reply) => {
+        try {
+            const webhookService = require('../services/webhookService');
+            const result = await webhookService.retryFailedWebhook(request.params.id);
+            if (result.success) {
+                return reply.send({ success: true, message: 'Webhook retry successful!' });
+            } else {
+                return reply.code(400).send({ success: false, message: result.message });
+            }
+        } catch (e) {
+            fastify.log.error('Webhook retry failed:', e);
+            return reply.code(500).send({ success: false, message: 'Server error' });
+        }
+    });
+};
