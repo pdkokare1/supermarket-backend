@@ -154,3 +154,72 @@ exports.omniCartCheckout = async (request, reply) => {
         totalShipments: generatedOrders.length
     };
 };
+
+// ============================================================================
+// --- NEW: PHASE 6 OMNI-LOYALTY SUPER WALLET (INTERCEPTOR) ---
+// ============================================================================
+const originalOmniCartCheckoutPhase6 = exports.omniCartCheckout;
+
+exports.omniCartCheckout = async (request, reply) => {
+    // 1. Execute the core omni-cart logic unmodified to respect transaction boundaries
+    const result = await originalOmniCartCheckoutPhase6(request, reply);
+    
+    // 2. Post-Process Loyalty Points if the transaction was successful
+    if (result.success && request.body.customerPhone) {
+        const phone = request.body.customerPhone;
+        const useLoyalty = request.body.useLoyaltyPoints === true || request.body.useLoyaltyPoints === 'true';
+        const { splitShipmentGroupId } = result;
+        
+        const Order = require('../models/Order');
+        const Customer = require('../models/Customer');
+        
+        const cust = await Customer.findOne({ phone });
+        const orders = await Order.find({ splitShipmentGroupId });
+        
+        if (useLoyalty && cust && cust.loyaltyPoints > 0 && orders.length > 0) {
+            let pointsToUse = cust.loyaltyPoints;
+            let totalDiscountApplied = 0;
+            
+            for (let order of orders) {
+                if (pointsToUse <= 0) break;
+                
+                // We apply discount to the subtotal, ensuring we don't drop below 0
+                const maxDiscountForOrder = order.totalAmount; 
+                const discountForThisOrder = Math.min(maxDiscountForOrder, pointsToUse);
+                
+                order.discountAmount = (order.discountAmount || 0) + discountForThisOrder;
+                order.totalAmount = order.totalAmount - discountForThisOrder;
+                order.notes = `${order.notes || ''} [Loyalty Applied: Rs ${discountForThisOrder}]`.trim();
+                
+                await order.save();
+                
+                pointsToUse -= discountForThisOrder;
+                totalDiscountApplied += discountForThisOrder;
+            }
+            
+            // Deduct the used points from the customer's Super Wallet
+            cust.loyaltyPoints -= totalDiscountApplied;
+            await cust.save();
+            
+            // Update the unified Master Cart Total across all sub-orders
+            const newMasterTotal = result.masterCartTotalRs - totalDiscountApplied;
+            await Order.updateMany(
+                { splitShipmentGroupId },
+                { $set: { masterCartTotalRs: newMasterTotal } }
+            );
+            
+            result.masterCartTotalRs = newMasterTotal;
+            result.message += ` (Redeemed: ${totalDiscountApplied} Pts)`;
+            
+        } else if (!useLoyalty && cust && result.masterCartTotalRs > 0) {
+            // 3. Reward new loyalty points for this purchase (1 point per 100 Rs)
+            const earnedPoints = Math.floor(result.masterCartTotalRs / 100);
+            if (earnedPoints > 0) {
+                cust.loyaltyPoints = (cust.loyaltyPoints || 0) + earnedPoints;
+                await cust.save();
+            }
+        }
+    }
+    
+    return result;
+};
