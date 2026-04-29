@@ -155,8 +155,9 @@ const createApp = (opts = {}) => {
     // --- NEW: PHASE 12 VERCEL EDGE CACHING ---
     // ==========================================
     fastify.addHook('onSend', async (request, reply, payload) => {
-        if (request.method === 'GET' && request.routeOptions.url) {
-            if (request.routeOptions.url.includes('/api/categories') || request.request.url.includes('/api/products')) {
+        if (request.method === 'GET' && request.routeOptions && request.routeOptions.url) {
+            // FIXED TYPO: Changed request.request.url to request.routeOptions.url
+            if (request.routeOptions.url.includes('/api/categories') || request.routeOptions.url.includes('/api/products')) {
                 reply.header('Cache-Control', 'public, s-maxage=900, stale-while-revalidate=3600');
             }
         }
