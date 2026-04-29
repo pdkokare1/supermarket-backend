@@ -357,3 +357,46 @@ exports.partialRefund = async (request, reply) => {
     }
     return result;
 };
+
+// ============================================================================
+// --- NEW: PHASE 11 CUSTOMER RATING & FEEDBACK LOOP ---
+// ============================================================================
+exports.rateOrder = async (request, reply) => {
+    const { rating } = request.body;
+    const orderId = request.params.id;
+    
+    if (!rating || rating < 1 || rating > 5) {
+        return reply.code(400).send({ success: false, message: 'Valid rating 1-5 required.' });
+    }
+
+    const Order = require('../models/Order');
+    const Store = require('../models/Store');
+    
+    // Support Omni-Cart groups or individual order IDs
+    let orders = [];
+    if (orderId.startsWith('OMNI-')) {
+        orders = await Order.find({ splitShipmentGroupId: orderId });
+    } else {
+        const o = await Order.findById(orderId);
+        if (o) orders.push(o);
+    }
+    
+    if (orders.length === 0) {
+        return reply.code(404).send({ success: false, message: 'Order not found.' });
+    }
+
+    for (const order of orders) {
+        order.customerRating = rating;
+        await order.save();
+        
+        // Dynamically update the fulfilling Store's trust score
+        if (order.storeId) {
+            const scoreMod = rating >= 4 ? 1 : -1;
+            await Store.findByIdAndUpdate(order.storeId, {
+                $inc: { 'analytics.trustScore': scoreMod }
+            }).catch(() => {});
+        }
+    }
+    
+    return { success: true, message: 'Thank you for your feedback!' };
+};
