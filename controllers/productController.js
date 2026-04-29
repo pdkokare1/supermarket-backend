@@ -202,3 +202,47 @@ exports.submitWholesaleItem = async (request, reply) => {
 
     return { success: true, message: 'Wholesale item submitted to HQ for approval.', data: newMasterProduct };
 };
+
+// ============================================================================
+// --- NEW: PHASE 10 HEURISTIC ASSOCIATION ENGINE (SMART CART UPSELLS) ---
+// ============================================================================
+exports.getSmartCartUpsells = async (request, reply) => {
+    const { cartCategories = [], storeId } = request.body;
+    const targetStoreId = storeId || (request.user ? request.user.tenantId : null);
+    
+    let query = { isActive: true, stock: { $gt: 0 } };
+    if (targetStoreId) query.storeId = targetStoreId;
+    
+    // Core Algorithmic Filter: Find items sharing the customer's current cart categories
+    if (cartCategories.length > 0) {
+        query.categorySnapshot = { $in: cartCategories };
+    }
+    
+    // Sort by stock as a proxy for high-volume availability, limit to 5 suggestions
+    const upsells = await StoreInventory.find(query)
+        .sort({ stock: -1 }) 
+        .limit(5)
+        .populate('masterProductId', 'name imageUrl category variants')
+        .lean();
+        
+    // Format perfectly to match the frontend's product rendering engine
+    const formattedUpsells = upsells.map(inv => {
+        const master = inv.masterProductId || {};
+        const variant = (master.variants || []).find(v => v._id && v._id.toString() === inv.variantId.toString()) || {};
+        return {
+            _id: master._id,
+            name: master.name || 'Suggested Item',
+            imageUrl: master.imageUrl,
+            category: inv.categorySnapshot,
+            variants: [{
+                _id: inv.variantId,
+                price: inv.sellingPrice,
+                stock: inv.stock,
+                weightOrVolume: variant.weightOrVolume || '1 unit',
+                storeId: inv.storeId
+            }]
+        };
+    });
+    
+    return { success: true, data: formattedUpsells };
+};
