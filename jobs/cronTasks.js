@@ -301,6 +301,46 @@ async function runEnterpriseIngestionSync(fastify) {
     }
 }
 
+// ============================================================================
+// --- NEW: PHASE 5 AUTONOMOUS B2B PROCUREMENT ENGINE ---
+// ============================================================================
+async function runAutonomousB2BProcurement(fastify) {
+    fastify.log.info('Running Autonomous B2B Procurement Cron...');
+    try {
+        const StoreInventory = require('../models/StoreInventory');
+        const enterpriseController = require('../controllers/enterpriseController');
+        
+        // Scan the entire database for any local inventory that has fallen below threshold
+        const lowStockItems = await StoreInventory.find({ $expr: { $lte: ["$stock", "$lowStockThreshold"] } }).lean();
+        let generatedPOCount = 0;
+
+        for (const item of lowStockItems) {
+            try {
+                // Synthesize the internal Request to route to the lowest-cost Distributor securely
+                const mockRequest = {
+                    body: {
+                        storeId: item.storeId.toString(),
+                        masterProductId: item.masterProductId.toString(),
+                        variantId: item.variantId.toString(),
+                        requestedQty: Math.max(10, item.lowStockThreshold * 2), // Order double threshold or minimum 10
+                        deliveryPincode: '400001' // Defaulting to active zone
+                    }
+                };
+                
+                // Let the Enterprise engine handle distributor matching and drafting
+                await enterpriseController.createB2BPurchaseOrder(mockRequest, null);
+                generatedPOCount++;
+            } catch (e) {
+                // Safely suppress individual drafting failures (e.g. no distributor found) so the loop continues
+            }
+        }
+        
+        fastify.log.info(`[AUTONOMOUS B2B] Auto-Drafted ${generatedPOCount} Purchase Orders successfully.`);
+    } catch (err) {
+        fastify.log.error('Auto-Restock Engine Error:', err);
+    }
+}
+
 module.exports = {
     runWithLock,
     runExpiryMonitor,
@@ -309,5 +349,6 @@ module.exports = {
     runDailyInventory,
     runEODBackup,
     runCloudinaryCleanup,
-    runEnterpriseIngestionSync
+    runEnterpriseIngestionSync,
+    runAutonomousB2BProcurement
 };
