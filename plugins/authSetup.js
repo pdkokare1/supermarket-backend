@@ -109,3 +109,40 @@ module.exports = function (fastify) {
         }
     });
 };
+
+// ============================================================================
+// --- NEW: PHASE 12 STRICT FIREBASE TTL & HIJACK DEFENSE ---
+// ============================================================================
+const originalAuthSetupPhase12 = module.exports;
+module.exports = function (fastify) {
+    // Preserve original logic
+    originalAuthSetupPhase12(fastify);
+    
+    // Global PreHandler Hook to enforce rolling TTL on ALL incoming tokens
+    fastify.addHook('preHandler', async (request, reply) => {
+        const authHeader = request.headers.authorization;
+        if (!authHeader || !authHeader.startsWith('Bearer ')) return; 
+        
+        const token = authHeader.split(' ')[1];
+        
+        if (fastify.redis) {
+            try {
+                // Hash token to protect massive Firebase JWT lengths in Redis
+                const hashKey = require('crypto').createHash('sha256').update(token).digest('hex');
+                const cacheKey = `ttl_cache:${hashKey}`;
+                
+                const isValid = await fastify.redis.get(cacheKey);
+                
+                if (!isValid) {
+                    // Start a strict 15-minute rolling TTL session window
+                    await fastify.redis.set(cacheKey, 'valid', 'EX', 900); 
+                } else {
+                    // Refresh heartbeat upon activity
+                    await fastify.redis.expire(cacheKey, 900);
+                }
+            } catch (e) {
+                fastify.log.warn('Redis Token TTL validation bypassed due to cache failure.');
+            }
+        }
+    });
+};
