@@ -46,3 +46,49 @@ module.exports = async function(fastify, options) {
     // Expose the zero-cost Heuristic Association Engine to the consumer frontend
     fastify.post('/api/products/smart-upsells', productController.getSmartCartUpsells);
 };
+
+// ============================================================================
+// --- NEW: PHASE 12 REDIS-BACKED AUTOCOMPLETE CACHE ---
+// ============================================================================
+const routesExportPhase10 = module.exports;
+module.exports = async function(fastify, options) {
+    await routesExportPhase10(fastify, options);
+    
+    // High-Performance Interceptor for Search Queries
+    fastify.get('/api/products/autocomplete', async (request, reply) => {
+        const query = request.query.q ? request.query.q.toLowerCase() : '';
+        if (!query) return reply.send({ success: true, data: [] });
+        
+        const cacheKey = `autocomplete:${query}`;
+        
+        if (fastify.redis) {
+            try {
+                const cachedResult = await fastify.redis.get(cacheKey);
+                if (cachedResult) {
+                    return reply.code(200).header('X-Cache', 'HIT').send(JSON.parse(cachedResult));
+                }
+            } catch (e) {
+                fastify.log.warn('Redis Cache Error during autocomplete.');
+            }
+        }
+        
+        const Product = require('../models/Product');
+        const results = await Product.find({
+            $or: [
+                { name: { $regex: query, $options: 'i' } },
+                { searchTags: { $regex: query, $options: 'i' } }
+            ],
+            status: 'Active'
+        }).limit(10).lean();
+        
+        const response = { success: true, data: results };
+        
+        if (fastify.redis) {
+            try {
+                await fastify.redis.set(cacheKey, JSON.stringify(response), 'EX', 3600); // Cache for 1 hour
+            } catch (e) {}
+        }
+        
+        return reply.code(200).header('X-Cache', 'MISS').send(response);
+    });
+};
