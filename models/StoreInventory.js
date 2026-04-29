@@ -47,6 +47,13 @@ const storeInventorySchema = new mongoose.Schema({
     averageDailySales: { type: Number, default: 0, min: 0 },
     daysOfStock: { type: Number, default: 999 },
     
+    // --- NEW: PHASE 10 ENTERPRISE ERP MAPPING ---
+    erpIntegration: {
+        erpSku: { type: String, default: null }, // Mapped SKU in external SAP/Oracle systems
+        lastErpSync: { type: Date, default: null },
+        autoSyncEnabled: { type: Boolean, default: true }
+    },
+
     isActive: { type: Boolean, default: true } // If a store stops selling this item locally
 }, { timestamps: true });
 
