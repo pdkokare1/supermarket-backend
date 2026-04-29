@@ -137,3 +137,43 @@ exports.triggerOmniCartClearing = async (request, reply) => {
         payoutsCreated 
     };
 };
+
+// ==========================================
+// --- NEW: PHASE 3 B2B WHOLESALE FINANCIAL LEDGER ---
+// ==========================================
+
+exports.processB2BWholesaleSettlement = async (request, reply) => {
+    // Triggered when a B2B Purchase Order is fulfilled and paid by the Local Shop
+    if (request.user.role !== 'SuperAdmin' && request.user.role !== 'System') {
+        throw new AppError('Unauthorized: System clearing required', 403);
+    }
+    
+    const { poId, distributorId, localStoreId, totalValueRs } = request.body;
+    if (!poId || !distributorId || !totalValueRs) {
+        throw new AppError('Missing required B2B settlement parameters', 400);
+    }
+
+    // DailyPick's standard B2B aggregator commission (e.g., 2.5% on wholesale transactions)
+    const platformB2BCommissionRate = 2.5; 
+    const platformFeeRs = (totalValueRs * platformB2BCommissionRate) / 100;
+    const netPayoutToDistributorRs = totalValueRs - platformFeeRs;
+
+    const settlementDoc = new Settlement({
+        storeId: distributorId, // The Distributor entity receiving the funds
+        orderId: poId, // The B2B Purchase Order ID
+        amount: totalValueRs,
+        platformFeeRs: Number(platformFeeRs.toFixed(2)),
+        netPayoutToStore: Number(netPayoutToDistributorRs.toFixed(2)),
+        status: 'Pending',
+        currency: 'Rs',
+        notes: `B2B Wholesale PO settlement from Store ID: ${localStoreId}`
+    });
+
+    await settlementDoc.save();
+
+    return { 
+        success: true, 
+        message: `B2B Wholesale settlement recorded. Distributor Payout: Rs ${netPayoutToDistributorRs}`,
+        data: settlementDoc
+    };
+};
