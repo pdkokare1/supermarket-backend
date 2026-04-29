@@ -146,6 +146,19 @@ const createApp = (opts = {}) => {
         dir: path.join(__dirname, 'routes')
     });
 
+    // ==========================================
+    // --- NEW: PHASE 12 VERCEL EDGE CACHING ---
+    // ==========================================
+    fastify.addHook('onSend', async (request, reply, payload) => {
+        if (request.method === 'GET' && request.routeOptions.url) {
+            if (request.routeOptions.url.includes('/api/categories') || request.routeOptions.url.includes('/api/products')) {
+                // Cache at the Vercel Edge for 15 minutes, allow background revalidation for 1 hour
+                reply.header('Cache-Control', 'public, s-maxage=900, stale-while-revalidate=3600');
+            }
+        }
+        return payload;
+    });
+
     return { fastify, redisClient };
 };
 
