@@ -43,4 +43,10 @@ module.exports = async function (fastify, opts) {
     fastify.post('/api/enterprise/procurement/create-po', async (request, reply) => {
         return await enterpriseController.createB2BPurchaseOrder(request, reply);
     });
+
+    // --- NEW: ENTERPRISE STORE-IN-STORE API (MEGA-CHAINS) ---
+    // Dedicated endpoint for ERPs (like Reliance/Croma) to post bulk JSON payloads.
+    fastify.post('/api/enterprise/sync-inventory', async (request, reply) => {
+        return await enterpriseController.syncStoreInventory(request, reply);
+    });
 };
