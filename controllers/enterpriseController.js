@@ -258,3 +258,41 @@ exports.createB2BPurchaseOrder = async (request, reply) => {
         data: b2bOrderDetails
     };
 };
+
+// --- NEW: ENTERPRISE STORE-IN-STORE SYNC (MEGA-CHAINS) ---
+exports.syncStoreInventory = async (request, reply) => {
+    const store = await authenticateEnterprise(request);
+    const { syncTimestamp, locationId, items } = request.body;
+
+    if (!items || !Array.isArray(items)) {
+        throw new AppError('Items array is required for sync', 400);
+    }
+
+    const bulkOps = [];
+    for (const item of items) {
+        const masterDoc = await MasterProduct.findOne({ "variants.sku": item.sku, isActive: true });
+        if (masterDoc) {
+            const variant = masterDoc.variants.find(v => v.sku === item.sku);
+            if (variant) {
+                bulkOps.push({
+                    updateOne: {
+                        filter: { storeId: store._id, masterProductId: masterDoc._id, variantId: variant._id },
+                        update: { $set: { stock: item.stockAvailable, sellingPrice: item.retailPriceRs } },
+                        upsert: true
+                    }
+                });
+            }
+        }
+    }
+
+    if (bulkOps.length > 0) {
+        await StoreInventory.bulkWrite(bulkOps);
+    }
+
+    await Store.findByIdAndUpdate(store._id, { $set: { "apiIntegration.lastSync": syncTimestamp || new Date() } });
+
+    const { invalidateProductCache } = require('../services/productCacheService');
+    await invalidateProductCache();
+
+    return { success: true, message: `Store-in-Store sync completed for ${locationId || 'default'}. Processed ${items.length} items.` };
+};
