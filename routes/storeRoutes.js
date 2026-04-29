@@ -17,4 +17,14 @@ async function storeRoutes(fastify, options) {
     fastify.post('/api/stores/:id/api-key', { preHandler: [fastify.authenticate, fastify.verifyAdmin] }, storeController.generateEnterpriseKey);
 }
 
-module.exports = storeRoutes;
+// ============================================================================
+// --- NEW: PHASE 10 ROUTE INTERCEPTOR FOR MOBILE DISCOVERY ---
+// ============================================================================
+const originalStoreRoutesPhase10 = storeRoutes;
+
+module.exports = async function(fastify, options) {
+    await originalStoreRoutesPhase10(fastify, options);
+    
+    // PUBLIC APP ROUTE: High-performance geospatial discovery (Requires Lat/Lng)
+    fastify.get('/api/stores/discover', storeController.discoverNearbyStores);
+};
