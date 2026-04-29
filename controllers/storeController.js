@@ -68,3 +68,54 @@ exports.generateEnterpriseKey = async (request, reply) => {
 
     return { success: true, message: 'Enterprise API Key generated successfully.', data: { apiKey: newApiKey } };
 };
+
+// ============================================================================
+// --- NEW: PHASE 10 HYPER-LOCAL DISCOVERY API (MOBILE APP READY) ---
+// ============================================================================
+exports.discoverNearbyStores = async (request, reply) => {
+    const { lat, lng, radius = 5000 } = request.query; // Default 5km radius
+    
+    if (!lat || !lng) {
+        throw new AppError('Latitude and Longitude are strictly required for spatial discovery.', 400);
+    }
+
+    // Use MongoDB native geospatial aggregation to find and categorize stores
+    const nearbyStores = await Store.aggregate([
+        {
+            $geoNear: {
+                near: { type: 'Point', coordinates: [Number(lng), Number(lat)] },
+                distanceField: "distanceInMeters",
+                maxDistance: Number(radius),
+                spherical: true,
+                query: { isActive: true } // Only show active platforms
+            }
+        },
+        {
+            // Dynamic distance validation against the store's custom multi-tenant delivery radius constraint
+            $match: {
+                $expr: { $lte: ["$distanceInMeters", { $ifNull: ["$maxDeliveryRadius", 5000] }] }
+            }
+        },
+        {
+            // Optimize payload for lightweight mobile app consumption
+            $project: {
+                name: 1,
+                storeType: 1,
+                chainName: 1,
+                distanceInMeters: 1,
+                "metrics.rating": 1,
+                fulfillmentOptions: 1
+            }
+        },
+        { $sort: { distanceInMeters: 1 } }
+    ]);
+
+    // Grouping the response so the UI team can easily render distinct horizontal scrolling sections
+    const groupedResults = {
+        megaMarts: nearbyStores.filter(s => s.storeType === 'ENTERPRISE'),
+        quickCommerce: nearbyStores.filter(s => s.storeType === 'INDEPENDENT' && s.distanceInMeters < 3000), // Under 3km
+        allNearby: nearbyStores
+    };
+
+    return { success: true, message: 'Hyper-local discovery complete', data: groupedResults };
+};
