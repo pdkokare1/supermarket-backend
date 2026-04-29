@@ -112,3 +112,50 @@ exports.closeShift = async (payload, user, logError) => {
 
     return { shift, discrepancy };
 };
+
+// ============================================================================
+// --- NEW: PHASE 10 SPATIAL FLEET DISPATCH ENGINE ---
+// ============================================================================
+// Listens for the event emitted by checkoutService to auto-assign the nearest rider
+appEvents.on('TRIGGER_SPATIAL_DISPATCH', async ({ orderId, storeId }) => {
+    try {
+        const Store = require('../models/Store');
+        const store = await Store.findById(storeId).lean();
+        if (!store || !store.spatialLocation) return; // Needs geo coordinates to calculate route
+
+        // 1. Find an open shift (active rider) closest to the store using $geoNear
+        const nearestRiderShift = await Shift.aggregate([
+            {
+                $geoNear: {
+                    near: store.spatialLocation,
+                    distanceField: "distanceToStore",
+                    maxDistance: 10000, // Look within 10km radius
+                    spherical: true,
+                    query: { status: 'Open', spatialLocation: { $exists: true } } // Only active riders with GPS enabled
+                }
+            },
+            { $sort: { distanceToStore: 1 } },
+            { $limit: 1 }
+        ]);
+
+        if (nearestRiderShift && nearestRiderShift.length > 0) {
+            const rider = nearestRiderShift[0];
+            
+            // 2. Auto-assign the closest rider and push to their Mobile App
+            await Order.findByIdAndUpdate(orderId, {
+                deliveryDriverName: rider.userName,
+                status: 'Packed', 
+                'b2bLogistics.externalCourierId': `FLEET-${rider._id}`
+            });
+            
+            console.log(`[SPATIAL DISPATCH] Auto-assigned Order ${orderId} to nearest rider ${rider.userName} (${Math.round(rider.distanceToStore)}m away).`);
+            
+            // Trigger WebSockets to notify Rider App
+            appEvents.emit('RIDER_DISPATCHED', { orderId, riderId: rider._id });
+        } else {
+            console.log(`[SPATIAL DISPATCH] No active riders within 10km of Store ${storeId}. Order ${orderId} placed in manual queue.`);
+        }
+    } catch (err) {
+        console.error(`[SPATIAL DISPATCH ERROR] Failed to route order ${orderId}:`, err.message);
+    }
+});
