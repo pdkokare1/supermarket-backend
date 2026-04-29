@@ -77,4 +77,39 @@ module.exports = function(fastify) {
     appEvents.on('DISTRIBUTOR_UPDATED', (payload) => {
         fastify.broadcastToPOS({ type: 'DISTRIBUTOR_UPDATED', distributorId: payload.distributorId });
     });
+
+    // ============================================================================
+    // --- NEW: PHASE 3 OUTBOUND ENTERPRISE WEBHOOK ENGINE ---
+    // ============================================================================
+    // Acts as a non-blocking secondary listener to prevent impacting core checkout speed.
+    appEvents.on('NEW_ORDER', async (payload) => {
+        const { order, storeId } = payload;
+        
+        setImmediate(async () => {
+            try {
+                // Dynamically required to avoid circular dependencies on boot
+                const Store = require('../models/Store');
+                const axios = require('axios');
+                
+                const store = await Store.findById(storeId);
+                
+                // If it's a Mega-Chain, push the order directly to their native ERP system
+                if (store && store.storeType === 'ENTERPRISE' && store.apiIntegration && store.apiIntegration.webhookUrl) {
+                    await axios.post(store.apiIntegration.webhookUrl, {
+                        event: 'order.created',
+                        timestamp: new Date(),
+                        data: order
+                    }, {
+                        headers: { 
+                            'Authorization': `Bearer ${store.apiIntegration.apiSecretKey}`,
+                            'Content-Type': 'application/json'
+                        },
+                        timeout: 5000 // 5-second fail-safe so we don't hold up backend memory
+                    });
+                }
+            } catch (err) {
+                console.error(`[ENTERPRISE WEBHOOK FAILED] Store: ${storeId}, Order: ${order._id}. Error:`, err.message);
+            }
+        });
+    });
 };
