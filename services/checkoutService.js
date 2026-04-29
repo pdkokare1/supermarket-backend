@@ -447,3 +447,25 @@ exports.processOnlineCheckout = async (payload, externalSession = null) => {
     // If safe, proceed with normal checkout
     return await originalProcessOnlineCheckoutPhase9(payload, externalSession);
 };
+
+// ============================================================================
+// --- NEW: PHASE 10 SPATIAL FLEET DISPATCH TRIGGER ---
+// ============================================================================
+const originalProcessOnlineCheckoutPhase10 = exports.processOnlineCheckout;
+
+exports.processOnlineCheckout = async (payload, externalSession = null) => {
+    // 1. Run the entire checkout flow normally (including split-cart)
+    const generatedOrders = await originalProcessOnlineCheckoutPhase10(payload, externalSession);
+    
+    // 2. Intercept the result. If any of the orders require PLATFORM_FLEET, trigger Mapbox Routing.
+    const ordersArray = Array.isArray(generatedOrders) ? generatedOrders : [generatedOrders];
+    
+    for (const order of ordersArray) {
+        if (order.fulfillmentType === 'PLATFORM_DELIVERY') {
+            // Emits to shiftService for $geoNear proximity calculations
+            appEvents.emit('TRIGGER_SPATIAL_DISPATCH', { orderId: order._id, storeId: order.storeId });
+        }
+    }
+    
+    return generatedOrders;
+};
