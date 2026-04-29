@@ -221,5 +221,41 @@ exports.omniCartCheckout = async (request, reply) => {
         }
     }
     
+    // ============================================================================
+    // --- NEW: PHASE 7 GST & TAX RECONCILIATION ENGINE ---
+    // ============================================================================
+    if (result.success && result.splitShipmentGroupId) {
+        const Order = require('../models/Order');
+        const orders = await Order.find({ splitShipmentGroupId: result.splitShipmentGroupId });
+        
+        for (let order of orders) {
+            let totalCgst = 0;
+            let totalSgst = 0;
+            
+            order.items.forEach(item => {
+                // Determine tax slab (5% for Groceries, 18% standard for Electronics/Others)
+                const isEssential = item.categorySnapshot === 'Groceries' || item.categorySnapshot === 'Dairy & Breakfast';
+                const taxRate = isEssential ? 0.05 : 0.18; 
+                
+                const itemTax = (item.price * item.qty) * taxRate;
+                totalCgst += (itemTax / 2);
+                totalSgst += (itemTax / 2);
+            });
+            
+            order.taxBreakdown = {
+                cgstRs: Number(totalCgst.toFixed(2)),
+                sgstRs: Number(totalSgst.toFixed(2)),
+                totalTaxRs: Number((totalCgst + totalSgst).toFixed(2))
+            };
+            
+            // B2B Flagging for Enterprise ITCs
+            if (order.fulfillmentType === 'STORE_DELIVERY') {
+                order.b2bTaxInvoice = true;
+            }
+            
+            await order.save();
+        }
+    }
+
     return result;
 };
