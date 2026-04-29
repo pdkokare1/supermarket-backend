@@ -47,11 +47,24 @@ const storeSchema = new mongoose.Schema({
         totalReviews: { type: Number, default: 0, min: 0 }
     },
 
+    // --- NEW: PHASE 10 B2B OMNICHANNEL & SPATIAL ROUTING ---
+    spatialLocation: {
+        type: { type: String, enum: ['Point'], default: 'Point' },
+        coordinates: { type: [Number], default: [73.7997, 18.6298] } // [lng, lat] for $geoNear Mapbox/MongoDB routing
+    },
+    maxDeliveryRadius: { type: Number, default: 5000 }, // Delivery radius in meters for hyper-local filtering
+    erpIntegration: {
+        erpStoreId: { type: String, default: '' }, // e.g., 'RELIANCE_PIMPRI_001'
+        legacySyncMethod: { type: String, enum: ['API', 'FTP_CSV', 'MANUAL'], default: 'API' }
+    },
+
     isActive: { type: Boolean, default: true }
 }, { timestamps: true });
 
 // Indexes for hyper-local discovery and fast querying
 storeSchema.index({ "coordinates.lat": 1, "coordinates.lng": 1 });
 storeSchema.index({ storeType: 1, isActive: 1 });
+// Geospatial index for hyper-local B2C discovery and spatial routing
+storeSchema.index({ spatialLocation: '2dsphere' });
 
 module.exports = mongoose.model('Store', storeSchema);
