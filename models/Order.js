@@ -144,4 +144,20 @@ orderSchema.index({ storeId: 1, status: 1, createdAt: -1 });
 orderSchema.index({ splitShipmentGroupId: 1 }); // Fast B2C Cart aggregation
 orderSchema.index({ orderNumber: 'text', customerPhone: 'text', customerName: 'text' });
 
+// ============================================================================
+// --- NEW: PHASE 8 GEOSPATIAL FLEET ROUTING & COMPOUND INDEXING ---
+// ============================================================================
+orderSchema.add({
+    location: {
+        type: { type: String, enum: ['Point'], default: 'Point' },
+        coordinates: { type: [Number], default: [73.7997, 18.6298] } // [lng, lat]
+    }
+});
+
+// Geospatial index for the Rider Routing Manhattan Distance optimization
+orderSchema.index({ location: '2dsphere', status: 1 });
+
+// High-performance Compound Index to prevent full collection scans when HQ Heatmap loads
+orderSchema.index({ fulfillmentType: 1, status: 1, createdAt: -1 });
+
 module.exports = mongoose.model('Order', orderSchema);
