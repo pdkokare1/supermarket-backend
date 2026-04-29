@@ -42,3 +42,53 @@ module.exports = function(fastify, updateInventoryReport) {
         done();
     });
 };
+
+// ============================================================================
+// --- NEW: PHASE 12 ALGORITHMIC RESTOCK ALERTS ---
+// ============================================================================
+const originalCronSchedulerPhase12 = module.exports;
+
+module.exports = function(fastify, updateInventoryReport) {
+    originalCronSchedulerPhase12(fastify, updateInventoryReport);
+    
+    const cron = require('node-cron');
+    const cronOptions = { timezone: process.env.TZ || 'Asia/Kolkata' };
+    
+    // Run every 2 hours to analyze purchase velocity
+    const velocityJob = cron.schedule('0 */2 * * *', async () => {
+        if (fastify.isShuttingDown) return;
+        
+        try {
+            fastify.log.info('Running Phase 12 Velocity & Restock Analyzer...');
+            const Order = require('../models/Order');
+            const Product = require('../models/Product');
+            
+            // Look at orders from the last 24 hours
+            const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000);
+            
+            const velocityData = await Order.aggregate([
+                { $match: { createdAt: { $gte: yesterday }, status: { $in: ['Delivered', 'Dispatched'] } } },
+                { $unwind: "$items" },
+                { $group: { _id: "$items.productId", dailySold: { $sum: "$items.qty" } } }
+            ]);
+            
+            for (const stat of velocityData) {
+                const product = await Product.findById(stat._id);
+                if (product && product.variants && product.variants.length > 0) {
+                    const stock = product.variants[0].stock;
+                    // If daily velocity exceeds current stock, we will run out soon.
+                    if (stat.dailySold > stock && stock > 0) {
+                        fastify.log.warn(`🚨 URGENT RESTOCK: ${product.name} is draining fast! Sold ${stat.dailySold} today, only ${stock} left.`);
+                    }
+                }
+            }
+        } catch (err) {
+            fastify.log.error('Velocity Analyzer Error: ' + err.message);
+        }
+    }, cronOptions);
+    
+    fastify.addHook('onClose', async (instance, done) => {
+        velocityJob.stop();
+        done();
+    });
+};
