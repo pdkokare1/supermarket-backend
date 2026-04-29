@@ -296,3 +296,61 @@ exports.syncStoreInventory = async (request, reply) => {
 
     return { success: true, message: `Store-in-Store sync completed for ${locationId || 'default'}. Processed ${items.length} items.` };
 };
+
+// ============================================================================
+// --- NEW: PHASE 5 ENTERPRISE WEBHOOK HEALTH & RETRY MATRIX ---
+// ============================================================================
+
+const mongoose = require('mongoose');
+const dlqSchema = new mongoose.Schema({
+    storeId: String,
+    webhookUrl: String,
+    payload: Object,
+    error: String,
+    createdAt: { type: Date, default: Date.now },
+    status: { type: String, default: 'FAILED' }
+});
+
+// Create model safely preventing overwrite errors on hot reloads
+const WebhookDLQ = mongoose.models.WebhookDLQ || mongoose.model('WebhookDLQ', dlqSchema);
+
+exports.logFailedWebhook = async (storeId, webhookUrl, payload, errorMsg) => {
+    try {
+        await WebhookDLQ.create({ storeId, webhookUrl, payload, error: errorMsg });
+    } catch (e) {
+        console.error("Failed to write to Dead Letter Queue:", e.message);
+    }
+};
+
+exports.getFailedWebhooks = async (request, reply) => {
+    if (!request.user || request.user.role !== 'SuperAdmin') {
+        throw new AppError('Unauthorized: HQ access required for System Health', 403);
+    }
+    const failures = await WebhookDLQ.find({ status: 'FAILED' }).sort('-createdAt').limit(50);
+    return { success: true, data: failures };
+};
+
+exports.retryFailedWebhook = async (request, reply) => {
+    if (!request.user || request.user.role !== 'SuperAdmin') {
+        throw new AppError('Unauthorized', 403);
+    }
+    const { id } = request.params;
+    const dlq = await WebhookDLQ.findById(id);
+    
+    if (!dlq) throw new AppError('Failed log not found in Dead Letter Queue', 404);
+    
+    try {
+        const axios = require('axios');
+        // Standard payload retry 
+        await axios.post(dlq.webhookUrl, dlq.payload, { timeout: 10000 });
+        
+        dlq.status = 'RESOLVED';
+        await dlq.save();
+        
+        return { success: true, message: 'Webhook retry successful!' };
+    } catch (e) {
+        dlq.error = e.message;
+        await dlq.save();
+        return { success: false, message: 'Retry failed again: ' + e.message };
+    }
+};
