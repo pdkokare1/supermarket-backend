@@ -259,3 +259,53 @@ exports.omniCartCheckout = async (request, reply) => {
 
     return result;
 };
+
+// ============================================================================
+// --- NEW: PHASE 9 PROOF OF DELIVERY & FRAUD SHIELD HOOKS ---
+// ============================================================================
+const originalDispatchOrderPhase9 = exports.dispatchOrder;
+
+exports.dispatchOrder = async (request, reply) => {
+    // Generate a secure 4-digit OTP before dispatching to combat shrinkage
+    const Order = require('../models/Order');
+    const otp = Math.floor(1000 + Math.random() * 9000).toString();
+    
+    await Order.findByIdAndUpdate(request.params.id, { deliveryOtp: otp });
+    
+    // (In production, the notificationService would immediately text this OTP to the customer)
+    
+    return await originalDispatchOrderPhase9(request, reply);
+};
+
+const originalUpdateStatusPhase9 = exports.updateStatus;
+
+exports.updateStatus = async (request, reply) => {
+    const { status, otp } = request.body;
+    const Order = require('../models/Order');
+    const Customer = require('../models/Customer');
+    const AppError = require('../utils/AppError');
+    
+    const order = await Order.findById(request.params.id);
+    if (!order) throw new AppError('Order not found', 404);
+
+    // 1. Proof of Delivery (OTP Check)
+    if (status === 'Delivered' && order.deliveryOtp) {
+        // If the user requesting the update is a Rider, they MUST provide the OTP
+        if (request.user && request.user.role === 'Delivery_Agent') {
+            if (!otp || order.deliveryOtp !== otp.toString()) {
+                throw new AppError('Invalid Delivery OTP. Please ask the customer for their 4-digit PIN.', 400);
+            }
+        }
+    }
+
+    // 2. Fraud Shield (COD Rejection Tracking)
+    if ((status === 'Returned' || status === 'Failed') && order.paymentMethod === 'Cash on Delivery') {
+        // Punish the customer's Trust Score for wasting logistics resources
+        await Customer.findOneAndUpdate(
+            { phone: order.customerPhone },
+            { $inc: { codRejections: 1, trustScore: -10 } }
+        );
+    }
+
+    return await originalUpdateStatusPhase9(request, reply);
+};
