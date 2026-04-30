@@ -422,3 +422,87 @@ exports.updateRiderLocation = async (request, reply) => {
     
     return reply.code(200).send({ success: true, message: 'Location synced' });
 };
+
+// ============================================================================
+// --- NEW: PHASE 16 HYBRID DELIVERY ROUTING (B2B ENTERPRISE FLEET DISPATCH) ---
+// ============================================================================
+const originalOnlineCheckoutPhase16 = exports.onlineCheckout;
+
+// Intercept single-store checkouts
+exports.onlineCheckout = async (request, reply) => {
+    const result = await originalOnlineCheckoutPhase16(request, reply);
+    
+    if (result.success && result.orderId) {
+        await executeHybridDeliveryRouting(result.orderId, request.server);
+    }
+    return result;
+};
+
+const originalOmniCartCheckoutPhase16 = exports.omniCartCheckout;
+
+// Intercept multi-store checkouts
+exports.omniCartCheckout = async (request, reply) => {
+    const result = await originalOmniCartCheckoutPhase16(request, reply);
+    
+    if (result.success && result.splitShipmentGroupId) {
+        const Order = require('../models/Order');
+        const subOrders = await Order.find({ splitShipmentGroupId: result.splitShipmentGroupId }).select('_id');
+        for (const subOrder of subOrders) {
+            await executeHybridDeliveryRouting(subOrder._id, request.server);
+        }
+    }
+    return result;
+};
+
+// Core Dispatch Logic
+async function executeHybridDeliveryRouting(orderId, server) {
+    try {
+        const Order = require('../models/Order');
+        const Store = require('../models/Store');
+        const axios = require('axios');
+
+        const order = await Order.findById(orderId);
+        if (!order || !order.storeId) return;
+
+        const store = await Store.findById(order.storeId);
+        
+        // Check if this store has a configured Enterprise Webhook for their own fleet
+        if (store && store.storeType === 'ENTERPRISE' && store.apiIntegration && store.apiIntegration.webhookUrl) {
+            
+            // Flag it as a Partner Fleet delivery so DailyPick riders ignore it
+            order.fulfillmentType = 'STORE_DELIVERY';
+            order.partnerTrackingId = `ENT-${order.orderNumber || orderId.toString().slice(-6)}`;
+            await order.save();
+
+            // Fire the webhook payload asynchronously to the partner ERP (e.g., Croma)
+            axios.post(store.apiIntegration.webhookUrl, {
+                event: 'NEW_ORDER_DISPATCH',
+                dailyPickOrderId: order._id,
+                partnerTrackingId: order.partnerTrackingId,
+                customer: {
+                    name: order.customerName,
+                    phone: order.customerPhone,
+                    address: order.deliveryAddress
+                },
+                items: order.items,
+                totalAmountRs: order.totalAmount
+            }, {
+                headers: { 'x-api-key': store.apiIntegration.apiSecretKey },
+                timeout: 10000 
+            }).catch(e => {
+                // If their server is down, log it to your DLQ (Dead Letter Queue) established in Phase 15
+                if (server && server.log) {
+                    server.log.error(`Hybrid Routing Webhook Failed for Store ${store.name}: ${e.message}`);
+                }
+                const { logFailedWebhook } = require('./enterpriseController');
+                logFailedWebhook(store._id, store.apiIntegration.webhookUrl, order, e.message);
+            });
+        } else {
+            // Standard Flow: It's a regular DailyPick store, let the SSE stream alert the riders
+            const appEvents = require('../utils/eventEmitter');
+            appEvents.emit('RIDER_DISPATCH_REQUIRED', { orderId: order._id, storeId: store._id });
+        }
+    } catch (error) {
+        if (server && server.log) server.log.error(`Hybrid Delivery Routing execution failed: ${error.message}`);
+    }
+}
