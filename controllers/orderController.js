@@ -508,11 +508,12 @@ async function executeHybridDeliveryRouting(orderId, server) {
 }
 
 // ============================================================================
-// --- NEW: PHASE 18 DISPUTE RESOLUTION CENTER (NATIVE APP IMAGE UPLOAD) ---
+// --- MODIFIED: PHASE 24 AUTOMATED MICRO-REFUNDS (OPS SAVER) ---
 // ============================================================================
 exports.reportIssue = async (request, reply) => {
     const Order = require('../models/Order');
-    const { orderId, imageBase64 } = request.body;
+    const Customer = require('../models/Customer');
+    const { orderId, imageBase64, disputedAmountRs } = request.body; // Front-end passes disputed amount
     const cloudinary = require('cloudinary').v2;
 
     const order = await Order.findById(orderId);
@@ -531,6 +532,23 @@ exports.reportIssue = async (request, reply) => {
         }
     }
 
+    // --- PHASE 24 TIER-1 OPS AUTOMATION ---
+    const customer = await Customer.findOne({ phone: order.customerPhone });
+    
+    // Auto-approve refund if: Trust score is excellent AND claim is under Rs 100
+    if (customer && customer.trustScore > 90 && disputedAmountRs && disputedAmountRs <= 100) {
+        // Issue instant micro-refund to their wallet
+        customer.loyaltyPoints += disputedAmountRs; // 1 Point = 1 Rs mapping in your settings
+        await customer.save();
+
+        order.status = 'Partially Refunded';
+        order.notes = `${order.notes || ''} [AUTO-RESOLVED: Rs ${disputedAmountRs} credited to Loyalty Wallet for damaged item. Proof: ${imageUrl || 'No image'}]`.trim();
+        await order.save();
+
+        return { success: true, message: `Issue auto-resolved! Rs ${disputedAmountRs} has been instantly credited to your wallet.` };
+    }
+
+    // Standard manual review queue for larger amounts or lower-trust users
     order.status = 'Disputed';
     order.notes = `${order.notes || ''} [ISSUE REPORTED: Photo Proof attached]`.trim();
     if (imageUrl) {
