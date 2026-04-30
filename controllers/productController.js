@@ -275,3 +275,69 @@ exports.createProduct = async (request, reply) => {
     }
     return await originalCreateProductPhase10(request, reply);
 };
+
+// ============================================================================
+// --- NEW: PHASE 24 BACKEND SEMANTIC SEARCH (THE CONVERSION ENGINE) ---
+// ============================================================================
+exports.searchProducts = async (request, reply) => {
+    const { q, lat, lng } = request.query;
+    if (!q || q.length < 2) return { success: true, data: [] };
+
+    // 1. Primary Text Search (Utilizes MongoDB text indexing for speed)
+    let query = { isActive: true, $text: { $search: q } };
+    
+    // We aggregate over StoreInventory, but we need to match the name from MasterProduct.
+    // In an enterprise setup, the MasterProduct's name should be indexed and searched.
+    // To do this dynamically and return frontend-ready objects, we perform a 2-step lookup:
+    
+    const MasterProduct = require('../models/MasterProduct');
+    // Fuzzy regex fallback if text search fails (handles typos like 'coka')
+    const regex = new RegExp(q.split(' ').join('|'), 'i');
+    
+    const masterMatches = await MasterProduct.find({
+        $or: [
+            { $text: { $search: q } },
+            { name: { $regex: regex } },
+            { searchTags: { $regex: regex } }
+        ],
+        isActive: true
+    }).select('_id name imageUrl category searchTags').lean();
+
+    if (masterMatches.length === 0) return { success: true, data: [] };
+    const masterIds = masterMatches.map(m => m._id);
+
+    // 2. Find local inventory for those matched products
+    // (If lat/lng is provided, this could be filtered by proximity in a more advanced query)
+    const localInventory = await StoreInventory.find({
+        masterProductId: { $in: masterIds },
+        isActive: true,
+        stock: { $gt: 0 }
+    }).lean();
+
+    // 3. Reconstruct for the frontend 
+    // This perfectly mimics your existing Product array structure in app.js
+    const results = [];
+    masterMatches.forEach(master => {
+        const availableVariants = localInventory.filter(inv => inv.masterProductId.toString() === master._id.toString());
+        if (availableVariants.length > 0) {
+            results.push({
+                _id: master._id,
+                name: master.name,
+                imageUrl: master.imageUrl,
+                category: master.category,
+                searchTags: master.searchTags,
+                variants: availableVariants.map(v => ({
+                    _id: v.variantId,
+                    price: v.sellingPrice,
+                    stock: v.stock,
+                    lowStockThreshold: v.lowStockThreshold,
+                    storeId: v.storeId,
+                    weightOrVolume: 'Standard', // Handled properly in full master variants
+                    storeType: 'INDEPENDENT'
+                }))
+            });
+        }
+    });
+
+    return { success: true, data: results };
+};
