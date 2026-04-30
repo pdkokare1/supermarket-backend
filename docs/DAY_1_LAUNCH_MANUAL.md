@@ -42,3 +42,41 @@ Before driving live traffic, prove the backend locks and container scaling by ex
    * Open your Railway Dashboard. Navigate to "Metrics".
    * Ensure CPU does not hit 100% and MongoDB connections do not exhaust during the 500 req/sec spike.
    * **Success State:** Artillery terminal outputs 0 failed HTTP requests, confirming the atomic Idempotency locks successfully caught concurrent duplicates.
+
+# ============================================================================
+# --- NEW: PHASE 10 OMNICHANNEL B2B2C PILOT CHECKLIST ---
+# ============================================================================
+
+Before onboarding external partners like D-Mart or Croma, execute this physical test strictly in this chronological order to verify the Single Source of Truth, Spatial Dispatch, and Omni-Cart splitting.
+
+### Step 1: The "Cold Start" HQ Seed
+- [ ] Log into the **HQ SuperAdmin Dashboard**.
+- [ ] Ensure the Live Geospatial Map loads (Dark Theme).
+- [ ] Navigate to the Global Catalog. Submit **3 Test Items** (e.g., Maggi 70g, Coca-Cola 300ml, Test iPhone) with valid GS1 Barcodes.
+- [ ] Approve them so they enter the Master Database.
+
+### Step 2: Local Shop B2B Onboarding
+- [ ] Log into the **Store Admin Dashboard** as a Local Shop Manager.
+- [ ] Open the Inventory Tab -> Click **"Global Catalog"**.
+- [ ] Search for the Maggi and Coca-Cola you just created. Click **"1-Click Import"**.
+- [ ] Set your local selling price (Rs) and stock (e.g., 50 units).
+
+### Step 3: Enterprise Webhook Simulation
+- [ ] Using Postman or the `testB2B2C_Simulation.js` script, fire a webhook payload to the `/api/enterprise/inventory/sync` endpoint simulating Croma pushing stock for the "Test iPhone".
+- [ ] Verify the Store Admin UI shows the iPhone in Croma's inventory.
+
+### Step 4: The Rider App Initialization
+- [ ] Open the **Rider Terminal App** on a physical mobile device.
+- [ ] Grant Background Location Permissions.
+- [ ] Verify the Rider icon appears on the HQ Live Map.
+
+### Step 5: The Consumer Omni-Cart Purchase
+- [ ] Open the **Customer App** on a separate mobile device.
+- [ ] Add Maggi (from Local Shop) and the iPhone (from Croma) to the cart.
+- [ ] Observe the UI grouping: "Fulfilled by DailyPick Platform" vs "Fulfilled by Croma".
+- [ ] Complete the checkout.
+
+### Step 6: Spatial Dispatch & Fulfillment Verification
+- [ ] **Rider App:** Verify the loud native push notification arrives assigning the Maggi delivery. Accept it.
+- [ ] **Customer App:** Open the Order Tracker. Verify the Mapbox UI shows the Rider's moving emoji.
+- [ ] **HQ Dashboard:** Verify the settlement ledger successfully split the payment, calculating the platform commission and the net payout owed to the Local Shop and Croma separately.
