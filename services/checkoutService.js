@@ -377,14 +377,13 @@ exports.processPosCheckout = async (payload, externalSession = null) => {
 };
 
 // ============================================================================
-// --- NEW: PHASE 8 TEMPORARY CART HOLD (INVENTORY INTEGRITY) ---
+// --- MODIFIED: PHASE 8 & 23 REDIS CART LOCKING (CONCURRENCY SHIELD) ---
 // ============================================================================
 const originalProcessOnlineCheckoutPhase8 = exports.processOnlineCheckout;
 
 exports.processOnlineCheckout = async (payload, externalSession = null) => {
     // 1. Temporary Cart Hold (5 Minutes)
     // Before processing the transaction, we secure a Redis lock for the requested items
-    // This guarantees that if they take 4 minutes to enter their card details, the stock isn't sold to someone else.
     
     const cacheUtils = require('../utils/cacheUtils');
     const redisClient = cacheUtils.getClient();
@@ -392,22 +391,26 @@ exports.processOnlineCheckout = async (payload, externalSession = null) => {
 
     if (redisClient && payload.items && payload.items.length > 0) {
         for (const item of payload.items) {
-            const lockKey = `stock_hold:${item.storeId || payload.storeId}:${item.variantId}`;
-            const heldCount = await redisClient.incrby(lockKey, item.qty);
-            await redisClient.expire(lockKey, 300); // 5-minute TTL
-            locksAcquired.push({ key: lockKey, qty: item.qty });
-            
-            // Instantly compare held count against actual DB to prevent over-commitment
             const StoreInventory = require('../models/StoreInventory');
             const inv = await StoreInventory.findOne({ variantId: item.variantId, storeId: item.storeId || payload.storeId }).lean();
-            if (inv && (inv.stock < heldCount)) {
-                // Insufficient stock due to other customers holding it -> instantly revert
-                await redisClient.decrby(lockKey, item.qty);
-                throw new AppError(`High demand! An item in your cart is currently reserved by another shopper.`, 409);
+            
+            // PHASE 23 OPTIMIZATION: Only lock if stock is dangerously low (< 5 items left) to save Redis bandwidth
+            if (inv && inv.stock <= 5) {
+                const lockKey = `stock_hold:${item.storeId || payload.storeId}:${item.variantId}`;
+                const heldCount = await redisClient.incrby(lockKey, item.qty);
+                await redisClient.expire(lockKey, 300); // 5-minute TTL
+                locksAcquired.push({ key: lockKey, qty: item.qty });
+                
+                // Instantly compare held count against actual DB to prevent over-commitment
+                if (inv.stock < heldCount) {
+                    // Insufficient stock due to other customers holding it -> instantly revert
+                    await redisClient.decrby(lockKey, item.qty);
+                    throw new AppError(`High demand! The last of this item is currently reserved by another shopper.`, 409);
+                }
             }
         }
         
-        // Save the cart session explicitly for the Ghost Order Webhook Fallback to retrieve later!
+        // PRESERVED: Save the cart session explicitly for the Ghost Order Webhook Fallback to retrieve later!
         if (payload.idempotencyKey) {
             await redisClient.set(`cart_session:${payload.idempotencyKey}`, JSON.stringify(payload), 'EX', 3600);
         }
@@ -418,7 +421,6 @@ exports.processOnlineCheckout = async (payload, externalSession = null) => {
         return await originalProcessOnlineCheckoutPhase8(payload, externalSession);
     } finally {
         // 3. Clean up the holds after the transaction either succeeds or fails
-        // (If it failed, this releases the stock back to the public immediately)
         if (redisClient && locksAcquired.length > 0) {
             for (const lock of locksAcquired) {
                 await redisClient.decrby(lock.key, lock.qty);
