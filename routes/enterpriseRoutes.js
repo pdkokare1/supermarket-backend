@@ -49,6 +49,12 @@ module.exports = async function (fastify, opts) {
     fastify.post('/api/enterprise/sync-inventory', async (request, reply) => {
         return await enterpriseController.syncStoreInventory(request, reply);
     });
+
+    // --- NEW: PHASE 1 ENTERPRISE ORDER FETCH ---
+    // Allow ERPs to pull their store's orders programmatically
+    fastify.get('/api/enterprise/orders', async (request, reply) => {
+        return await enterpriseController.fetchOrders(request, reply);
+    });
 };
 
 // ============================================================================
