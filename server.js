@@ -9,14 +9,18 @@ if (process.env.NODE_ENV !== 'production') {
 // ============================================================================
 // --- NEW: PHASE 23 DEVOPS TELEMETRY (SENTRY CRASH REPORTING) ---
 // ============================================================================
-const Sentry = require("@sentry/node");
-if (process.env.SENTRY_DSN) {
-    Sentry.init({
-        dsn: process.env.SENTRY_DSN,
-        environment: process.env.NODE_ENV || 'development',
-        tracesSampleRate: 0.2, // Capture 20% of transactions for performance monitoring without overloading
-    });
-    console.log('[TELEMETRY] Sentry Crash Reporting initialized.');
+try {
+    const Sentry = require("@sentry/node");
+    if (process.env.SENTRY_DSN) {
+        Sentry.init({
+            dsn: process.env.SENTRY_DSN,
+            environment: process.env.NODE_ENV || 'development',
+            tracesSampleRate: 0.2, // Capture 20% of transactions for performance monitoring without overloading
+        });
+        console.log('[TELEMETRY] Sentry Crash Reporting initialized.');
+    }
+} catch (e) {
+    console.warn('[TELEMETRY] @sentry/node module not installed. Skipping crash reporting initialization to prevent server crash.');
 }
 
 const connectDB = require('./config/db');
