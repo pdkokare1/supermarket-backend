@@ -32,7 +32,25 @@ const customerSchema = new mongoose.Schema({
         type: Number, 
         default: 0,
         min: 0 
+    },
+
+    // ============================================================================
+    // --- NEW: PHASE 23 VIRAL REFERRAL ENGINE ---
+    // ============================================================================
+    referralCode: {
+        type: String,
+        unique: true,
+        sparse: true
+    },
+    referredBy: {
+        type: String, // The referral code of the user who invited them
+        default: null
+    },
+    hasCompletedFirstOrder: {
+        type: Boolean,
+        default: false
     }
+
 }, { timestamps: true });
 
 // ENTERPRISE OPTIMIZATION: Immediate memory pointer for lightning-fast POS customer lookup
@@ -46,7 +64,19 @@ customerSchema.index({ phone: 1, name: 1, createdAt: -1 });
 // ============================================================================
 customerSchema.add({
     codRejections: { type: Number, default: 0 },
-    trustScore: { type: Number, default: 100 }
+    trustScore: { type: Number, default: 100 },
+    lastOrderDate: { type: Date, default: null }
+});
+
+// Auto-generate referral code on creation
+customerSchema.pre('save', function(next) {
+    if (this.isNew && !this.referralCode) {
+        // e.g. RAHUL1234
+        const prefix = this.name ? this.name.split(' ')[0].toUpperCase().substring(0, 5) : 'DP';
+        const random = Math.floor(1000 + Math.random() * 9000);
+        this.referralCode = `${prefix}${random}`;
+    }
+    next();
 });
 
 module.exports = mongoose.model('Customer', customerSchema);
