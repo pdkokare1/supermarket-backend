@@ -41,6 +41,11 @@ async function orderRoutes(fastify, options) {
     // --- NEW: PHASE 18 DISPUTE RESOLUTION CENTER ---
     // ============================================================================
     fastify.post('/api/orders/report-issue', { preHandler: [fastify.authenticate] }, orderController.reportIssue);
+
+    // ============================================================================
+    // --- NEW: PHASE 20 DYNAMIC SURGE PRICING ENGINE ---
+    // ============================================================================
+    fastify.get('/api/orders/surge', { preHandler: [fastify.authenticate] }, orderController.getSurgePricing);
 }
 
 module.exports = orderRoutes;
