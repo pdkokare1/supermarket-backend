@@ -6,6 +6,19 @@ if (process.env.NODE_ENV !== 'production') {
     require('dotenv').config();
 }
 
+// ============================================================================
+// --- NEW: PHASE 23 DEVOPS TELEMETRY (SENTRY CRASH REPORTING) ---
+// ============================================================================
+const Sentry = require("@sentry/node");
+if (process.env.SENTRY_DSN) {
+    Sentry.init({
+        dsn: process.env.SENTRY_DSN,
+        environment: process.env.NODE_ENV || 'development',
+        tracesSampleRate: 0.2, // Capture 20% of transactions for performance monitoring without overloading
+    });
+    console.log('[TELEMETRY] Sentry Crash Reporting initialized.');
+}
+
 const connectDB = require('./config/db');
 const { handleInventoryReport } = require('./jobs/inventoryHandler'); 
 const { bootstrapServer } = require('./utils/serverProcessUtils');
