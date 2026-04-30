@@ -405,6 +405,46 @@ async function runEnterpriseSettlements(fastify) {
     }
 }
 
+// ============================================================================
+// --- NEW: PHASE 18 AUTOMATED RIDER PAYOUT LEDGER ---
+// ============================================================================
+async function runRiderPayouts(fastify) {
+    fastify.log.info('Running Weekly Rider Payout Ledger Cron...');
+    try {
+        const Settlement = require('../models/Settlement');
+        
+        // Scan for successfully delivered Platform Fleet orders that haven't been paid out yet
+        const deliveredPlatformOrders = await Order.aggregate([
+            { $match: { fulfillmentType: 'PLATFORM_DELIVERY', status: 'Delivered', deliveryDriverName: { $ne: 'Unassigned' } } },
+            { $lookup: { from: 'settlements', localField: '_id', foreignField: 'orderId', as: 'existing' } },
+            { $match: { existing: { $size: 0 } } }
+        ]);
+
+        let count = 0;
+        let totalPayout = 0;
+        
+        for (const order of deliveredPlatformOrders) {
+            const dropFee = 40; // Flat Rs 40 per successful drop
+            await Settlement.create({
+                storeId: order.storeId || new mongoose.Types.ObjectId(), // Tie to store for P&L tracking
+                orderId: order._id,
+                orderNumber: order.orderNumber || order._id.toString().slice(-6),
+                totalOrderValue: 0, 
+                platformCommission: 0,
+                netPayoutToStore: dropFee, // Used interchangeably here for Rider Payout Value
+                status: 'Pending',
+                isEnterprisePayout: false,
+                disputeReason: `Rider Payout: ${order.deliveryDriverName}` // Hack to store rider name cleanly
+            });
+            count++;
+            totalPayout += dropFee;
+        }
+        if(count > 0) fastify.log.info(`[RIDER PAYOUTS] Ledger updated. ${count} drops, Total Rs ${totalPayout}`);
+    } catch (e) {
+        fastify.log.error('Rider Payout Engine Error:', e);
+    }
+}
+
 module.exports = {
     runWithLock,
     runExpiryMonitor,
@@ -415,5 +455,6 @@ module.exports = {
     runCloudinaryCleanup,
     runEnterpriseIngestionSync,
     runAutonomousB2BProcurement,
-    runEnterpriseSettlements
+    runEnterpriseSettlements,
+    runRiderPayouts
 };
