@@ -445,6 +445,50 @@ async function runRiderPayouts(fastify) {
     }
 }
 
+// ============================================================================
+// --- NEW: PHASE 19 AUTOMATED WHATSAPP CRM (RETENTION ENGINE) ---
+// ============================================================================
+async function runRetentionCRM(fastify) {
+    fastify.log.info('Running Automated Retention CRM Cron...');
+    try {
+        const Customer = require('../models/Customer');
+        
+        // Find VIP customers (trust score > 50 or loyalty points > 0) who haven't ordered in exactly 14 days
+        const targetDate = new Date();
+        targetDate.setDate(targetDate.getDate() - 14);
+        
+        const startOfDay = new Date(targetDate);
+        startOfDay.setHours(0,0,0,0);
+        const endOfDay = new Date(targetDate);
+        endOfDay.setHours(23,59,59,999);
+
+        const dormantVIPs = await Customer.find({
+            lastOrderDate: { $gte: startOfDay, $lte: endOfDay },
+            $or: [{ loyaltyPoints: { $gt: 50 } }, { trustScore: { $gt: 80 } }]
+        }).lean();
+
+        let messagesSent = 0;
+        for (const customer of dormantVIPs) {
+            const message = `Hi ${customer.name.split(' ')[0]}! We miss you at DailyPick. 🌟 Use code COMEBACK20 for 20% off your next order. Valid for 48 hours! Order now: https://dailypick.com`;
+            
+            try {
+                if (notificationService.sendCustomerWhatsApp) {
+                    await notificationService.sendCustomerWhatsApp(fastify, customer.phone, message);
+                } else {
+                    fastify.log.info(`[CRM SIMULATION] Would send to ${customer.phone}: ${message}`);
+                }
+                messagesSent++;
+            } catch(e) {}
+        }
+        
+        if (messagesSent > 0) {
+            fastify.log.info(`[CRM ENGINE] Sent ${messagesSent} automated win-back campaigns.`);
+        }
+    } catch (err) {
+        fastify.log.error('Retention CRM Engine Error:', err);
+    }
+}
+
 module.exports = {
     runWithLock,
     runExpiryMonitor,
@@ -456,5 +500,6 @@ module.exports = {
     runEnterpriseIngestionSync,
     runAutonomousB2BProcurement,
     runEnterpriseSettlements,
-    runRiderPayouts
+    runRiderPayouts,
+    runRetentionCRM
 };
