@@ -75,6 +75,18 @@ const settlementSchema = new mongoose.Schema({
     disputeReason: {
         type: String,
         default: null
+    },
+
+    // ============================================================================
+    // --- NEW: PHASE 17 ENTERPRISE SETTLEMENTS & ATTRIBUTION ---
+    // ============================================================================
+    isEnterprisePayout: { 
+        type: Boolean, 
+        default: false 
+    },
+    marketingAttributionId: { 
+        type: String, 
+        default: null // Will map to campaign IDs (e.g. 'D-MART-SUMMER-AD-01')
     }
 }, { timestamps: true });
 
