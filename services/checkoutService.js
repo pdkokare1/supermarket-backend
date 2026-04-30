@@ -273,11 +273,24 @@ exports.processOnlineCheckout = async (payload, externalSession = null) => {
 
                 // --- SMART FULFILLMENT ROUTING ---
                 let assignedFulfillmentType = 'PICKUP';
+                let dynamicEta = scheduleTime || 'ASAP';
+
                 if (deliveryType && deliveryType.toLowerCase().includes('delivery') || deliveryType === 'Instant') {
                     if (store.fulfillmentOptions && store.fulfillmentOptions.includes('STORE_DELIVERY')) {
                         assignedFulfillmentType = 'STORE_DELIVERY'; // Send to Partner API
+                        dynamicEta = 'Next Day'; // Enterprise Partner Default
                     } else {
                         assignedFulfillmentType = 'PLATFORM_DELIVERY'; // Platform Fleet
+                        
+                        // --- NEW: PHASE 24 DYNAMIC ML ETAS ---
+                        // Heuristic: Base 15 mins + 3 mins for every active order currently packing at this store
+                        try {
+                            const queueLength = await Order.countDocuments({ storeId: currentStoreId, status: { $in: ['Order Placed', 'Packing'] } });
+                            const etaMins = 15 + (queueLength * 3);
+                            dynamicEta = `${etaMins} - ${etaMins + 7} mins`;
+                        } catch(e) {
+                            dynamicEta = '15 - 25 mins'; // Fallback
+                        }
                     }
                 }
 
@@ -289,7 +302,7 @@ exports.processOnlineCheckout = async (payload, externalSession = null) => {
                     totalAmount: calculatedTotal, 
                     paymentMethod: paymentMethod || 'Cash on Delivery', 
                     deliveryType: deliveryType || 'Instant', 
-                    scheduleTime: scheduleTime || 'ASAP',
+                    scheduleTime: dynamicEta, // Dynamically assigned above
                     fulfillmentType: assignedFulfillmentType,
                     fulfillmentStatus: 'Pending',
                     splitShipmentGroupId 
