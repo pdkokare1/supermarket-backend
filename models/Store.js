@@ -1,6 +1,10 @@
 /* models/Store.js */
 const mongoose = require('mongoose');
 
+/**
+ * DailyPick - Master Store Schema
+ * Acts as the Single Source of Truth for all physical and enterprise marketplace partners.
+ */
 const storeSchema = new mongoose.Schema({
     name: { type: String, required: true },
     chainName: { type: String, default: '' },
@@ -16,6 +20,9 @@ const storeSchema = new mongoose.Schema({
         enum: ['PLATFORM_DELIVERY', 'STORE_DELIVERY', 'PICKUP'],
         default: ['PICKUP']
     }],
+    
+    // --- B2B API GATEWAY CREDENTIALS ---
+    // Used by enterprise partners to access their dedicated endpoints
     apiIntegration: {
         apiSecretKey: { type: String, default: '' },
         webhookUrl: { type: String, default: '' },
