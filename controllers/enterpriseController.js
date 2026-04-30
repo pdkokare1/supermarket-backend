@@ -297,6 +297,43 @@ exports.syncStoreInventory = async (request, reply) => {
     return { success: true, message: `Store-in-Store sync completed for ${locationId || 'default'}. Processed ${items.length} items.` };
 };
 
+// --- NEW: PHASE 1 ENTERPRISE ORDER FETCH ---
+// Allows ERP systems (Reliance, Croma) to programmatically pull their pending/active orders
+exports.fetchOrders = async (request, reply) => {
+    const store = await authenticateEnterprise(request);
+    
+    // Allow them to filter by status or date via query params, default to active ones
+    const { status, limit = 50, page = 1 } = request.query;
+    const query = { storeId: store._id };
+    
+    if (status) {
+        query.fulfillmentStatus = status;
+    }
+
+    const skip = (Math.max(1, page) - 1) * limit;
+
+    const orders = await Order.find(query)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(Number(limit))
+        .lean();
+
+    const total = await Order.countDocuments(query);
+
+    return {
+        success: true,
+        message: `Fetched ${orders.length} orders for ${store.name}`,
+        data: {
+            orders,
+            pagination: {
+                total,
+                page: Number(page),
+                limit: Number(limit)
+            }
+        }
+    };
+};
+
 // ============================================================================
 // --- NEW: PHASE 5 ENTERPRISE WEBHOOK HEALTH & RETRY MATRIX ---
 // ============================================================================
