@@ -76,7 +76,17 @@ module.exports = function(fastify) {
     });
 
     fastify.register(require('@fastify/rate-limit'), {
-        max: 100,
+        // ============================================================================
+        // --- NEW: PHASE 17 ENTERPRISE ERP RATE LIMITING SHIELD ---
+        // ============================================================================
+        max: function (request, key) {
+            // Give machine-to-machine integrations massive capacity to ingest catalogs
+            if (request.url && (request.url.startsWith('/api/enterprise') || request.url.startsWith('/webhooks'))) {
+                return 5000; // 5000 RPM for bulk ERP syncing
+            }
+            // Strict defense against DDoS for public-facing customer & admin routes
+            return 100; // Standard 100 RPM
+        },
         timeWindow: '1 minute',
         ban: 3, 
         hook: 'preHandler', 
