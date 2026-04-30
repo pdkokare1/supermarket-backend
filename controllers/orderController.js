@@ -506,3 +506,38 @@ async function executeHybridDeliveryRouting(orderId, server) {
         if (server && server.log) server.log.error(`Hybrid Delivery Routing execution failed: ${error.message}`);
     }
 }
+
+// ============================================================================
+// --- NEW: PHASE 18 DISPUTE RESOLUTION CENTER (NATIVE APP IMAGE UPLOAD) ---
+// ============================================================================
+exports.reportIssue = async (request, reply) => {
+    const Order = require('../models/Order');
+    const { orderId, imageBase64 } = request.body;
+    const cloudinary = require('cloudinary').v2;
+
+    const order = await Order.findById(orderId);
+    if (!order) return reply.code(404).send({ success: false, message: 'Order not found' });
+
+    let imageUrl = null;
+    if (imageBase64) {
+        try {
+            // Securely upload the native Base64 camera payload to Cloudinary
+            const uploadRes = await cloudinary.uploader.upload(`data:image/jpeg;base64,${imageBase64}`, {
+                folder: 'dailyPick_disputes'
+            });
+            imageUrl = uploadRes.secure_url;
+        } catch (e) {
+            request.server.log.error('Cloudinary Dispute Upload Error:', e);
+        }
+    }
+
+    order.status = 'Disputed';
+    order.notes = `${order.notes || ''} [ISSUE REPORTED: Photo Proof attached]`.trim();
+    if (imageUrl) {
+        order.notes += ` -> ${imageUrl}`;
+    }
+    
+    await order.save();
+
+    return { success: true, message: 'Issue reported successfully. Our team will review the photo proof.' };
+};
