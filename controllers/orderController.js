@@ -541,3 +541,42 @@ exports.reportIssue = async (request, reply) => {
 
     return { success: true, message: 'Issue reported successfully. Our team will review the photo proof.' };
 };
+
+// ============================================================================
+// --- NEW: PHASE 20 DYNAMIC SURGE PRICING ENGINE ---
+// ============================================================================
+exports.getSurgePricing = async (request, reply) => {
+    const Order = require('../models/Order');
+    const Shift = require('../models/Shift'); // Pulling from your register/shift management
+
+    // 1. Calculate active system load
+    const pendingOrders = await Order.countDocuments({ 
+        fulfillmentType: 'PLATFORM_DELIVERY', 
+        status: { $in: ['Order Placed', 'Packing', 'Dispatched'] } 
+    });
+
+    const activeRiders = await Shift.countDocuments({ status: 'ACTIVE', role: 'Delivery_Agent' }) || 1;
+
+    const loadRatio = pendingOrders / activeRiders;
+    let deliveryFee = 20; 
+    let surgeActive = false;
+    let surgeMessage = null;
+
+    // 2. Apply Dynamic Multipliers
+    if (loadRatio > 5) {
+        deliveryFee = 40;
+        surgeActive = true;
+        surgeMessage = "High demand in your area. Delivery fee increased to ensure fast assignment.";
+    } else if (loadRatio > 8) {
+        deliveryFee = 60;
+        surgeActive = true;
+        surgeMessage = "Extreme demand! Delivery fee surged. Riders are operating at max capacity.";
+    }
+
+    return {
+        success: true,
+        surgeActive,
+        deliveryFee,
+        message: surgeMessage
+    };
+};
