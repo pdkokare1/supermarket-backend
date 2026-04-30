@@ -341,6 +341,70 @@ async function runAutonomousB2BProcurement(fastify) {
     }
 }
 
+// ============================================================================
+// --- NEW: PHASE 17 AUTOMATED B2B SETTLEMENT ENGINE ---
+// ============================================================================
+async function runEnterpriseSettlements(fastify) {
+    fastify.log.info('Running Weekly B2B Enterprise Settlement Cron...');
+    try {
+        const Store = require('../models/Store');
+        const Settlement = require('../models/Settlement');
+        
+        // Find all Delivered enterprise orders that haven't been settled yet.
+        // The aggregate query ensures we don't process an order twice by joining the settlements table.
+        const unsettledOrders = await Order.aggregate([
+            { $match: { fulfillmentType: 'STORE_DELIVERY', status: 'Delivered' } },
+            { 
+                $lookup: {
+                    from: 'settlements',
+                    localField: '_id',
+                    foreignField: 'orderId',
+                    as: 'existingSettlement'
+                }
+            },
+            { $match: { existingSettlement: { $size: 0 } } }
+        ]);
+
+        let processedCount = 0;
+        let totalPayoutRs = 0;
+
+        for (const order of unsettledOrders) {
+            const store = await Store.findById(order.storeId);
+            if (!store) continue;
+
+            // Commercial Terms Calculation (Dynamic Engine)
+            const commissionRate = store.commercialTerms?.commissionValue || 5.0;
+            const platformCommission = (order.totalAmount * commissionRate) / 100;
+            // E.g., Razorpay charges a flat 2% on online transactions
+            const gatewayFee = order.paymentMethod === 'Online' ? (order.totalAmount * 0.02) : 0; 
+            const netPayout = order.totalAmount - platformCommission - gatewayFee;
+
+            await Settlement.create({
+                storeId: store._id,
+                orderId: order._id,
+                orderNumber: order.orderNumber || order._id.toString().slice(-6),
+                totalOrderValue: order.totalAmount,
+                platformCommission: platformCommission,
+                gatewayFee: gatewayFee,
+                netPayoutToStore: netPayout,
+                commissionTypeApplied: store.commercialTerms?.commissionType || 'PERCENTAGE',
+                status: 'Pending', // Awaits finance team approval or automated direct deposit
+                isEnterprisePayout: true,
+                marketingAttributionId: order.partnerTrackingId || null
+            });
+            
+            processedCount++;
+            totalPayoutRs += netPayout;
+        }
+
+        if (processedCount > 0) {
+            fastify.log.info(`[B2B SETTLEMENTS] Generated ${processedCount} new settlement records. Total Pending Ledger Payout: Rs ${totalPayoutRs.toFixed(2)}`);
+        }
+    } catch (err) {
+        fastify.log.error('B2B Settlement Engine Error:', err);
+    }
+}
+
 module.exports = {
     runWithLock,
     runExpiryMonitor,
@@ -350,5 +414,6 @@ module.exports = {
     runEODBackup,
     runCloudinaryCleanup,
     runEnterpriseIngestionSync,
-    runAutonomousB2BProcurement
+    runAutonomousB2BProcurement,
+    runEnterpriseSettlements
 };
