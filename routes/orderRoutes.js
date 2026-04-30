@@ -36,6 +36,11 @@ async function orderRoutes(fastify, options) {
     fastify.get('/api/orders', { preHandler: [fastify.authenticate, fastify.verifyAdmin] }, orderController.getOrders);
     fastify.get('/api/orders/export', { preHandler: [fastify.authenticate, fastify.verifyAdmin] }, orderController.exportOrders);
     fastify.get('/api/orders/:id', { preHandler: [fastify.authenticate] }, orderController.getOrderById);
+
+    // ============================================================================
+    // --- NEW: PHASE 18 DISPUTE RESOLUTION CENTER ---
+    // ============================================================================
+    fastify.post('/api/orders/report-issue', { preHandler: [fastify.authenticate] }, orderController.reportIssue);
 }
 
 module.exports = orderRoutes;
