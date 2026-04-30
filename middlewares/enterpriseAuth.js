@@ -4,6 +4,11 @@
 const Store = require('../models/Store');
 const AppError = require('../utils/AppError');
 
+/**
+ * DailyPick - Enterprise B2B API Gateway Middleware
+ * Intercepts requests from external ERP systems (e.g., Reliance, Croma) 
+ * to programmatically sync inventory and fetch orders.
+ */
 exports.verifyEnterpriseKey = async (request, reply) => {
     const apiKey = request.headers['x-api-key'];
     
