@@ -65,6 +65,21 @@ const storeSchema = new mongoose.Schema({
         legacySyncMethod: { type: String, enum: ['API', 'FTP_CSV', 'MANUAL'], default: 'API' }
     },
 
+    // ============================================================================
+    // --- NEW: PHASE 23 POLYGON GEOFENCING (ADVANCED LOGISTICS) ---
+    // ============================================================================
+    deliveryPolygon: {
+        type: {
+            type: String,
+            enum: ['Polygon'],
+            default: undefined
+        },
+        coordinates: {
+            type: [[[Number]]], // Array of arrays of arrays of numbers (standard GeoJSON polygon)
+            default: undefined
+        }
+    },
+
     isActive: { type: Boolean, default: true }
 }, { timestamps: true });
 
@@ -73,5 +88,8 @@ storeSchema.index({ "coordinates.lat": 1, "coordinates.lng": 1 });
 storeSchema.index({ storeType: 1, isActive: 1 });
 // Geospatial index for hyper-local B2C discovery and spatial routing
 storeSchema.index({ spatialLocation: '2dsphere' });
+
+// Add the 2dsphere index for the new polygon routing
+storeSchema.index({ deliveryPolygon: '2dsphere' });
 
 module.exports = mongoose.model('Store', storeSchema);
