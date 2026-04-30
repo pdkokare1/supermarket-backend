@@ -232,19 +232,70 @@ exports.assignDriverToOrder = async (orderId, driverName, driverPhone, session =
     return order;
 };
 
+// ============================================================================
+// --- MODIFIED: PHASE 23 VIRAL REFERRAL ENGINE (PAYOUT TRIGGER) ---
+// ============================================================================
 exports.updateOrderStatus = async (orderId, status, session = null) => {
     const options = { new: true };
     if (session) options.session = session;
-    // OPTIMIZATION: .lean() for zero hydration
     const order = await Order.findByIdAndUpdate(orderId, { status: status }, options).lean();
-    
     if (!order) throw new AppError('Order not found to update status.', 404);
     
+    // VIRAL REFERRAL CHECK: If order is completed successfully, check if it's their first order
+    if (status === 'Delivered') {
+        try {
+            const customer = await Customer.findOne({ phone: order.customerPhone });
+            if (customer && !customer.hasCompletedFirstOrder) {
+                customer.hasCompletedFirstOrder = true;
+                await customer.save({ session });
+                
+                // If they were referred, pay out the Rs 100 bounty to both!
+                if (customer.referredBy) {
+                    const referrer = await Customer.findOne({ referralCode: customer.referredBy });
+                    if (referrer) {
+                        referrer.loyaltyPoints += 100;
+                        await referrer.save({ session });
+                        
+                        customer.loyaltyPoints += 100;
+                        await customer.save({ session });
+                        console.log(`[VIRAL ENGINE] Referral Paid! Rs 100 to ${referrer.phone} and ${customer.phone}`);
+                    }
+                }
+            }
+        } catch(e) {
+            console.error('[VIRAL ENGINE] Error executing referral payout:', e);
+        }
+    }
+
     appEvents.broadcastEvent('ORDER_STATUS_UPDATED', { orderId: order._id, status: status, storeId: order.storeId });
     return order;
 };
 
+// ============================================================================
+// --- MODIFIED: PHASE 23 ORDER BATCHING (STACKED DROPS ALGORITHM) ---
+// ============================================================================
 exports.dispatchOrder = async (orderId, session = null) => {
+    const order = await Order.findById(orderId).lean();
+    
+    // BATCHING ALGORITHM: Check if another order was dispatched in the last 15 mins to a similar area
+    // (In a full implementation, you would use Turf.js or $geoNear to calculate distance. 
+    // Here we use a time-heuristic to assign the same driver to create a Stacked Drop)
+    try {
+        const recentDispatchedOrder = await Order.findOne({
+            status: 'Dispatched',
+            fulfillmentType: 'PLATFORM_DELIVERY',
+            createdAt: { $gte: new Date(Date.now() - 15 * 60000) } // Last 15 mins
+        }).sort({ createdAt: -1 }).lean();
+
+        if (recentDispatchedOrder && recentDispatchedOrder.deliveryDriverName !== 'Unassigned') {
+            // Stack the drop! Assign to the same rider.
+            console.log(`[LOGISTICS] Stacked Drop Created! Assigning to ${recentDispatchedOrder.deliveryDriverName}`);
+            await exports.assignDriverToOrder(orderId, recentDispatchedOrder.deliveryDriverName, recentDispatchedOrder.driverPhone, session);
+        }
+    } catch(e) {
+        console.error('[LOGISTICS] Batching algorithm failed:', e);
+    }
+
     return await exports.updateOrderStatus(orderId, 'Dispatched', session);
 };
 
