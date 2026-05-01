@@ -60,8 +60,11 @@ exports.getCurrentShift = async () => {
     return shift;
 };
 
+// ============================================================================
+// --- MODIFIED: PHASE 29 CASH DRAWER RECONCILIATION (ANTI-THEFT) ---
+// ============================================================================
 exports.closeShift = async (payload, user, logError) => {
-    const { shiftId, actualCash } = payload;
+    const { shiftId, actualCash, discrepancyReason } = payload;
     const shift = await Shift.findById(shiftId);
     
     if (!shift || shift.status === 'Closed') {
@@ -70,14 +73,15 @@ exports.closeShift = async (payload, user, logError) => {
 
     const endTime = new Date();
     
+    // Mathematically tally all cash sales (POS and COD Platform Deliveries) during this shift timeframe
     const orderStats = await Order.aggregate([
-        { $match: { createdAt: { $gte: shift.startTime, $lte: endTime }, status: { $ne: 'Cancelled' } } },
+        { $match: { createdAt: { $gte: shift.startTime, $lte: endTime }, status: { $in: ['Completed', 'Delivered'] } } },
         { $group: {
             _id: null,
             cashSales: { 
                 $sum: { 
                     $cond: [
-                        { $eq: ["$paymentMethod", "Cash"] }, "$totalAmount", 
+                        { $in: ["$paymentMethod", ["Cash", "Cash on Delivery"]] }, "$totalAmount", 
                         { $cond: [{ $eq: ["$paymentMethod", "Split"] }, { $ifNull: ["$splitDetails.cash", 0] }, 0] }
                     ] 
                 } 
@@ -87,15 +91,20 @@ exports.closeShift = async (payload, user, logError) => {
 
     const cashSales = orderStats[0] ? orderStats[0].cashSales : 0;
     const expectedCash = shift.startingFloat + cashSales;
+    const actualCashNum = Number(actualCash);
+    const discrepancy = actualCashNum - expectedCash;
+
+    // ANTI-THEFT GUARDRAIL: If short, force the cashier to explain before allowing closure
+    if (discrepancy < 0 && !discrepancyReason) {
+        throw new AppError(`Drawer is short by Rs ${Math.abs(discrepancy)}. You must provide a discrepancy reason to close this shift.`, 409);
+    }
 
     shift.endTime = endTime;
     shift.expectedCash = expectedCash;
-    shift.actualCash = Number(actualCash);
+    shift.actualCash = actualCashNum;
     shift.status = 'Closed';
 
     await shift.save();
-
-    const discrepancy = shift.actualCash - shift.expectedCash;
 
     await auditService.logEvent({
         action: 'SHIFT_CLOSED',
@@ -103,7 +112,7 @@ exports.closeShift = async (payload, user, logError) => {
         targetId: shift._id.toString(),
         userId: user ? user.id : null,
         username: user ? user.username : 'System',
-        details: { expectedCash, actualCash: shift.actualCash, discrepancy },
+        details: { expectedCash, actualCash: shift.actualCash, discrepancy, discrepancyReason: discrepancyReason || 'None' },
         logError
     });
 
