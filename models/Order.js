@@ -105,13 +105,13 @@ const orderSchema = new mongoose.Schema({
         type: String, 
         default: 'Order Placed',
         // SECURITY FIX: Prevent payload injection by locking states
-        enum: ['Order Placed', 'Packing', 'Dispatched', 'Delivered', 'Cancelled', 'Returned'] 
+        enum: ['Order Placed', 'Packing', 'Dispatched', 'Delivered', 'Cancelled', 'Returned', 'Partially Refunded', 'Disputed'] 
     },
     paymentMethod: { 
         type: String, 
         default: 'Cash on Delivery',
         // SECURITY FIX: Strict financial state boundaries
-        enum: ['Cash on Delivery', 'UPI', 'Card', 'Pay Later', 'Mixed']
+        enum: ['Cash on Delivery', 'UPI', 'Card', 'Pay Later', 'Mixed', 'Online']
     },
     splitDetails: {
         cash: { type: Number, default: 0, min: 0 },
@@ -135,7 +135,16 @@ const orderSchema = new mongoose.Schema({
     b2bLogistics: {
         erpSyncStatus: { type: String, enum: ['PENDING', 'SYNCED', 'FAILED', 'NOT_REQUIRED'], default: 'NOT_REQUIRED' },
         externalCourierId: { type: String, default: null } // e.g., Croma's internal delivery van ID
-    }
+    },
+
+    // ============================================================================
+    // --- NEW: PHASE 28 SECURE IN-APP CHAT (CUSTOMER <-> RIDER) ---
+    // ============================================================================
+    chatHistory: [{
+        sender: { type: String, enum: ['Customer', 'Rider', 'System'] },
+        message: String,
+        timestamp: { type: Date, default: Date.now }
+    }]
 }, { timestamps: true });
 
 // --- OPTIMIZED INDEXES FOR HIGH-SPEED QUERIES ---
