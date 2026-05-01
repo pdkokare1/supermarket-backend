@@ -647,6 +647,64 @@ async function runAbandonedCartRecovery(fastify) {
     }
 }
 
+// ============================================================================
+// --- NEW: PHASE 30 PREDICTIVE FLEET PRE-POSITIONING (HEATMAP ENGINE) ---
+// ============================================================================
+async function generateFleetHeatmap(fastify) {
+    fastify.log.info('Running Predictive Fleet Heatmap Engine...');
+    try {
+        const Order = require('../models/Order');
+        const appEvents = require('../utils/eventEmitter');
+        
+        // Analyze the previous 24 hours of successful deliveries to predict today's demand
+        const yesterday = new Date(Date.now() - 86400000);
+        
+        // MongoDB Aggregation to cluster orders by GeoJSON coordinates
+        const hotspots = await Order.aggregate([
+            { $match: { 
+                createdAt: { $gte: yesterday }, 
+                fulfillmentType: 'PLATFORM_DELIVERY',
+                status: 'Delivered',
+                'location.coordinates': { $exists: true, $ne: [] }
+            }},
+            { $group: {
+                // Approximate grouping by rounding coordinates (roughly clusters to a few blocks)
+                _id: {
+                    lat: { $round: [{ $arrayElemAt: ["$location.coordinates", 1] }, 3] },
+                    lng: { $round: [{ $arrayElemAt: ["$location.coordinates", 0] }, 3] }
+                },
+                orderDensity: { $sum: 1 }
+            }},
+            // Only care about zones with high demand (e.g., > 5 orders yesterday)
+            { $match: { orderDensity: { $gte: 5 } } },
+            { $sort: { orderDensity: -1 } },
+            { $limit: 10 } // Top 10 hottest zones
+        ]);
+
+        if (hotspots.length > 0) {
+            const formattedHeatmap = hotspots.map(spot => ({
+                lat: spot._id.lat,
+                lng: spot._id.lng,
+                weight: spot.orderDensity
+            }));
+
+            // Save to Redis so new riders logging in can fetch it immediately
+            const cacheUtils = require('../utils/cacheUtils');
+            const redisClient = cacheUtils.getClient();
+            if (redisClient) {
+                await redisClient.set('fleet_heatmap_live', JSON.stringify(formattedHeatmap), 'EX', 86400); // 24hr TTL
+            }
+
+            // Broadcast the new heatmap via SSE directly to active Rider Apps to auto-reroute them
+            appEvents.emit('FLEET_HEATMAP_UPDATED', formattedHeatmap);
+            
+            fastify.log.info(`[HEATMAP ENGINE] Calculated ${hotspots.length} high-density prediction zones. Pushed to active fleet.`);
+        }
+    } catch (err) {
+        fastify.log.error('Fleet Heatmap Engine Error:', err);
+    }
+}
+
 module.exports = {
     runWithLock,
     runExpiryMonitor,
@@ -662,5 +720,6 @@ module.exports = {
     runRetentionCRM,
     runDemandForecast,
     runFleetWatchdog,
-    runAbandonedCartRecovery
+    runAbandonedCartRecovery,
+    generateFleetHeatmap
 };
