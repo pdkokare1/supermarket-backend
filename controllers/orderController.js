@@ -598,3 +598,56 @@ exports.getSurgePricing = async (request, reply) => {
         message: surgeMessage
     };
 };
+
+// ============================================================================
+// --- NEW: PHASE 25 GHOST ORDER FALLBACK (PAYMENT RESILIENCE) ---
+// ============================================================================
+exports.razorpayWebhook = async (request, reply) => {
+    const crypto = require('crypto');
+    const cacheUtils = require('../utils/cacheUtils');
+    const checkoutService = require('../services/checkoutService');
+
+    const secret = process.env.RAZORPAY_WEBHOOK_SECRET || 'dummy_webhook_secret';
+    const signature = request.headers['x-razorpay-signature'];
+    
+    if (!signature) return reply.code(400).send({ success: false, message: 'Missing signature' });
+
+    const expectedSignature = crypto.createHmac('sha256', secret).update(JSON.stringify(request.body)).digest('hex');
+    if (expectedSignature !== signature) {
+        return reply.code(400).send({ success: false, message: 'Invalid signature' });
+    }
+
+    const event = request.body.event;
+    if (event === 'payment.captured') {
+        const payment = request.body.payload.payment.entity;
+        // Assuming the frontend passed idempotencyKey in notes when creating the Razorpay order
+        const idempotencyKey = payment.notes && payment.notes.idempotencyKey; 
+        
+        if (idempotencyKey) {
+            const redisClient = cacheUtils.getClient();
+            if (redisClient) {
+                const isProcessed = await redisClient.get(`idem:checkout:${idempotencyKey}`);
+                
+                if (!isProcessed) {
+                    request.server.log.warn(`[GHOST ORDER RECOVERY] Payment ${payment.id} captured, but order missing. Recovering from cart session...`);
+                    
+                    const savedCart = await redisClient.get(`cart_session:${idempotencyKey}`);
+                    if (savedCart) {
+                        try {
+                            const payload = JSON.parse(savedCart);
+                            payload.transactionId = payment.id;
+                            payload.paymentMethod = 'Online';
+                            
+                            await checkoutService.processOnlineCheckout(payload, null);
+                            request.server.log.info(`[GHOST ORDER RECOVERY] Successfully created order for Payment ${payment.id}`);
+                        } catch (e) {
+                            request.server.log.error(`[GHOST ORDER RECOVERY] Failed to recreate order: ${e.message}`);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    return reply.code(200).send({ status: 'ok' });
+};
