@@ -46,6 +46,11 @@ async function orderRoutes(fastify, options) {
     // --- NEW: PHASE 20 DYNAMIC SURGE PRICING ENGINE ---
     // ============================================================================
     fastify.get('/api/orders/surge', { preHandler: [fastify.authenticate] }, orderController.getSurgePricing);
+
+    // ============================================================================
+    // --- NEW: PHASE 25 GHOST ORDER FALLBACK (WEBHOOK LISTENER) ---
+    // ============================================================================
+    fastify.post('/api/orders/webhook/razorpay', orderController.razorpayWebhook);
 }
 
 module.exports = orderRoutes;
