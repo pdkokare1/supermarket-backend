@@ -540,6 +540,59 @@ async function runDemandForecast(fastify) {
     }
 }
 
+// ============================================================================
+// --- NEW: PHASE 28 SELF-HEALING LOGISTICS (WATCHDOG AUTO-REASSIGN) ---
+// ============================================================================
+async function runFleetWatchdog(fastify) {
+    fastify.log.info('Running Fleet Watchdog (Self-Healing Logistics)...');
+    try {
+        const Shift = require('../models/Shift');
+        const Order = require('../models/Order');
+        const orderService = require('../services/orderService');
+        
+        // Find riders who haven't pinged their GPS in over 10 minutes
+        const tenMinsAgo = new Date(Date.now() - 10 * 60000);
+        
+        const deadShifts = await Shift.find({
+            status: 'ACTIVE',
+            role: 'Delivery_Agent',
+            lastPingTime: { $lt: tenMinsAgo }
+        });
+
+        for (const shift of deadShifts) {
+            fastify.log.warn(`[WATCHDOG] Rider ${shift.userName} hasn't pinged in 10 mins. Forcing OFFLINE status.`);
+            
+            // 1. Kick rider offline so spatial engine stops assigning them new orders
+            shift.status = 'Offline';
+            await shift.save();
+
+            // 2. Find any active orders currently held hostage by this rider
+            const stuckOrders = await Order.find({
+                deliveryDriverName: shift.userName,
+                status: { $in: ['Dispatched', 'Packing'] }
+            });
+
+            for (const order of stuckOrders) {
+                fastify.log.warn(`[WATCHDOG] Auto-recovering Order ${order.orderNumber} from dead rider.`);
+                
+                // Unassign the rider. The existing spatial logic (appEvents) will automatically
+                // broadcast this back to the Rider Pool for the next closest active rider to grab.
+                await orderService.assignDriverToOrder(order._id, 'Unassigned', '', null);
+                
+                // Push an alert to Admin Dashboard
+                if (fastify.broadcastToPOS) {
+                    fastify.broadcastToPOS({ 
+                        type: 'WATCHDOG_ALERT', 
+                        message: `🚨 Watchdog recovered Order ${order.orderNumber} from inactive rider ${shift.userName}. Re-broadcasting to fleet.`,
+                    });
+                }
+            }
+        }
+    } catch (err) {
+        fastify.log.error('Fleet Watchdog Error:', err);
+    }
+}
+
 module.exports = {
     runWithLock,
     runExpiryMonitor,
@@ -553,5 +606,6 @@ module.exports = {
     runEnterpriseSettlements,
     runRiderPayouts,
     runRetentionCRM,
-    runDemandForecast
+    runDemandForecast,
+    runFleetWatchdog
 };
