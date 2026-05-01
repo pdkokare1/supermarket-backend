@@ -51,6 +51,12 @@ async function orderRoutes(fastify, options) {
     // --- NEW: PHASE 25 GHOST ORDER FALLBACK (WEBHOOK LISTENER) ---
     // ============================================================================
     fastify.post('/api/orders/webhook/razorpay', orderController.razorpayWebhook);
+
+    // ============================================================================
+    // --- NEW: PHASE 28 IN-APP CHAT (REST FALLBACK) ---
+    // ============================================================================
+    fastify.post('/api/orders/:id/chat', { preHandler: [fastify.authenticate] }, orderController.sendChatMessage);
+    fastify.get('/api/orders/:id/chat', { preHandler: [fastify.authenticate] }, orderController.getChatHistory);
 }
 
 module.exports = orderRoutes;
