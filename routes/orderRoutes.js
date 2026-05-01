@@ -1,7 +1,9 @@
 /* routes/orderRoutes.js */
+'use strict';
 
-const orderController = require('../controllers/orderController');
-const analyticsController = require('../controllers/analyticsController'); 
+const checkoutController = require('../controllers/checkoutController');
+const logisticsController = require('../controllers/logisticsController'); 
+const supportController = require('../controllers/supportController'); 
 const sseController = require('../controllers/sseController');
 const sseService = require('../services/orderSseService');
 const schemas = require('../schemas/orderSchemas');
@@ -16,52 +18,46 @@ async function orderRoutes(fastify, options) {
     fastify.get('/api/orders/stream/admin', { preHandler: [fastify.authenticate, fastify.verifyAdmin] }, sseController.streamAdmin);
     fastify.get('/api/orders/stream/customer/:id', { preHandler: [fastify.authenticate] }, sseController.streamCustomer);
 
-    // --- Checkouts ---
-    // OPTIMIZATION: Applied schema response serializers for 300% faster throughput
-    fastify.post('/api/orders/external', { preHandler: [fastify.verifyApiKey], ...schemas.externalCheckoutSchema }, orderController.externalCheckout);
-    fastify.post('/api/orders', { preHandler: [fastify.authenticate], ...schemas.onlineCheckoutSchema }, orderController.onlineCheckout);
-    fastify.post('/api/orders/pos', { preHandler: [fastify.authenticate, fastify.verifyAdmin], ...schemas.posCheckoutSchema }, orderController.posCheckout);
+    // ==========================================
+    // --- DOMAIN: CHECKOUTS & MONEY-IN ---
+    // ==========================================
+    fastify.post('/api/orders/external', { preHandler: [fastify.verifyApiKey], ...schemas.externalCheckoutSchema }, checkoutController.externalCheckout);
+    fastify.post('/api/orders', { preHandler: [fastify.authenticate], ...schemas.onlineCheckoutSchema }, checkoutController.onlineCheckout);
+    fastify.post('/api/orders/pos', { preHandler: [fastify.authenticate, fastify.verifyAdmin], ...schemas.posCheckoutSchema }, checkoutController.posCheckout);
+    fastify.post('/api/orders/omni-checkout', { preHandler: [fastify.authenticate], ...schemas.omniCartCheckoutSchema }, checkoutController.omniCartCheckout);
 
-    // --- NEW: PHASE 3 OMNI-CART GATEWAY ---
-    fastify.post('/api/orders/omni-checkout', { preHandler: [fastify.authenticate], ...schemas.omniCartCheckoutSchema }, orderController.omniCartCheckout);
+    // ==========================================
+    // --- DOMAIN: LOGISTICS & DISPATCH ---
+    // ==========================================
+    fastify.put('/api/orders/:id/driver', { preHandler: [fastify.authenticate, fastify.verifyAdmin], ...schemas.assignDriverSchema }, logisticsController.assignDriver);
+    fastify.put('/api/orders/:id/status', { preHandler: [fastify.authenticate, fastify.verifyAdmin], ...schemas.statusSchema }, logisticsController.updateStatus);
+    fastify.put('/api/orders/:id/dispatch', { preHandler: [fastify.authenticate, fastify.verifyAdmin] }, logisticsController.dispatchOrder);
+    
+    // MISSING ENDPOINT FIXED: Enables the Rider App Background Geolocation Ping
+    fastify.post('/api/orders/rider/location', { preHandler: [fastify.authenticate] }, logisticsController.updateRiderLocation);
+    fastify.get('/api/orders/surge', { preHandler: [fastify.authenticate] }, logisticsController.getSurgePricing);
+    
+    fastify.get('/api/orders', { preHandler: [fastify.authenticate, fastify.verifyAdmin] }, logisticsController.getOrders);
+    fastify.get('/api/orders/export', { preHandler: [fastify.authenticate, fastify.verifyAdmin] }, logisticsController.exportOrders);
+    fastify.get('/api/orders/:id', { preHandler: [fastify.authenticate] }, logisticsController.getOrderById);
 
-    // --- Order Operations (Admin) ---
-    fastify.put('/api/orders/:id/driver', { preHandler: [fastify.authenticate, fastify.verifyAdmin], ...schemas.assignDriverSchema }, orderController.assignDriver);
-    fastify.put('/api/orders/:id/status', { preHandler: [fastify.authenticate, fastify.verifyAdmin], ...schemas.statusSchema }, orderController.updateStatus);
-    fastify.put('/api/orders/:id/dispatch', { preHandler: [fastify.authenticate, fastify.verifyAdmin] }, orderController.dispatchOrder);
-    fastify.put('/api/orders/:id/partial-refund', { preHandler: [fastify.authenticate, fastify.verifyAdmin] }, orderController.partialRefund);
-    fastify.put('/api/orders/:id/cancel', { preHandler: [fastify.authenticate, fastify.verifyAdmin] }, orderController.cancelOrder);
-
-    // --- Fetch Operations ---
-    fastify.get('/api/orders', { preHandler: [fastify.authenticate, fastify.verifyAdmin] }, orderController.getOrders);
-    fastify.get('/api/orders/export', { preHandler: [fastify.authenticate, fastify.verifyAdmin] }, orderController.exportOrders);
-    fastify.get('/api/orders/:id', { preHandler: [fastify.authenticate] }, orderController.getOrderById);
-
-    // ============================================================================
-    // --- NEW: PHASE 18 DISPUTE RESOLUTION CENTER ---
-    // ============================================================================
-    fastify.post('/api/orders/report-issue', { preHandler: [fastify.authenticate] }, orderController.reportIssue);
-
-    // ============================================================================
-    // --- NEW: PHASE 20 DYNAMIC SURGE PRICING ENGINE ---
-    // ============================================================================
-    fastify.get('/api/orders/surge', { preHandler: [fastify.authenticate] }, orderController.getSurgePricing);
-
-    // ============================================================================
-    // --- NEW: PHASE 25 GHOST ORDER FALLBACK (WEBHOOK LISTENER) ---
-    // ============================================================================
-    fastify.post('/api/orders/webhook/razorpay', orderController.razorpayWebhook);
-
-    // ============================================================================
-    // --- NEW: PHASE 28 IN-APP CHAT (REST FALLBACK) ---
-    // ============================================================================
-    fastify.post('/api/orders/:id/chat', { preHandler: [fastify.authenticate] }, orderController.sendChatMessage);
-    fastify.get('/api/orders/:id/chat', { preHandler: [fastify.authenticate] }, orderController.getChatHistory);
-
-    // ============================================================================
-    // --- NEW: PHASE 29 SMART SHORT-PICKS (PACKER'S LIFELINE) ---
-    // ============================================================================
-    fastify.put('/api/orders/:id/short-pick', { preHandler: [fastify.authenticate, fastify.verifyAdmin] }, orderController.shortPickItem);
+    // ==========================================
+    // --- DOMAIN: SUPPORT, OPS & POST-ORDER ---
+    // ==========================================
+    fastify.put('/api/orders/:id/partial-refund', { preHandler: [fastify.authenticate, fastify.verifyAdmin] }, supportController.partialRefund);
+    fastify.put('/api/orders/:id/cancel', { preHandler: [fastify.authenticate, fastify.verifyAdmin] }, supportController.cancelOrder);
+    fastify.post('/api/orders/report-issue', { preHandler: [fastify.authenticate] }, supportController.reportIssue);
+    fastify.post('/api/orders/webhook/razorpay', supportController.razorpayWebhook);
+    
+    // In-App Chat
+    fastify.post('/api/orders/:id/chat', { preHandler: [fastify.authenticate] }, supportController.sendChatMessage);
+    fastify.get('/api/orders/:id/chat', { preHandler: [fastify.authenticate] }, supportController.getChatHistory);
+    
+    // Operations Lifeline
+    fastify.put('/api/orders/:id/short-pick', { preHandler: [fastify.authenticate, fastify.verifyAdmin] }, supportController.shortPickItem);
+    
+    // MISSING ENDPOINT FIXED: Enables Customer Rating Submissions
+    fastify.post('/api/orders/:id/rate', { preHandler: [fastify.authenticate] }, supportController.rateOrder);
 }
 
 module.exports = orderRoutes;
