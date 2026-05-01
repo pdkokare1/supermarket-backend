@@ -98,19 +98,50 @@ exports.executeWhatsAppMessage = async (phone, messageText, fastify = null) => {
 };
 
 // ============================================================================
-// --- NEW: PHASE 10 ASYNCHRONOUS REDIS NOTIFICATION QUEUE ---
+// --- MODIFIED: PHASE 28 VERNACULAR LOCALIZATION ENGINE ---
 // ============================================================================
 const originalSendWhatsAppPhase10 = exports.sendWhatsAppMessage;
 
 exports.sendWhatsAppMessage = async (phone, messageText, fastify = null) => {
     try {
+        const Customer = require('../models/Customer');
+        const cust = await Customer.findOne({ phone }).lean();
+        
+        let finalMessage = messageText;
+
+        // VERNACULAR TRANSLATION: Expand TAM by speaking the customer's language
+        if (cust && cust.languagePreference) {
+            const i18n = {
+                'HI': {
+                    'Order Received': 'ऑर्डर मिल गया',
+                    'Dispatched': 'रवाना हो गया',
+                    'Delivered': 'डिलीवर हो गया',
+                    'Thanks for shopping': 'खरीदारी के लिए धन्यवाद'
+                },
+                'MR': {
+                    'Order Received': 'ऑर्डर प्राप्त झाला',
+                    'Dispatched': 'पाठवले आहे',
+                    'Delivered': 'पोहोचवले आहे',
+                    'Thanks for shopping': 'खरेदीबद्दल धन्यवाद'
+                }
+            };
+
+            const dict = i18n[cust.languagePreference];
+            if (dict) {
+                // Highly performant string replacement for known templates
+                for (const [eng, loc] of Object.entries(dict)) {
+                    finalMessage = finalMessage.replace(eng, loc);
+                }
+            }
+        }
+
         // Instantly offload to Redis to guarantee zero blocking on the checkout thread
         const cacheUtils = require('../utils/cacheUtils');
         const redisClient = cacheUtils.getClient();
         if (redisClient) {
             await redisClient.lpush('queue:notifications:whatsapp', JSON.stringify({
                 phone,
-                messageText,
+                messageText: finalMessage,
                 timestamp: Date.now()
             }));
             return true;
