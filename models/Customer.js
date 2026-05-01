@@ -49,7 +49,14 @@ const customerSchema = new mongoose.Schema({
     hasCompletedFirstOrder: {
         type: Boolean,
         default: false
-    }
+    },
+
+    // ============================================================================
+    // --- NEW: PHASE 28 DAILYPICK PRIME & VERNACULAR ENGINE ---
+    // ============================================================================
+    isPrime: { type: Boolean, default: false },
+    primeExpiry: { type: Date, default: null },
+    languagePreference: { type: String, enum: ['EN', 'HI', 'MR'], default: 'EN' }
 
 }, { timestamps: true });
 
