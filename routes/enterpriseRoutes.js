@@ -100,4 +100,11 @@ module.exports = async function (fastify, opts) {
             return reply.code(500).send({ success: false, message: 'Server error' });
         }
     });
+
+    // ============================================================================
+    // --- NEW: PHASE 27 LEGACY ERP BRIDGE (CSV INVENTORY SYNC) ---
+    // ============================================================================
+    fastify.post('/api/enterprise/legacy-sync', async (request, reply) => {
+        return await enterpriseController.processLegacyERPCsv(request, reply);
+    });
 };
