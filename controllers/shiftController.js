@@ -14,6 +14,7 @@ exports.getCurrentShift = async (request, reply) => {
 };
 
 exports.closeShift = async (request, reply) => {
+    // PHASE 29: Pass discrepancyReason from frontend payload into the service
     const { shift, discrepancy } = await shiftService.closeShift(request.body, request.user, request.server.log.error.bind(request.server.log));
 
     return { 
