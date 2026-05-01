@@ -209,13 +209,18 @@ exports.processExternalCheckout = async (payload, externalSession = null) => {
 
 exports.processOnlineCheckout = async (payload, externalSession = null) => {
     return await withIdempotency(payload.idempotencyKey, async () => {
-        const { customerName, customerPhone, deliveryAddress, items, deliveryType, scheduleTime, paymentMethod, notes, storeId } = payload;
+        const { customerName, customerPhone, deliveryAddress, items, deliveryType, scheduleTime, paymentMethod, notes, storeId, deliveryFeeAmount } = payload;
         
         // Cache external store references for webhooks after the transaction block completes
         const storeCaches = [];
         let totalMasterCartRs = 0;
         
         const coreLogic = async (session) => {
+            // --- NEW: PHASE 28 DAILYPICK PRIME VALIDATION ---
+            const Customer = require('../models/Customer');
+            const custCheck = await Customer.findOne({ phone: customerPhone }).session(session).lean();
+            const isPrimeMember = custCheck && custCheck.isPrime && new Date(custCheck.primeExpiry) > new Date();
+
             // --- PHASE 3: SMART CART SPLITTING ---
             // Group items by their specific storeId. Fallbacks to payload.storeId for legacy single-store checkouts.
             const cartGroups = {};
@@ -269,6 +274,18 @@ exports.processOnlineCheckout = async (payload, externalSession = null) => {
                     });
                 }
 
+                // Add delivery fee logic, completely waived for Prime members
+                let appliedDeliveryFee = deliveryFeeAmount || 0;
+                let finalNotes = notes || '';
+                
+                if (appliedDeliveryFee > 0) {
+                    if (isPrimeMember) {
+                        finalNotes += ` [PRIME SAVINGS: Free Delivery Applied]`;
+                    } else {
+                        calculatedTotal += appliedDeliveryFee;
+                    }
+                }
+
                 totalMasterCartRs += calculatedTotal;
 
                 // --- SMART FULFILLMENT ROUTING ---
@@ -286,7 +303,8 @@ exports.processOnlineCheckout = async (payload, externalSession = null) => {
                         // Heuristic: Base 15 mins + 3 mins for every active order currently packing at this store
                         try {
                             const queueLength = await Order.countDocuments({ storeId: currentStoreId, status: { $in: ['Order Placed', 'Packing'] } });
-                            const etaMins = 15 + (queueLength * 3);
+                            let etaMins = 15 + (queueLength * 3);
+                            if (isPrimeMember) etaMins -= 5; // Prime Priority Queue Bypass
                             dynamicEta = `${etaMins} - ${etaMins + 7} mins`;
                         } catch(e) {
                             dynamicEta = '15 - 25 mins'; // Fallback
@@ -295,7 +313,7 @@ exports.processOnlineCheckout = async (payload, externalSession = null) => {
                 }
 
                 const orderData = { 
-                    notes: notes || '', 
+                    notes: finalNotes.trim(), 
                     customerName, 
                     customerPhone, 
                     deliveryAddress, 
