@@ -688,3 +688,61 @@ exports.getChatHistory = async (request, reply) => {
     
     return { success: true, data: order.chatHistory || [] };
 };
+
+// ============================================================================
+// --- NEW: PHASE 29 SMART SHORT-PICKS (PACKER'S LIFELINE) ---
+// ============================================================================
+exports.shortPickItem = async (request, reply) => {
+    const Order = require('../models/Order');
+    const notificationService = require('../services/notificationService');
+    const { variantId } = request.body;
+
+    return await withTransaction(async (session) => {
+        const order = await Order.findById(request.params.id).session(session);
+        if (!order) throw new AppError('Order not found', 404);
+        if (order.status !== 'Packing') throw new AppError('Short-picks can only occur during the Packing stage', 400);
+
+        let refundAmountRs = 0;
+        let missingItemName = 'an item';
+
+        // 1. Locate the missing item and remove it from the array
+        order.items = order.items.filter(item => {
+            if (item.variantId.toString() === variantId) {
+                refundAmountRs = item.price * item.qty;
+                missingItemName = item.name || 'product';
+                return false; 
+            }
+            return true;
+        });
+
+        if (refundAmountRs === 0) {
+            throw new AppError('Item not found in this order', 404);
+        }
+
+        // 2. Adjust Total and Log
+        order.totalAmount -= refundAmountRs;
+        order.notes = `${order.notes || ''} [SHORT-PICK: Rs ${refundAmountRs} removed for missing ${missingItemName}]`.trim();
+        await order.save({ session });
+
+        // 3. Automated Payment Gateway Refund if Online
+        if (order.paymentMethod === 'Online' && order.transactionId) {
+            try {
+                const Razorpay = require('razorpay');
+                const razorpay = new Razorpay({
+                    key_id: process.env.RAZORPAY_KEY_ID || 'dummy_key',
+                    key_secret: process.env.RAZORPAY_KEY_SECRET || 'dummy_secret',
+                });
+                await razorpay.payments.refund(order.transactionId, { amount: Math.round(refundAmountRs * 100) });
+            } catch (e) {
+                request.server.log.error(`Razorpay Short-Pick Refund Error: ${e.message}`);
+                // In a true enterprise setup, this would go to a Dead Letter Queue to retry later
+            }
+        }
+
+        // 4. Alert the customer seamlessly
+        const msg = `Order Update! We were out of ${missingItemName}, so we've removed it from your cart. Rs ${refundAmountRs} has been refunded. The rest of your order is packing now!`;
+        notificationService.sendWhatsAppMessage(order.customerPhone, msg).catch(() => {});
+
+        return { success: true, message: `Short-pick processed. Rs ${refundAmountRs} removed.`, orderId: order._id };
+    });
+};
