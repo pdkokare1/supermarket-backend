@@ -593,6 +593,60 @@ async function runFleetWatchdog(fastify) {
     }
 }
 
+// ============================================================================
+// --- NEW: PHASE 29 ABANDONED CART RECOVERY (WIN-BACK ENGINE) ---
+// ============================================================================
+async function runAbandonedCartRecovery(fastify) {
+    fastify.log.info('Running Abandoned Cart Recovery Engine...');
+    try {
+        const cacheUtils = require('../utils/cacheUtils');
+        const redisClient = cacheUtils.getClient();
+        
+        if (!redisClient) return;
+
+        // Scan Redis for Ghost Order cart sessions that are close to expiring
+        // (Assuming TTL was 3600 seconds, look for keys that have < 900 seconds left)
+        const keys = await redisClient.keys('cart_session:*');
+        let recoveredCount = 0;
+
+        for (const key of keys) {
+            const ttl = await redisClient.ttl(key);
+            
+            // If the cart has been sitting there for ~45 mins (TTL between 0 and 900)
+            if (ttl > 0 && ttl <= 900) {
+                // Check a separate "notified" flag so we don't spam the user every minute
+                const notifiedKey = `notified:${key}`;
+                const hasBeenNotified = await redisClient.get(notifiedKey);
+                
+                if (!hasBeenNotified) {
+                    const cartDataStr = await redisClient.get(key);
+                    if (cartDataStr) {
+                        try {
+                            const cartData = JSON.parse(cartDataStr);
+                            if (cartData.customerPhone) {
+                                const msg = `Hey ${cartData.customerName || 'there'}! You left some items in your DailyPick cart. 🛒 Checkout in the next 30 mins and we'll waive your delivery fee!`;
+                                notificationService.sendWhatsAppMessage(cartData.customerPhone, msg).catch(() => {});
+                                
+                                // Mark as notified for 24 hours
+                                await redisClient.set(notifiedKey, 'true', 'EX', 86400);
+                                recoveredCount++;
+                            }
+                        } catch(e) {
+                            // Suppress parsing errors on malformed cache
+                        }
+                    }
+                }
+            }
+        }
+
+        if (recoveredCount > 0) {
+            fastify.log.info(`[WIN-BACK ENGINE] Sent ${recoveredCount} abandoned cart notifications.`);
+        }
+    } catch (err) {
+        fastify.log.error('Abandoned Cart Engine Error:', err);
+    }
+}
+
 module.exports = {
     runWithLock,
     runExpiryMonitor,
@@ -607,5 +661,6 @@ module.exports = {
     runRiderPayouts,
     runRetentionCRM,
     runDemandForecast,
-    runFleetWatchdog
+    runFleetWatchdog,
+    runAbandonedCartRecovery
 };
