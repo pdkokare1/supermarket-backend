@@ -57,6 +57,11 @@ async function orderRoutes(fastify, options) {
     // ============================================================================
     fastify.post('/api/orders/:id/chat', { preHandler: [fastify.authenticate] }, orderController.sendChatMessage);
     fastify.get('/api/orders/:id/chat', { preHandler: [fastify.authenticate] }, orderController.getChatHistory);
+
+    // ============================================================================
+    // --- NEW: PHASE 29 SMART SHORT-PICKS (PACKER'S LIFELINE) ---
+    // ============================================================================
+    fastify.put('/api/orders/:id/short-pick', { preHandler: [fastify.authenticate, fastify.verifyAdmin] }, orderController.shortPickItem);
 }
 
 module.exports = orderRoutes;
