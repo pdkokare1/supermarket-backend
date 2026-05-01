@@ -489,6 +489,57 @@ async function runRetentionCRM(fastify) {
     }
 }
 
+// ============================================================================
+// --- NEW: PHASE 26 ALGORITHMIC STOCK FORECASTING (PREDICTIVE PROCUREMENT) ---
+// ============================================================================
+async function runDemandForecast(fastify) {
+    fastify.log.info('Running Algorithmic Stock Forecasting Cron...');
+    try {
+        const Order = require('../models/Order');
+        const StoreInventory = require('../models/StoreInventory');
+        
+        // Look at sales velocity over the last 14 days
+        const targetDate = new Date();
+        targetDate.setDate(targetDate.getDate() - 14);
+
+        // Aggregate all delivered orders to find total quantity sold per variant per store
+        const velocityData = await Order.aggregate([
+            { $match: { createdAt: { $gte: targetDate }, status: { $in: ['Delivered', 'Completed'] } } },
+            { $unwind: "$items" },
+            { $group: {
+                _id: { storeId: "$storeId", variantId: "$items.variantId" },
+                totalSold: { $sum: "$items.qty" }
+            }}
+        ]);
+
+        let adjustedCount = 0;
+
+        for (const data of velocityData) {
+            // Calculate daily velocity
+            const dailyVelocity = data.totalSold / 14;
+            
+            // Set the low stock threshold to 3 days worth of inventory, with an absolute minimum of 5
+            const optimalThreshold = Math.max(5, Math.ceil(dailyVelocity * 3));
+
+            // Update the inventory threshold
+            const result = await StoreInventory.updateOne(
+                { storeId: data._id.storeId, variantId: data._id.variantId, lowStockThreshold: { $ne: optimalThreshold } },
+                { $set: { lowStockThreshold: optimalThreshold } }
+            );
+
+            if (result.modifiedCount > 0) {
+                adjustedCount++;
+            }
+        }
+
+        if (adjustedCount > 0) {
+            fastify.log.info(`[DEMAND FORECAST] Successfully adjusted Low Stock Thresholds for ${adjustedCount} high-velocity items.`);
+        }
+    } catch (err) {
+        fastify.log.error('Demand Forecast Engine Error:', err);
+    }
+}
+
 module.exports = {
     runWithLock,
     runExpiryMonitor,
@@ -501,5 +552,6 @@ module.exports = {
     runAutonomousB2BProcurement,
     runEnterpriseSettlements,
     runRiderPayouts,
-    runRetentionCRM
+    runRetentionCRM,
+    runDemandForecast
 };
