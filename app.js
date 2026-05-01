@@ -64,6 +64,25 @@ const createApp = (opts = {}) => {
         instance.decorate('redis', redisClient);
     }));
 
+    // ============================================================================
+    // --- NEW: PHASE 30 THE DEFENSE MATRIX (REDIS RATE LIMITING) ---
+    // ============================================================================
+    if (redisClient) {
+        fastify.register(require('@fastify/rate-limit'), {
+            global: true, // Apply to all routes by default
+            max: 200,     // Max requests per window
+            timeWindow: '1 minute',
+            redis: redisClient,
+            keyGenerator: (req) => req.headers['x-real-ip'] || req.ip, // Trust Proxy
+            errorResponseBuilder: (req, context) => ({
+                statusCode: 429,
+                error: 'Too Many Requests',
+                message: 'I only allow 200 requests per minute to this website. Try again soon.'
+            })
+        });
+        fastify.log.info('[DEFENSE MATRIX] Global Redis Rate Limiting Activated.');
+    }
+
     // ==========================================
     // --- CORE SYSTEM ROUTES (Bypassing Autoloader) ---
     // ==========================================
@@ -84,9 +103,34 @@ const createApp = (opts = {}) => {
         return { success: true, message: `IP ${request.ip} has been successfully removed from the blocklist.` };
     });
     
-    // NEW: Dynamic Configuration Gateway
+    // ============================================================================
+    // --- MODIFIED: PHASE 30 ZERO-DOWNTIME FEATURE FLAGS ---
+    // ============================================================================
     fastify.get('/api/config/gateway', async (request, reply) => {
-        return { success: true, key: process.env.RAZORPAY_KEY || 'rzp_test_dummykey' };
+        // Fallbacks if Redis isn't responding
+        let dynamicConfigs = {
+            codEnabled: true,
+            surgeMultiplier: 1.0,
+            maintenanceMode: false
+        };
+
+        if (redisClient) {
+            try {
+                // Fetch all system configs stored in Redis (e.g. key: "system_configs")
+                const cachedConfig = await redisClient.get('system_configs');
+                if (cachedConfig) {
+                    dynamicConfigs = { ...dynamicConfigs, ...JSON.parse(cachedConfig) };
+                }
+            } catch (e) {
+                fastify.log.error('Config Gateway Redis Error:', e);
+            }
+        }
+
+        return { 
+            success: true, 
+            key: process.env.RAZORPAY_KEY || 'rzp_test_dummykey',
+            features: dynamicConfigs
+        };
     });
 
     fastify.get('/api/system/metrics', async (request, reply) => {
