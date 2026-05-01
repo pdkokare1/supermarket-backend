@@ -402,18 +402,20 @@ exports.rateOrder = async (request, reply) => {
 };
 
 // ============================================================================
-// --- NEW: PHASE 10 SPATIAL RIDER LOCATION PING (Mapbox Bridge) ---
+// --- MODIFIED: PHASE 10 & 28 RIDER LOCATION PING (WATCHDOG REFRESH) ---
 // ============================================================================
 exports.updateRiderLocation = async (request, reply) => {
     const { riderId, lat, lng } = request.body;
     
     // Update Shift's spatial location for the $geoNear routing queries
+    // PHASE 28: Also updates lastPingTime so the Watchdog knows rider is alive
     const Shift = require('../models/Shift');
     await Shift.findByIdAndUpdate(riderId, {
         spatialLocation: {
             type: 'Point',
             coordinates: [lng, lat]
-        }
+        },
+        lastPingTime: Date.now()
     });
     
     // Fire event so Firebase Realtime DB / SSE can pick it up to animate the Mapbox UI
@@ -650,4 +652,39 @@ exports.razorpayWebhook = async (request, reply) => {
     }
     
     return reply.code(200).send({ status: 'ok' });
+};
+
+// ============================================================================
+// --- NEW: PHASE 28 SECURE IN-APP CHAT (CUSTOMER <-> RIDER) ---
+// ============================================================================
+exports.sendChatMessage = async (request, reply) => {
+    const Order = require('../models/Order');
+    const { orderId } = request.params;
+    const { message, sender } = request.body; // 'Customer' or 'Rider'
+
+    if (!message || !['Customer', 'Rider'].includes(sender)) {
+        throw new AppError('Invalid chat payload', 400);
+    }
+
+    const order = await Order.findByIdAndUpdate(
+        orderId, 
+        { $push: { chatHistory: { sender, message, timestamp: Date.now() } } },
+        { new: true }
+    );
+
+    if (!order) throw new AppError('Order not found', 404);
+
+    // Broadcast the new message over SSE so the other party sees it instantly
+    const appEvents = require('../utils/eventEmitter');
+    appEvents.emit('ORDER_CHAT_UPDATED', { orderId: order._id, chat: { sender, message, timestamp: Date.now() } });
+
+    return { success: true, message: 'Chat sent' };
+};
+
+exports.getChatHistory = async (request, reply) => {
+    const Order = require('../models/Order');
+    const order = await Order.findById(request.params.id).select('chatHistory').lean();
+    if (!order) throw new AppError('Order not found', 404);
+    
+    return { success: true, data: order.chatHistory || [] };
 };
