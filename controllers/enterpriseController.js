@@ -428,3 +428,104 @@ exports.batchUpdateInventory = async (request, reply) => {
     // Normal synchronous processing for standard payloads
     return await originalBatchUpdateInventoryPhase7(request, reply);
 };
+
+// ============================================================================
+// --- NEW: PHASE 27 LEGACY ERP BRIDGE (CSV INVENTORY SYNC) ---
+// ============================================================================
+exports.processLegacyERPCsv = async (request, reply) => {
+    const store = await authenticateEnterprise(request);
+    const { csvData } = request.body;
+
+    if (!csvData || typeof csvData !== 'string') {
+        throw new AppError('csvData string is required in the payload', 400);
+    }
+
+    // Split CSV into lines, sanitize
+    const lines = csvData.split('\n').map(line => line.trim()).filter(line => line);
+    if (lines.length < 2) throw new AppError('CSV must contain headers and at least one data row', 400);
+
+    // Identify dynamic headers (Tally vs Marg vs Custom ERPs)
+    const headers = lines[0].toLowerCase().split(',');
+    const skuIdx = headers.findIndex(h => h.includes('sku') || h.includes('barcode') || h.includes('item_code'));
+    const stockIdx = headers.findIndex(h => h.includes('stock') || h.includes('qty') || h.includes('quantity'));
+    const priceIdx = headers.findIndex(h => h.includes('price') || h.includes('mrp') || h.includes('rate'));
+
+    if (skuIdx === -1 || stockIdx === -1) {
+        throw new AppError('CSV headers must include at least a SKU/Barcode and a Stock/Qty column', 400);
+    }
+
+    const itemsToProcess = [];
+    const skuSet = new Set();
+
+    // Parse the entire CSV locally into memory
+    for (let i = 1; i < lines.length; i++) {
+        const columns = lines[i].split(',');
+        const sku = columns[skuIdx]?.trim();
+        const stock = parseInt(columns[stockIdx]?.trim(), 10);
+        const price = priceIdx !== -1 ? parseFloat(columns[priceIdx]?.trim()) : null;
+
+        if (sku && !isNaN(stock)) {
+            itemsToProcess.push({ sku, stock, price });
+            skuSet.add(sku);
+        }
+    }
+
+    // HYPER-SCALE OPTIMIZATION: Fetch all matching Master Products in one giant background query
+    const skuArray = Array.from(skuSet);
+    const matchedMasters = await MasterProduct.find({
+        "variants.sku": { $in: skuArray },
+        isActive: true
+    }).lean();
+
+    // Create a lightning-fast memory map
+    const skuMap = {};
+    matchedMasters.forEach(master => {
+        if (master.variants) {
+            master.variants.forEach(v => {
+                if (v.sku && skuSet.has(v.sku)) {
+                    skuMap[v.sku] = { masterProductId: master._id, variantId: v._id };
+                }
+            });
+        }
+    });
+
+    const bulkOps = [];
+    let matchedCount = 0;
+    let skippedCount = 0;
+
+    // Compare and build bulk database operations
+    for (const item of itemsToProcess) {
+        const mapped = skuMap[item.sku];
+        if (mapped) {
+            const updateDoc = { stock: item.stock };
+            if (item.price !== null && !isNaN(item.price)) updateDoc.sellingPrice = item.price; // Dynamic Rs sync
+
+            bulkOps.push({
+                updateOne: {
+                    filter: { storeId: store._id, masterProductId: mapped.masterProductId, variantId: mapped.variantId },
+                    update: { $set: updateDoc },
+                    upsert: true
+                }
+            });
+            matchedCount++;
+        } else {
+            skippedCount++;
+        }
+    }
+
+    // Commit to MongoDB
+    if (bulkOps.length > 0) {
+        await StoreInventory.bulkWrite(bulkOps);
+    }
+
+    // Ping the health-check and clear B2C cache
+    await Store.findByIdAndUpdate(store._id, { $set: { "apiIntegration.lastSync": new Date() } });
+    const { invalidateProductCache } = require('../services/productCacheService');
+    await invalidateProductCache();
+
+    return {
+        success: true,
+        message: `Legacy ERP Sync Complete. Matched and updated ${matchedCount} items. Skipped ${skippedCount} items not found in Master Catalog.`,
+        updatedCount: matchedCount
+    };
+};
