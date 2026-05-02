@@ -13,6 +13,9 @@ const initRedis = (logger = console) => {
             enableOfflineQueue: false,
             commandTimeout: 2000,
             maxRetriesPerRequest: 3,
+            // ENTERPRISE FIX: Non-blocking startup and persistent connections
+            lazyConnect: true,
+            keepAlive: 10000,
             retryStrategy: (times) => {
                 return Math.min(times * 100, 3000);
             }
