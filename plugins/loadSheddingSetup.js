@@ -6,7 +6,8 @@ const fp = require('fastify-plugin');
 module.exports = fp(async (fastify, opts) => {
     // ENTERPRISE STABILITY: Load Shedding. Prevents Event Loop collapse under DDoS/heavy traffic.
     fastify.register(require('@fastify/under-pressure'), {
-        maxEventLoopDelay: process.env.MAX_EVENT_LOOP_DELAY || 1000,
+        // OPTIMIZATION: Reduced to 300ms. Sheds load BEFORE database connections starve and timeout.
+        maxEventLoopDelay: process.env.MAX_EVENT_LOOP_DELAY || 300,
         maxHeapUsedBytes: process.env.MAX_HEAP_BYTES || 1000000000, // 1GB
         maxRssBytes: process.env.MAX_RSS_BYTES || 1000000000,
         maxEventLoopUtilization: process.env.MAX_EVENT_LOOP_UTIL || 0.98,
