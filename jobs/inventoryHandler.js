@@ -31,18 +31,33 @@ exports.processEnterpriseBatchUpload = async (fastify, payload) => {
             // Utilize existing memory-safe stream processor from utils/csvUtils.js
             await csvUtils.processCsvStream(res, 1000, async (batch) => {
                 const bulkOps = [];
+                
+                // ENTERPRISE OPTIMIZATION: Fix N+1 Query Problem to save MongoDB Atlas Costs.
+                // Pre-fetch all MasterProducts for this batch in a SINGLE read operation, instead of 1000 individual reads.
+                const skus = batch.map(row => row.sku).filter(Boolean);
+                const masterDocs = await MasterProduct.find({ "variants.sku": { $in: skus } }).lean();
+                
+                // Create an O(1) lookup map in memory
+                const masterMap = new Map();
+                masterDocs.forEach(doc => {
+                    if (doc.variants && Array.isArray(doc.variants)) {
+                        doc.variants.forEach(v => {
+                            if (v.sku) masterMap.set(v.sku, doc._id);
+                        });
+                    }
+                });
 
                 for (const row of batch) {
                     // ERP CSV Expected format: sku, stock, price
                     if (!row.sku) continue; 
 
-                    // Cross-reference with our Universal Master Data Hub
-                    const masterDoc = await MasterProduct.findOne({ "variants.sku": row.sku }).lean();
-                    if (!masterDoc) continue;
+                    // Cross-reference with our in-memory map instead of querying the DB
+                    const masterDocId = masterMap.get(row.sku);
+                    if (!masterDocId) continue;
 
                     bulkOps.push({
                         updateOne: {
-                            filter: { storeId: storeId, masterProductId: masterDoc._id },
+                            filter: { storeId: storeId, masterProductId: masterDocId },
                             update: {
                                 $set: {
                                     stockCount: Number(row.stock) || 0,
