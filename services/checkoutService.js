@@ -208,214 +208,21 @@ exports.processExternalCheckout = async (payload, externalSession = null) => {
 };
 
 exports.processOnlineCheckout = async (payload, externalSession = null) => {
-    return await withIdempotency(payload.idempotencyKey, async () => {
-        const { customerName, customerPhone, deliveryAddress, items, deliveryType, scheduleTime, paymentMethod, notes, storeId, deliveryFeeAmount } = payload;
+    // --- NEW: PHASE 9 FRAUD & COD ABUSE SHIELD (CHECKOUT INTERCEPTOR) ---
+    // If the customer attempts to pay via COD, check their trust score first
+    if (payload.paymentMethod === 'Cash on Delivery' || payload.paymentMethod === 'Cash') {
+        const Customer = require('../models/Customer');
+        const cust = await Customer.findOne({ phone: payload.customerPhone }).lean();
         
-        // Cache external store references for webhooks after the transaction block completes
-        const storeCaches = [];
-        let totalMasterCartRs = 0;
-        
-        const coreLogic = async (session) => {
-            // --- NEW: PHASE 28 DAILYPICK PRIME VALIDATION ---
-            const Customer = require('../models/Customer');
-            const custCheck = await Customer.findOne({ phone: customerPhone }).session(session).lean();
-            const isPrimeMember = custCheck && custCheck.isPrime && new Date(custCheck.primeExpiry) > new Date();
-
-            // --- PHASE 3: SMART CART SPLITTING ---
-            // Group items by their specific storeId. Fallbacks to payload.storeId for legacy single-store checkouts.
-            const cartGroups = {};
-            let requiresSplit = false;
-
-            for (const item of items) {
-                const targetStoreId = item.storeId || storeId;
-                if (!targetStoreId) throw new AppError('Tenant Isolation Error: Target store must be specified for all items', 400);
-                
-                if (targetStoreId.toString() !== (storeId || '').toString()) {
-                    requiresSplit = true; // Omni-channel multiple stores detected in the single payload
-                }
-
-                if (!cartGroups[targetStoreId]) cartGroups[targetStoreId] = [];
-                cartGroups[targetStoreId].push(item);
-            }
-
-            const generatedOrders = [];
-            // Generates a master cart ID to link split sub-orders together for the B2C frontend
-            const splitShipmentGroupId = requiresSplit ? crypto.randomUUID() : null;
-            let profileUpdated = false;
-
-            for (const [currentStoreId, storeItems] of Object.entries(cartGroups)) {
-                const store = await Store.findById(currentStoreId).session(session).lean();
-                if (!store) throw new AppError(`Target store ${currentStoreId} not found`, 404);
-                
-                storeCaches.push(store);
-
-                let calculatedTotal = 0;
-                const validatedItems = [];
-
-                // --- ANTI-TAMPER & ISOLATED CART ENFORCER ---
-                for (const item of storeItems) {
-                    const localStock = await StoreInventory.findOne({
-                        storeId: currentStoreId,
-                        masterProductId: item.productId,
-                        variantId: item.variantId
-                    }).session(session).lean();
-
-                    if (!localStock) {
-                        throw new AppError(`Isolated Cart Error: An item does not belong to the store ${store.name}.`, 400);
-                    }
-
-                    calculatedTotal += (localStock.sellingPrice * item.qty);
-                    
-                    validatedItems.push({
-                        ...item,
-                        masterProductId: item.productId,
-                        storeInventoryId: localStock._id,
-                        price: localStock.sellingPrice
-                    });
-                }
-
-                // Add delivery fee logic, completely waived for Prime members
-                let appliedDeliveryFee = deliveryFeeAmount || 0;
-                let finalNotes = notes || '';
-                
-                if (appliedDeliveryFee > 0) {
-                    if (isPrimeMember) {
-                        finalNotes += ` [PRIME SAVINGS: Free Delivery Applied]`;
-                    } else {
-                        calculatedTotal += appliedDeliveryFee;
-                    }
-                }
-
-                totalMasterCartRs += calculatedTotal;
-
-                // --- SMART FULFILLMENT ROUTING ---
-                let assignedFulfillmentType = 'PICKUP';
-                let dynamicEta = scheduleTime || 'ASAP';
-
-                if (deliveryType && deliveryType.toLowerCase().includes('delivery') || deliveryType === 'Instant') {
-                    if (store.fulfillmentOptions && store.fulfillmentOptions.includes('STORE_DELIVERY')) {
-                        assignedFulfillmentType = 'STORE_DELIVERY'; // Send to Partner API
-                        dynamicEta = 'Next Day'; // Enterprise Partner Default
-                    } else {
-                        assignedFulfillmentType = 'PLATFORM_DELIVERY'; // Platform Fleet
-                        
-                        // --- NEW: PHASE 24 DYNAMIC ML ETAS ---
-                        // Heuristic: Base 15 mins + 3 mins for every active order currently packing at this store
-                        try {
-                            const queueLength = await Order.countDocuments({ storeId: currentStoreId, status: { $in: ['Order Placed', 'Packing'] } });
-                            let etaMins = 15 + (queueLength * 3);
-                            if (isPrimeMember) etaMins -= 5; // Prime Priority Queue Bypass
-                            dynamicEta = `${etaMins} - ${etaMins + 7} mins`;
-                        } catch(e) {
-                            dynamicEta = '15 - 25 mins'; // Fallback
-                        }
-                    }
-                }
-
-                const orderData = { 
-                    notes: finalNotes.trim(), 
-                    customerName, 
-                    customerPhone, 
-                    deliveryAddress, 
-                    totalAmount: calculatedTotal, 
-                    paymentMethod: paymentMethod || 'Cash on Delivery', 
-                    deliveryType: deliveryType || 'Instant', 
-                    scheduleTime: dynamicEta, // Dynamically assigned above
-                    fulfillmentType: assignedFulfillmentType,
-                    fulfillmentStatus: 'Pending',
-                    splitShipmentGroupId 
-                };
-                
-                // Ensure customer profile is only processed once per cart to avoid DB lock collisions
-                if (!profileUpdated) {
-                    await customerService.processOnlineCheckoutProfile(customerPhone, customerName, totalMasterCartRs, paymentMethod, session);
-                    profileUpdated = true;
-                }
-
-                const newOrder = await finalizeAndSaveOrder(session, validatedItems, currentStoreId, 'ORD', orderData);
-                await generateSettlement(session, newOrder, currentStoreId); // Phase 3 dynamic ledger
-
-                generatedOrders.push(newOrder);
-            }
-
-            // Optional: Tag all orders with the total master cart amount if it was split
-            if (requiresSplit) {
-                for (let o of generatedOrders) {
-                    o.masterCartTotalRs = totalMasterCartRs;
-                    await o.save({ session });
-                }
-            }
-
-            return generatedOrders;
-        };
-
-        const generatedOrders = externalSession ? await coreLogic(externalSession) : await withTransaction(coreLogic);
-
-        // --- POST-CHECKOUT TRIGGERS ---
-        for (const newOrder of generatedOrders) {
-            const storeCache = storeCaches.find(s => s._id.toString() === newOrder.storeId.toString());
-
-            appEvents.emit('NEW_ORDER', { order: newOrder, storeId: newOrder.storeId, source: 'Online' });
-
-            if (storeCache && newOrder.fulfillmentType === 'STORE_DELIVERY') {
-                dispatchEnterpriseWebhook(storeCache, newOrder);
-            }
+        // If a customer has rejected 3 or more COD orders at the door, block COD
+        if (cust && cust.codRejections >= 3) {
+            throw new AppError('Cash on Delivery is currently disabled for this account due to previous return history. Please select Pay Online.', 403);
         }
+    }
 
-        // Send a single combined notification to the customer protecting their unified experience
-        if (generatedOrders.length > 0) {
-            const orderReference = generatedOrders.length > 1 ? `Omni-Cart (${generatedOrders.length} Shipments)` : generatedOrders[0].orderNumber;
-            const msg = `DailyPick Order Received! 🛒\nReference: ${orderReference}\nTotal: Rs ${totalMasterCartRs}\nThanks for shopping!`;
-            notificationService.sendWhatsAppMessage(customerPhone, msg).catch(() => {}); 
-        }
-
-        // Maintain backward compatibility for standard frontend responses
-        return generatedOrders.length === 1 ? generatedOrders[0] : generatedOrders;
-    });
-};
-
-exports.processPosCheckout = async (payload, externalSession = null) => {
-    return await withIdempotency(payload.idempotencyKey, async () => {
-        const { customerPhone, items, totalAmount, taxAmount, discountAmount, paymentMethod, splitDetails, pointsRedeemed, notes, storeId, registerId } = payload;
-        
-        const coreLogic = async (session) => {
-            let finalCustomerName = 'Walk-in Guest';
-
-            // NOTE: Cannot parallelize this step because finalCustomerName is required dynamically for the order payload below.
-            if (customerPhone) {
-                finalCustomerName = await customerService.processPosCheckoutProfile(customerPhone, totalAmount, paymentMethod, pointsRedeemed, session);
-            }
-
-            // POS inherently accepts the totalAmount payload to allow cashiers to do manual complex overrides and discounts on the floor
-            const orderData = { registerId: registerId || null, notes: notes || '', customerName: finalCustomerName, customerPhone: customerPhone || '', deliveryAddress: 'In-Store Purchase', totalAmount, taxAmount: taxAmount || 0, discountAmount: discountAmount || 0, paymentMethod, splitDetails: splitDetails || { cash: 0, upi: 0 }, deliveryType: 'Instant', status: 'Completed', fulfillmentType: 'PICKUP', fulfillmentStatus: 'Delivered' };
-            
-            const newOrder = await finalizeAndSaveOrder(session, items, storeId, 'ORD', orderData);
-            await generateSettlement(session, newOrder, storeId); // Phase 3 dynamic ledger
-            
-            return newOrder;
-        };
-
-        const newOrder = externalSession ? await coreLogic(externalSession) : await withTransaction(coreLogic);
-
-        appEvents.emit('NEW_ORDER', { order: newOrder, storeId, source: 'POS' });
-
-        const loyaltyMsg = pointsRedeemed > 0 ? ` Points Redeemed: ${pointsRedeemed}.` : '';
-        const msg = `Thank you for shopping at DailyPick! 🛒\nOrder: ${newOrder.orderNumber}\nTotal: Rs ${totalAmount}\n${loyaltyMsg}\nVisit again!`;
-        notificationService.sendWhatsAppMessage(customerPhone, msg).catch(() => {}); 
-
-        return newOrder;
-    });
-};
-
-// ============================================================================
-// --- MODIFIED: PHASE 8 & 23 REDIS CART LOCKING (CONCURRENCY SHIELD) ---
-// ============================================================================
-const originalProcessOnlineCheckoutPhase8 = exports.processOnlineCheckout;
-
-exports.processOnlineCheckout = async (payload, externalSession = null) => {
+    // --- MODIFIED: PHASE 8 & 23 REDIS CART LOCKING (CONCURRENCY SHIELD) ---
     // 1. Temporary Cart Hold (5 Minutes)
     // Before processing the transaction, we secure a Redis lock for the requested items
-    
     const cacheUtils = require('../utils/cacheUtils');
     const redisClient = cacheUtils.getClient();
     let locksAcquired = [];
@@ -449,7 +256,179 @@ exports.processOnlineCheckout = async (payload, externalSession = null) => {
 
     try {
         // 2. Proceed with normal checkout now that stock is temporarily held
-        return await originalProcessOnlineCheckoutPhase8(payload, externalSession);
+        return await withIdempotency(payload.idempotencyKey, async () => {
+            const { customerName, customerPhone, deliveryAddress, items, deliveryType, scheduleTime, paymentMethod, notes, storeId, deliveryFeeAmount } = payload;
+            
+            // Cache external store references for webhooks after the transaction block completes
+            const storeCaches = [];
+            let totalMasterCartRs = 0;
+            
+            const coreLogic = async (session) => {
+                // --- NEW: PHASE 28 DAILYPICK PRIME VALIDATION ---
+                const Customer = require('../models/Customer');
+                const custCheck = await Customer.findOne({ phone: customerPhone }).session(session).lean();
+                const isPrimeMember = custCheck && custCheck.isPrime && new Date(custCheck.primeExpiry) > new Date();
+
+                // --- PHASE 3: SMART CART SPLITTING ---
+                // Group items by their specific storeId. Fallbacks to payload.storeId for legacy single-store checkouts.
+                const cartGroups = {};
+                let requiresSplit = false;
+
+                for (const item of items) {
+                    const targetStoreId = item.storeId || storeId;
+                    if (!targetStoreId) throw new AppError('Tenant Isolation Error: Target store must be specified for all items', 400);
+                    
+                    if (targetStoreId.toString() !== (storeId || '').toString()) {
+                        requiresSplit = true; // Omni-channel multiple stores detected in the single payload
+                    }
+
+                    if (!cartGroups[targetStoreId]) cartGroups[targetStoreId] = [];
+                    cartGroups[targetStoreId].push(item);
+                }
+
+                const generatedOrders = [];
+                // Generates a master cart ID to link split sub-orders together for the B2C frontend
+                const splitShipmentGroupId = requiresSplit ? crypto.randomUUID() : null;
+                let profileUpdated = false;
+
+                for (const [currentStoreId, storeItems] of Object.entries(cartGroups)) {
+                    const store = await Store.findById(currentStoreId).session(session).lean();
+                    if (!store) throw new AppError(`Target store ${currentStoreId} not found`, 404);
+                    
+                    storeCaches.push(store);
+
+                    let calculatedTotal = 0;
+                    const validatedItems = [];
+
+                    // --- ANTI-TAMPER & ISOLATED CART ENFORCER ---
+                    for (const item of storeItems) {
+                        const localStock = await StoreInventory.findOne({
+                            storeId: currentStoreId,
+                            masterProductId: item.productId,
+                            variantId: item.variantId
+                        }).session(session).lean();
+
+                        if (!localStock) {
+                            throw new AppError(`Isolated Cart Error: An item does not belong to the store ${store.name}.`, 400);
+                        }
+
+                        calculatedTotal += (localStock.sellingPrice * item.qty);
+                        
+                        validatedItems.push({
+                            ...item,
+                            masterProductId: item.productId,
+                            storeInventoryId: localStock._id,
+                            price: localStock.sellingPrice
+                        });
+                    }
+
+                    // Add delivery fee logic, completely waived for Prime members
+                    let appliedDeliveryFee = deliveryFeeAmount || 0;
+                    let finalNotes = notes || '';
+                    
+                    if (appliedDeliveryFee > 0) {
+                        if (isPrimeMember) {
+                            finalNotes += ` [PRIME SAVINGS: Free Delivery Applied]`;
+                        } else {
+                            calculatedTotal += appliedDeliveryFee;
+                        }
+                    }
+
+                    totalMasterCartRs += calculatedTotal;
+
+                    // --- SMART FULFILLMENT ROUTING ---
+                    let assignedFulfillmentType = 'PICKUP';
+                    let dynamicEta = scheduleTime || 'ASAP';
+
+                    if (deliveryType && deliveryType.toLowerCase().includes('delivery') || deliveryType === 'Instant') {
+                        if (store.fulfillmentOptions && store.fulfillmentOptions.includes('STORE_DELIVERY')) {
+                            assignedFulfillmentType = 'STORE_DELIVERY'; // Send to Partner API
+                            dynamicEta = 'Next Day'; // Enterprise Partner Default
+                        } else {
+                            assignedFulfillmentType = 'PLATFORM_DELIVERY'; // Platform Fleet
+                            
+                            // --- NEW: PHASE 24 DYNAMIC ML ETAS ---
+                            // Heuristic: Base 15 mins + 3 mins for every active order currently packing at this store
+                            try {
+                                const queueLength = await Order.countDocuments({ storeId: currentStoreId, status: { $in: ['Order Placed', 'Packing'] } });
+                                let etaMins = 15 + (queueLength * 3);
+                                if (isPrimeMember) etaMins -= 5; // Prime Priority Queue Bypass
+                                dynamicEta = `${etaMins} - ${etaMins + 7} mins`;
+                            } catch(e) {
+                                dynamicEta = '15 - 25 mins'; // Fallback
+                            }
+                        }
+                    }
+
+                    const orderData = { 
+                        notes: finalNotes.trim(), 
+                        customerName, 
+                        customerPhone, 
+                        deliveryAddress, 
+                        totalAmount: calculatedTotal, 
+                        paymentMethod: paymentMethod || 'Cash on Delivery', 
+                        deliveryType: deliveryType || 'Instant', 
+                        scheduleTime: dynamicEta, // Dynamically assigned above
+                        fulfillmentType: assignedFulfillmentType,
+                        fulfillmentStatus: 'Pending',
+                        splitShipmentGroupId 
+                    };
+                    
+                    // Ensure customer profile is only processed once per cart to avoid DB lock collisions
+                    if (!profileUpdated) {
+                        await customerService.processOnlineCheckoutProfile(customerPhone, customerName, totalMasterCartRs, paymentMethod, session);
+                        profileUpdated = true;
+                    }
+
+                    const newOrder = await finalizeAndSaveOrder(session, validatedItems, currentStoreId, 'ORD', orderData);
+                    await generateSettlement(session, newOrder, currentStoreId); // Phase 3 dynamic ledger
+
+                    generatedOrders.push(newOrder);
+                }
+
+                // Optional: Tag all orders with the total master cart amount if it was split
+                if (requiresSplit) {
+                    for (let o of generatedOrders) {
+                        o.masterCartTotalRs = totalMasterCartRs;
+                        await o.save({ session });
+                    }
+                }
+
+                return generatedOrders;
+            };
+
+            const generatedOrders = externalSession ? await coreLogic(externalSession) : await withTransaction(coreLogic);
+
+            // --- POST-CHECKOUT TRIGGERS ---
+            for (const newOrder of generatedOrders) {
+                const storeCache = storeCaches.find(s => s._id.toString() === newOrder.storeId.toString());
+
+                appEvents.emit('NEW_ORDER', { order: newOrder, storeId: newOrder.storeId, source: 'Online' });
+
+                if (storeCache && newOrder.fulfillmentType === 'STORE_DELIVERY') {
+                    dispatchEnterpriseWebhook(storeCache, newOrder);
+                }
+            }
+
+            // Send a single combined notification to the customer protecting their unified experience
+            if (generatedOrders.length > 0) {
+                const orderReference = generatedOrders.length > 1 ? `Omni-Cart (${generatedOrders.length} Shipments)` : generatedOrders[0].orderNumber;
+                const msg = `DailyPick Order Received! 🛒\nReference: ${orderReference}\nTotal: Rs ${totalMasterCartRs}\nThanks for shopping!`;
+                notificationService.sendWhatsAppMessage(customerPhone, msg).catch(() => {}); 
+            }
+
+            // --- NEW: PHASE 10 SPATIAL FLEET DISPATCH TRIGGER ---
+            const ordersArray = Array.isArray(generatedOrders) ? generatedOrders : [generatedOrders];
+            for (const order of ordersArray) {
+                if (order.fulfillmentType === 'PLATFORM_DELIVERY') {
+                    // Emits to shiftService for $geoNear proximity calculations
+                    appEvents.emit('TRIGGER_SPATIAL_DISPATCH', { orderId: order._id, storeId: order.storeId });
+                }
+            }
+
+            // Maintain backward compatibility for standard frontend responses
+            return generatedOrders.length === 1 ? generatedOrders[0] : generatedOrders;
+        });
     } finally {
         // 3. Clean up the holds after the transaction either succeeds or fails
         if (redisClient && locksAcquired.length > 0) {
@@ -460,45 +439,35 @@ exports.processOnlineCheckout = async (payload, externalSession = null) => {
     }
 };
 
-// ============================================================================
-// --- NEW: PHASE 9 FRAUD & COD ABUSE SHIELD (CHECKOUT INTERCEPTOR) ---
-// ============================================================================
-const originalProcessOnlineCheckoutPhase9 = exports.processOnlineCheckout;
-
-exports.processOnlineCheckout = async (payload, externalSession = null) => {
-    // If the customer attempts to pay via COD, check their trust score first
-    if (payload.paymentMethod === 'Cash on Delivery' || payload.paymentMethod === 'Cash') {
-        const Customer = require('../models/Customer');
-        const cust = await Customer.findOne({ phone: payload.customerPhone }).lean();
+exports.processPosCheckout = async (payload, externalSession = null) => {
+    return await withIdempotency(payload.idempotencyKey, async () => {
+        const { customerPhone, items, totalAmount, taxAmount, discountAmount, paymentMethod, splitDetails, pointsRedeemed, notes, storeId, registerId } = payload;
         
-        // If a customer has rejected 3 or more COD orders at the door, block COD
-        if (cust && cust.codRejections >= 3) {
-            throw new AppError('Cash on Delivery is currently disabled for this account due to previous return history. Please select Pay Online.', 403);
-        }
-    }
-    
-    // If safe, proceed with normal checkout
-    return await originalProcessOnlineCheckoutPhase9(payload, externalSession);
-};
+        const coreLogic = async (session) => {
+            let finalCustomerName = 'Walk-in Guest';
 
-// ============================================================================
-// --- NEW: PHASE 10 SPATIAL FLEET DISPATCH TRIGGER ---
-// ============================================================================
-const originalProcessOnlineCheckoutPhase10 = exports.processOnlineCheckout;
+            // NOTE: Cannot parallelize this step because finalCustomerName is required dynamically for the order payload below.
+            if (customerPhone) {
+                finalCustomerName = await customerService.processPosCheckoutProfile(customerPhone, totalAmount, paymentMethod, pointsRedeemed, session);
+            }
 
-exports.processOnlineCheckout = async (payload, externalSession = null) => {
-    // 1. Run the entire checkout flow normally (including split-cart)
-    const generatedOrders = await originalProcessOnlineCheckoutPhase10(payload, externalSession);
-    
-    // 2. Intercept the result. If any of the orders require PLATFORM_FLEET, trigger Mapbox Routing.
-    const ordersArray = Array.isArray(generatedOrders) ? generatedOrders : [generatedOrders];
-    
-    for (const order of ordersArray) {
-        if (order.fulfillmentType === 'PLATFORM_DELIVERY') {
-            // Emits to shiftService for $geoNear proximity calculations
-            appEvents.emit('TRIGGER_SPATIAL_DISPATCH', { orderId: order._id, storeId: order.storeId });
-        }
-    }
-    
-    return generatedOrders;
+            // POS inherently accepts the totalAmount payload to allow cashiers to do manual complex overrides and discounts on the floor
+            const orderData = { registerId: registerId || null, notes: notes || '', customerName: finalCustomerName, customerPhone: customerPhone || '', deliveryAddress: 'In-Store Purchase', totalAmount, taxAmount: taxAmount || 0, discountAmount: discountAmount || 0, paymentMethod, splitDetails: splitDetails || { cash: 0, upi: 0 }, deliveryType: 'Instant', status: 'Completed', fulfillmentType: 'PICKUP', fulfillmentStatus: 'Delivered' };
+            
+            const newOrder = await finalizeAndSaveOrder(session, items, storeId, 'ORD', orderData);
+            await generateSettlement(session, newOrder, storeId); // Phase 3 dynamic ledger
+            
+            return newOrder;
+        };
+
+        const newOrder = externalSession ? await coreLogic(externalSession) : await withTransaction(coreLogic);
+
+        appEvents.emit('NEW_ORDER', { order: newOrder, storeId, source: 'POS' });
+
+        const loyaltyMsg = pointsRedeemed > 0 ? ` Points Redeemed: ${pointsRedeemed}.` : '';
+        const msg = `Thank you for shopping at DailyPick! 🛒\nOrder: ${newOrder.orderNumber}\nTotal: Rs ${totalAmount}\n${loyaltyMsg}\nVisit again!`;
+        notificationService.sendWhatsAppMessage(customerPhone, msg).catch(() => {}); 
+
+        return newOrder;
+    });
 };
