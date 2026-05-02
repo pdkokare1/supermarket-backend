@@ -6,6 +6,7 @@ if (process.env.NODE_ENV !== 'production') {
     require('dotenv').config();
 }
 
+let SentryInstance = null;
 // ============================================================================
 // --- NEW: PHASE 23 DEVOPS TELEMETRY (SENTRY CRASH REPORTING) ---
 // ============================================================================
@@ -17,6 +18,7 @@ try {
             environment: process.env.NODE_ENV || 'development',
             tracesSampleRate: 0.2, // Capture 20% of transactions for performance monitoring without overloading
         });
+        SentryInstance = Sentry;
         console.log('[TELEMETRY] Sentry Crash Reporting initialized.');
     }
 } catch (e) {
@@ -110,6 +112,18 @@ const gracefulShutdown = async (signal) => {
 
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+
+// ENTERPRISE FIX: Catch unhandled promises and execute safe teardown instead of leaving zombie processes
+process.on('uncaughtException', (err) => {
+    console.error('[FATAL] Uncaught Exception:', err);
+    if (SentryInstance) SentryInstance.captureException(err);
+    gracefulShutdown('uncaughtException');
+});
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('[FATAL] Unhandled Rejection at:', promise, 'reason:', reason);
+    if (SentryInstance) SentryInstance.captureException(reason);
+    gracefulShutdown('unhandledRejection');
+});
 
 // ==========================================
 // --- EXECUTION BOOTSTRAP ---
