@@ -2,29 +2,35 @@
 const mongoose = require('mongoose');
 
 const masterVariantSchema = new mongoose.Schema({
-    weightOrVolume: { type: String, required: true },
-    sku: { type: String, default: '' }, // Global Barcode / EAN / UPC
-    hsnCode: { type: String, default: '' },
-    taxRate: { type: Number, default: 0, min: 0 }
+    // ENTERPRISE HARDENING: Added trim and explicit required messages
+    weightOrVolume: { type: String, required: [true, 'Variant weight or volume is required'], trim: true },
+    sku: { type: String, default: '', trim: true }, // Global Barcode / EAN / UPC
+    hsnCode: { type: String, default: '', trim: true },
+    taxRate: { type: Number, default: 0, min: [0, 'Tax rate cannot be negative'] }
 });
 
 const masterProductSchema = new mongoose.Schema({
-    name: { type: String, required: true },
-    category: { type: String, required: true },
-    brand: { type: String, default: '' }, 
+    // ENTERPRISE HARDENING: Strict string enforcement
+    name: { type: String, required: [true, 'Product name is required'], trim: true, minlength: [2, 'Name must be at least 2 characters long'] },
+    category: { type: String, required: [true, 'Category is required'], trim: true },
+    brand: { type: String, default: '', trim: true }, 
     imageUrl: { 
         type: String, 
         default: '',
-        match: [/^(https?:\/\/.+)?$/, 'Please fill a valid image URL']
+        match: [/^(https?:\/\/.+)?$/, 'Please fill a valid image URL'],
+        trim: true
     },
-    description: { type: String, default: '' },
-    searchTags: { type: String, default: '' },
+    description: { type: String, default: '', trim: true },
+    searchTags: { type: String, default: '', trim: true },
     isActive: { type: Boolean, default: true },
     
     // --- NEW: PHASE 1 CROWDSOURCED CATALOG PIPELINE ---
     status: { 
         type: String, 
-        enum: ['PENDING_APPROVAL', 'ACTIVE', 'REJECTED'], 
+        enum: {
+            values: ['PENDING_APPROVAL', 'ACTIVE', 'REJECTED'],
+            message: '{VALUE} is not a valid catalog status'
+        }, 
         default: 'PENDING_APPROVAL' 
     },
     submittedBy: { 
@@ -49,7 +55,7 @@ masterProductSchema.index({ status: 1 });
 // ============================================================================
 masterProductSchema.add({
     compliance: {
-        gs1Barcode: { type: String, sparse: true, unique: true }, // Strict GS1/UPC global enforcement
+        gs1Barcode: { type: String, sparse: true, unique: true, trim: true }, // Strict GS1/UPC global enforcement
         isStrictlyVerified: { type: Boolean, default: false } // Verified centrally by HQ
     }
 });
