@@ -65,7 +65,12 @@ exports.setCachedData = async (key, data, ttlSeconds = 3600) => {
             return;
         }
 
-        await redisCache.set(key, stringified, 'EX', ttlSeconds);
+        // ENTERPRISE FIX: TTL Jitter (+/- 5%) to prevent Thundering Herd (Cache Stampedes)
+        // This staggers expirations so the database isn't slammed all at once.
+        const jitter = Math.floor(ttlSeconds * (Math.random() * 0.1 - 0.05));
+        const finalTtl = Math.max(1, ttlSeconds + jitter);
+
+        await redisCache.set(key, stringified, 'EX', finalTtl);
     } catch (e) {
         console.error("[CACHE UTILS] Set Error:", e.message);
     }
@@ -74,7 +79,8 @@ exports.setCachedData = async (key, data, ttlSeconds = 3600) => {
 exports.deleteKey = async (key) => {
     if (!redisCache || !key) return;
     try {
-        await redisCache.del(key);
+        // ENTERPRISE FIX: Replaced blocking .del() with non-blocking .unlink()
+        await redisCache.unlink(key);
     } catch (e) {
         console.error("[CACHE UTILS] Delete Error:", e.message);
     }
