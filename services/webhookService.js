@@ -2,6 +2,7 @@
 'use strict';
 
 const mongoose = require('mongoose');
+const crypto = require('crypto'); // ENTERPRISE OPTIMIZATION: Imported for cryptographic signatures
 
 // Define the DLQ Model directly in the service for portability without mutating models/
 const WebhookLogSchema = new mongoose.Schema({
@@ -45,13 +46,20 @@ exports.dispatchFulfillmentWebhook = async (order, store) => {
 
     try {
         const fetchMethod = typeof fetch !== 'undefined' ? fetch : require('node-fetch');
+        
+        // ENTERPRISE OPTIMIZATION: Generate an HMAC SHA-256 signature of the payload
+        // This prevents man-in-the-middle tampering and hides your raw secret key
+        const payloadString = JSON.stringify(payload);
+        const secretKey = store.apiIntegration.apiSecretKey || 'secure-key';
+        const signature = crypto.createHmac('sha256', secretKey).update(payloadString).digest('hex');
+
         const response = await fetchMethod(store.apiIntegration.webhookUrl, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
-                'x-dailypick-signature': store.apiIntegration.apiSecretKey || 'secure-key'
+                'x-dailypick-signature': signature 
             },
-            body: JSON.stringify(payload)
+            body: payloadString
         });
 
         if (!response.ok) throw new Error(`HTTP Error: ${response.status}`);
@@ -74,12 +82,21 @@ exports.retryFailedWebhook = async (logId) => {
 
     try {
         const fetchMethod = typeof fetch !== 'undefined' ? fetch : require('node-fetch');
+        
+        // Ensure signatures are regenerated properly during retry
+        const payloadString = JSON.stringify(log.payload);
+        const Store = require('../models/Store');
+        const store = await Store.findById(log.storeId).select('apiIntegration.apiSecretKey');
+        const secretKey = (store && store.apiIntegration && store.apiIntegration.apiSecretKey) ? store.apiIntegration.apiSecretKey : 'secure-key';
+        const signature = crypto.createHmac('sha256', secretKey).update(payloadString).digest('hex');
+
         const response = await fetchMethod(log.webhookUrl, {
             method: 'POST',
             headers: {
-                'Content-Type': 'application/json'
+                'Content-Type': 'application/json',
+                'x-dailypick-signature': signature
             },
-            body: JSON.stringify(log.payload)
+            body: payloadString
         });
 
         if (!response.ok) throw new Error(`HTTP Error: ${response.status}`);
