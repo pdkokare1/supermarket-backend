@@ -112,8 +112,9 @@ module.exports = function(fastify) {
     // ENTERPRISE FIX: Replaced greedy regex with exact string matching.
     const maliciousPaths = ['/.env', '/wp-admin', '/wp-login.php', '/config.json'];
     maliciousPaths.forEach(trapPath => {
+        // SECURITY OPTIMIZATION: Fire-and-forget honeypot logic prevents botnets from exhausting DB connections
         fastify.all(trapPath, async (request, reply) => {
-            await threatDefenseService.triggerHoneypot(request.ip);
+            threatDefenseService.triggerHoneypot(request.ip).catch(err => fastify.log.error(err));
             return reply.status(403).send({ success: false, message: 'Forbidden' });
         });
     });
