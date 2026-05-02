@@ -164,12 +164,29 @@ exports.authenticateUser = async (username, pin, ip, server) => {
     return { user, ...tokens };
 };
 
-exports.refreshSession = async (decodedId, decodedVersion, server) => {
+// Added optional tokenString parameter for Redis blacklisting check
+exports.refreshSession = async (decodedId, decodedVersion, server, tokenString = null) => {
     const user = await exports.getUserById(decodedId);
     
     if (!user || !user.isActive || user.isLocked || user.tokenVersion !== decodedVersion) {
         throw new AppError('Invalid, locked, or revoked session', 401);
     }
+
+    // ENTERPRISE FIX: Check explicit Redis blacklist if token is provided
+    if (tokenString) {
+        const redis = cacheUtils.getClient();
+        if (redis) {
+            try {
+                const isBlacklisted = await redis.get(`bl_${tokenString}`);
+                if (isBlacklisted) {
+                    throw new AppError('Invalid, locked, or revoked session (Blacklisted)', 401);
+                }
+            } catch (err) {
+                // Soft fail if Redis is temporarily down
+            }
+        }
+    }
+
     const tokens = securityService.generateTokens(server, user);
     return { user, token: tokens.token, refreshToken: tokens.refreshToken };
 };
