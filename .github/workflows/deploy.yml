@@ -34,6 +34,23 @@ jobs:
       - name: Run Security Audit
         run: npm audit --audit-level=high
 
+      # ============================================================================
+      # --- NEW: PRE-DEPLOYMENT LOAD TESTING GATES ---
+      # ============================================================================
+      - name: Setup K6 Stress Tester
+        uses: grafana/setup-k6-action@v1
+
+      - name: Boot Staging Server & Run K6 Performance Tests
+        run: |
+          # Booting the server in the background for local validation before cloud deployment
+          npm run start &
+          sleep 5 # Wait for server to bind to port
+          k6 run tests/k6-stress-test.js
+        env:
+          NODE_ENV: test
+          PORT: 3000
+          # Inject mock DB/Redis URLs for the isolated test environment here
+
       # Railway handles the actual container build, this triggers it securely
       - name: Trigger Railway Zero-Downtime Deployment
         if: github.ref == 'refs/heads/main'
