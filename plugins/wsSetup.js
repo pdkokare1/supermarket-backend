@@ -152,30 +152,10 @@ module.exports = function (fastify) {
             })();
         });
 
-        const pingInterval = setInterval(() => {
-            if (!fastify.websocketServer) return;
-            fastify.websocketServer.clients.forEach((client) => {
-                if (client.isAlive === false) return client.terminate();
-                client.isAlive = false;
-                client.send(JSON.stringify({ type: 'PING' })); 
-            });
-        }, 30000);
-
-        instance.addHook('onClose', (appInstance, done) => {
-            clearInterval(pingInterval);
-            done();
-        });
-    });
-};
-
-// ============================================================================
-// --- NEW: PHASE 13 BI-DIRECTIONAL FLEET TRACKING & CONSUMER MAP WEBSOCKETS ---
-// ============================================================================
-const originalWsSetupPhase13 = module.exports;
-module.exports = function (fastify) {
-    originalWsSetupPhase13(fastify);
-
-    fastify.register(async function (instance) {
+        // ============================================================================
+        // --- PHASE 13 BI-DIRECTIONAL FLEET TRACKING & CONSUMER MAP WEBSOCKETS ---
+        // ============================================================================
+        
         // 1. RIDER INGESTION: Receives GPS from the Rider PWA and pushes to Redis
         instance.get('/api/ws/rider', { websocket: true }, (connection, req) => {
             const ws = connection.socket || connection;
@@ -228,6 +208,20 @@ module.exports = function (fastify) {
                     consumerRedisSub.quit();
                 }
             });
+        });
+
+        const pingInterval = setInterval(() => {
+            if (!fastify.websocketServer) return;
+            fastify.websocketServer.clients.forEach((client) => {
+                if (client.isAlive === false) return client.terminate();
+                client.isAlive = false;
+                client.send(JSON.stringify({ type: 'PING' })); 
+            });
+        }, 30000);
+
+        instance.addHook('onClose', (appInstance, done) => {
+            clearInterval(pingInterval);
+            done();
         });
     });
 };
