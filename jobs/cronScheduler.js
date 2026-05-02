@@ -34,78 +34,18 @@ module.exports = function(fastify, updateInventoryReport) {
     scheduledTasks.push(cron.schedule('0 2 * * *', () => {
         tasks.runWithLock('CloudinaryCleanup', fastify, () => tasks.runCloudinaryCleanup(fastify));
     }, cronOptions));
-    
-    // OPTIMIZATION: Graceful shutdown integration. Stops cron triggers while server is draining.
-    fastify.addHook('onClose', async (instance, done) => {
-        instance.log.info('Halting all scheduled CRON tasks for graceful shutdown...');
-        scheduledTasks.forEach(task => task.stop());
-        done();
-    });
-};
 
-// ============================================================================
-// --- NEW: PHASE 12 ALGORITHMIC RESTOCK ALERTS ---
-// ============================================================================
-const originalCronSchedulerPhase12 = module.exports;
-
-module.exports = function(fastify, updateInventoryReport) {
-    originalCronSchedulerPhase12(fastify, updateInventoryReport);
-    
-    const cron = require('node-cron');
-    const cronOptions = { timezone: process.env.TZ || 'Asia/Kolkata' };
-    
-    // Run every 2 hours to analyze purchase velocity
-    const velocityJob = cron.schedule('0 */2 * * *', async () => {
-        if (fastify.isShuttingDown) return;
-        
-        try {
-            fastify.log.info('Running Phase 12 Velocity & Restock Analyzer...');
-            const Order = require('../models/Order');
-            const Product = require('../models/Product');
-            
-            // Look at orders from the last 24 hours
-            const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000);
-            
-            const velocityData = await Order.aggregate([
-                { $match: { createdAt: { $gte: yesterday }, status: { $in: ['Delivered', 'Dispatched'] } } },
-                { $unwind: "$items" },
-                { $group: { _id: "$items.productId", dailySold: { $sum: "$items.qty" } } }
-            ]);
-            
-            for (const stat of velocityData) {
-                const product = await Product.findById(stat._id);
-                if (product && product.variants && product.variants.length > 0) {
-                    const stock = product.variants[0].stock;
-                    // If daily velocity exceeds current stock, we will run out soon.
-                    if (stat.dailySold > stock && stock > 0) {
-                        fastify.log.warn(`🚨 URGENT RESTOCK: ${product.name} is draining fast! Sold ${stat.dailySold} today, only ${stock} left.`);
-                    }
-                }
-            }
-        } catch (err) {
-            fastify.log.error('Velocity Analyzer Error: ' + err.message);
+    // --- PHASE 12 ALGORITHMIC RESTOCK ALERTS ---
+    // Moved logic cleanly to tasks file. Runs every 2 hours.
+    scheduledTasks.push(cron.schedule('0 */2 * * *', () => {
+        if (!fastify.isShuttingDown) {
+            tasks.runWithLock('VelocityAnalyzer', fastify, () => tasks.runVelocityAnalyzer(fastify));
         }
-    }, cronOptions);
-    
-    fastify.addHook('onClose', async (instance, done) => {
-        velocityJob.stop();
-        done();
-    });
-};
+    }, cronOptions));
 
-// ============================================================================
-// --- NEW: PHASE 10 LEGACY ERP FTP/CSV SYNC SCHEDULER ---
-// ============================================================================
-const originalCronSchedulerPhase10 = module.exports;
-
-module.exports = function(fastify, updateInventoryReport) {
-    originalCronSchedulerPhase10(fastify, updateInventoryReport);
-    
-    const cron = require('node-cron');
-    const cronOptions = { timezone: process.env.TZ || 'Asia/Kolkata' };
-    
-    // Run every 30 minutes to pull legacy CSV drops from Big-Box retailers
-    const legacySyncJob = cron.schedule('*/30 * * * *', async () => {
+    // --- PHASE 10 LEGACY ERP FTP/CSV SYNC SCHEDULER ---
+    // Runs every 30 minutes. Retained your secure enqueueTask background offloading.
+    scheduledTasks.push(cron.schedule('*/30 * * * *', async () => {
         if (fastify.isShuttingDown) return;
         
         try {
@@ -116,17 +56,18 @@ module.exports = function(fastify, updateInventoryReport) {
                 fastify.log.info(`[ERP CRON] Found ${legacyStores.length} stores awaiting FTP CSV sync. Offloading to worker queue.`);
                 const jobsService = require('../services/jobsService');
                 for (const store of legacyStores) {
-                    // This securely delegates the heavy CSV parsing/FTP download to Railway background workers
                     await jobsService.enqueueTask('ERP_FTP_SYNC', { storeId: store._id, erpStoreId: store.erpIntegration.erpStoreId });
                 }
             }
         } catch (err) {
             fastify.log.error('[ERP CRON] FTP Sync Error: ' + err.message);
         }
-    }, cronOptions);
+    }, cronOptions));
     
+    // OPTIMIZATION: Graceful shutdown integration. Stops cron triggers while server is draining.
     fastify.addHook('onClose', async (instance, done) => {
-        legacySyncJob.stop();
+        instance.log.info('Halting all scheduled CRON tasks for graceful shutdown...');
+        scheduledTasks.forEach(task => task.stop());
         done();
     });
 };
