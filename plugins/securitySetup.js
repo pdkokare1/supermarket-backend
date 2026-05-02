@@ -6,16 +6,17 @@ const threatDefenseService = require('../services/threatDefenseService');
 module.exports = function(fastify) {
     
     // OPTIMIZATION: Parse origins once at startup into an O(1) lookup Set.
-    // Effect: Reduces CORS validation time complexity from O(N) to O(1) per request.
-    const allowedOriginsSet = new Set(
-        process.env.ALLOWED_ORIGINS 
-            ? process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim().replace(/\/$/, ''))
-            : []
-    );
-    const isLocalDev = /^https?:\/\/localhost:\d+$/;
+    // Consolidated Phase 14 FRONTEND_URLS into the primary allowed origins set.
+    const rawOrigins = [
+        ...(process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : []),
+        ...(process.env.FRONTEND_URLS ? process.env.FRONTEND_URLS.split(',') : [])
+    ];
     
-    // --- NEW: DYNAMIC CORS BYPASS ---
-    // Automatically authorizes your Vercel and HQ deployments
+    const allowedOriginsSet = new Set(
+        rawOrigins.map(o => o.trim().replace(/\/$/, ''))
+    );
+    
+    const isLocalDev = /^https?:\/\/localhost:\d+$/;
     const isVercelOrHQ = /^https:\/\/(.*\.vercel\.app|hq\..*\.com|hq\..*\.net)$/;
 
     fastify.register(require('@fastify/cors'), { 
@@ -28,8 +29,6 @@ module.exports = function(fastify) {
                 cb(null, true);
                 return;
             }
-            
-            // --- NEW: Firewall unblocker for frontend clusters ---
             if (isVercelOrHQ.test(origin)) {
                 cb(null, true);
                 return;
@@ -46,8 +45,8 @@ module.exports = function(fastify) {
             'Origin', 
             'X-Requested-With', 
             'x-api-key', 
-            'x-enterprise-api-key', // NEW: Unblocks Enterprise ERP integrations
-            'x-tenant-id',          // NEW: Unblocks Tenant Isolation tracking
+            'x-enterprise-api-key', 
+            'x-tenant-id',          
             'Idempotency-Key',
             'x-correlation-id',
             'Cache-Control'
@@ -59,6 +58,7 @@ module.exports = function(fastify) {
     });
 
     const isProd = process.env.NODE_ENV === 'production';
+    
     fastify.register(require('@fastify/helmet'), {
         crossOriginResourcePolicy: { policy: "cross-origin" },
         crossOriginOpenerPolicy: { policy: "same-origin-allow-popups" },
@@ -66,6 +66,10 @@ module.exports = function(fastify) {
             directives: {
                 defaultSrc: ["'self'"],
                 scriptSrc: isProd ? ["'self'"] : ["'self'", "'unsafe-inline'"],
+                // ENTERPRISE FIX: Whitelisted required external services for DailyPick
+                imgSrc: ["'self'", "data:", "https://res.cloudinary.com"],
+                mediaSrc: ["'self'", "https://res.cloudinary.com"],
+                connectSrc: ["'self'", "https://*.firebaseapp.com", "https://*.googleapis.com", "https://res.cloudinary.com"],
                 objectSrc: ["'none'"],
                 frameAncestors: ["'none'"], 
                 upgradeInsecureRequests: [],
@@ -112,36 +116,5 @@ module.exports = function(fastify) {
             await threatDefenseService.triggerHoneypot(request.ip);
             return reply.status(403).send({ success: false, message: 'Forbidden' });
         });
-    });
-};
-
-// ============================================================================
-// --- NEW: PHASE 14 STRICT MULTI-FRONTEND FIREWALL ---
-// ============================================================================
-const originalSecuritySetupPhase14 = module.exports;
-
-module.exports = function(fastify) {
-    originalSecuritySetupPhase14(fastify);
-
-    // Hardened pre-flight origin check
-    fastify.addHook('onRequest', async (request, reply) => {
-        const origin = request.headers.origin;
-        if (!origin) return; // Allow backend-to-backend / cURL traffic
-
-        const isProduction = process.env.NODE_ENV === 'production';
-        if (!isProduction) return; // Bypass in local dev
-
-        const strictAllowedDomains = process.env.FRONTEND_URLS 
-            ? process.env.FRONTEND_URLS.split(',').map(url => url.trim())
-            : [];
-
-        if (strictAllowedDomains.length > 0 && !strictAllowedDomains.includes(origin)) {
-            fastify.log.warn(`[FIREWALL] Blocked unauthorized cross-origin request from: ${origin}`);
-            return reply.status(403).send({ 
-                success: false, 
-                error: "Access Denied", 
-                message: "This domain is not whitelisted in the DailyPick infrastructure." 
-            });
-        }
     });
 };
