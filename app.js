@@ -34,7 +34,8 @@ const createApp = (opts = {}) => {
             }
         },
         requestIdHeader: 'x-correlation-id',
-        trustProxy: process.env.TRUST_PROXY_HOPS ? parseInt(process.env.TRUST_PROXY_HOPS, 10) : 1,
+        // ENTERPRISE FIX: Fallback to boolean `true` to ensure Rate Limiters accurately read Cloudflare/Railway Client IPs
+        trustProxy: process.env.TRUST_PROXY_HOPS ? parseInt(process.env.TRUST_PROXY_HOPS, 10) : true,
         disableRequestLogging: isProduction,
         ignoreTrailingSlash: true,
         bodyLimit: process.env.BODY_LIMIT || 1048576, 
