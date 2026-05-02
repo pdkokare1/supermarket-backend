@@ -23,7 +23,8 @@ const orderSchema = new mongoose.Schema({
     orderNumber: { 
         type: String, 
         unique: true,
-        sparse: true 
+        sparse: true,
+        trim: true
     },
     // --- NEW: Multi-Store Integration ---
     storeId: { 
@@ -36,23 +37,31 @@ const orderSchema = new mongoose.Schema({
         ref: 'Register', 
         sparse: true 
     },
+    // ENTERPRISE HARDENING: String sanitation
     customerName: { 
         type: String, 
-        required: true 
+        required: [true, 'Customer name is required'],
+        trim: true,
+        minlength: [2, 'Customer name must be at least 2 characters']
     },
     customerPhone: { 
         type: String, 
-        required: true 
+        required: [true, 'Customer phone is required'],
+        trim: true
     },
     deliveryAddress: { 
         type: String, 
-        required: true 
+        required: [true, 'Delivery address is required'],
+        trim: true
     },
     
     // --- NEW: AGGREGATOR FULFILLMENT ROUTING ---
     fulfillmentType: {
         type: String,
-        enum: ['PLATFORM_DELIVERY', 'STORE_DELIVERY', 'PICKUP'],
+        enum: {
+            values: ['PLATFORM_DELIVERY', 'STORE_DELIVERY', 'PICKUP'],
+            message: '{VALUE} is not a valid fulfillment type'
+        },
         default: 'PICKUP'
     },
     fulfillmentStatus: {
@@ -62,44 +71,56 @@ const orderSchema = new mongoose.Schema({
     },
     splitShipmentGroupId: {
         type: String,
-        default: null // Links multiple backend orders into one frontend B2C Cart
+        default: null, // Links multiple backend orders into one frontend B2C Cart
+        trim: true
     },
     // --- NEW: PHASE 3 OMNI-CART TOTAL ---
     masterCartTotalRs: {
         type: Number,
-        default: null // Tracks the total Rs value of the entire combined multi-store cart
+        default: null, // Tracks the total Rs value of the entire combined multi-store cart
+        min: [0, 'Cart total cannot be negative']
     },
     partnerTrackingId: {
         type: String,
-        default: null // For Croma / Reliance API integrations
+        default: null, // For Croma / Reliance API integrations
+        trim: true
     },
 
     // --- LEGACY: Delivery Instructions & Assignment ---
     notes: {
         type: String,
-        default: ''
+        default: '',
+        trim: true
     },
     deliveryDriverName: {
         type: String,
-        default: 'Unassigned'
+        default: 'Unassigned',
+        trim: true
     },
     driverPhone: {
         type: String,
-        default: ''
+        default: '',
+        trim: true
     },
     items: { 
         type: [orderItemSchema], 
-        required: true 
+        required: true,
+        // ENTERPRISE HARDENING: Reject empty orders at the DB level
+        validate: {
+            validator: function(v) { return v && v.length > 0; },
+            message: 'An order must contain at least one item.'
+        }
     },
     // ENTERPRISE FIX: Native currency alignment for financial calculations
     currency: {
         type: String,
-        default: 'Rs'
+        default: 'Rs',
+        trim: true
     },
     totalAmount: { 
         type: Number, 
-        required: true,
-        min: 0 // Deep Hardening
+        required: [true, 'Total amount is required'],
+        min: [0, 'Total amount cannot be negative'] // Deep Hardening
     },
     status: { 
         type: String, 
@@ -114,27 +135,30 @@ const orderSchema = new mongoose.Schema({
         enum: ['Cash on Delivery', 'UPI', 'Card', 'Pay Later', 'Mixed', 'Online']
     },
     splitDetails: {
-        cash: { type: Number, default: 0, min: 0 },
-        upi: { type: Number, default: 0, min: 0 }
+        cash: { type: Number, default: 0, min: [0, 'Cash split cannot be negative'] },
+        upi: { type: Number, default: 0, min: [0, 'UPI split cannot be negative'] }
     },
     deliveryType: { 
         type: String, 
-        default: 'Instant' 
+        default: 'Instant',
+        trim: true
     },
     scheduleTime: { 
         type: String, 
-        default: 'ASAP' 
+        default: 'ASAP',
+        trim: true 
     },
     // --- OPTIMIZATION: String-based date for instant analytics grouping ---
     dateString: {
         type: String,
-        index: true
+        index: true,
+        trim: true
     },
     
     // --- NEW: PHASE 10 B2B LOGISTICS & ERP TRACKING ---
     b2bLogistics: {
         erpSyncStatus: { type: String, enum: ['PENDING', 'SYNCED', 'FAILED', 'NOT_REQUIRED'], default: 'NOT_REQUIRED' },
-        externalCourierId: { type: String, default: null } // e.g., Croma's internal delivery van ID
+        externalCourierId: { type: String, default: null, trim: true } // e.g., Croma's internal delivery van ID
     },
 
     // ============================================================================
@@ -142,7 +166,7 @@ const orderSchema = new mongoose.Schema({
     // ============================================================================
     chatHistory: [{
         sender: { type: String, enum: ['Customer', 'Rider', 'System'] },
-        message: String,
+        message: { type: String, trim: true },
         timestamp: { type: Date, default: Date.now }
     }]
 }, { timestamps: true });
@@ -179,7 +203,7 @@ orderSchema.index({ fulfillmentType: 1, status: 1, createdAt: -1 });
 // --- NEW: PHASE 9 PROOF OF DELIVERY (SECURE OTP) ---
 // ============================================================================
 orderSchema.add({
-    deliveryOtp: { type: String, default: null }
+    deliveryOtp: { type: String, default: null, trim: true }
 });
 
 module.exports = mongoose.model('Order', orderSchema);
