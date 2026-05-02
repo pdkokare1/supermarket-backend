@@ -7,6 +7,13 @@ import { check, sleep } from 'k6';
 export const options = {
     vus: 50,
     duration: '30s',
+    // ============================================================================
+    // --- NEW: ENTERPRISE PERFORMANCE GATES ---
+    // ============================================================================
+    thresholds: {
+        http_req_duration: ['p(95)<500'], // 95% of requests must complete below 500ms
+        http_reqs: ['rate>10'],           // Must sustain at least 10 requests per second under load
+    },
 };
 
 export default function () {
