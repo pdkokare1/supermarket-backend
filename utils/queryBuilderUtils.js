@@ -12,12 +12,18 @@ const buildProductQuery = (queryObj) => {
         : { isActive: true, isArchived: { $ne: true } };
     
     if (queryObj.search) { 
-        // OPTIMIZATION: Applied escapeRegex to the user input before executing the database scan
-        const safeSearch = escapeRegex(queryObj.search);
-        filter.$or = [ 
-            { name: { $regex: safeSearch, $options: 'i' } }, 
-            { searchTags: { $regex: safeSearch, $options: 'i' } } 
-        ]; 
+        // ENTERPRISE OPTIMIZATION: Native $text index support for scalable search,
+        // while preserving the original $regex for partial match backwards compatibility.
+        if (queryObj.exactMatch === 'true') {
+            filter.$text = { $search: queryObj.search };
+        } else {
+            // OPTIMIZATION: Applied escapeRegex to the user input before executing the database scan
+            const safeSearch = escapeRegex(queryObj.search);
+            filter.$or = [ 
+                { name: { $regex: safeSearch, $options: 'i' } }, 
+                { searchTags: { $regex: safeSearch, $options: 'i' } } 
+            ]; 
+        }
     }
     
     if (queryObj.category && queryObj.category !== 'All') filter.category = queryObj.category; 
@@ -25,6 +31,11 @@ const buildProductQuery = (queryObj) => {
 
     // DELETED: variants.stock and distributor logic. 
     // Reason: MasterProduct is global and contains no local volatile stock data.
+
+    // ENTERPRISE OPTIMIZATION: Cursor-based pagination prep (O(1) lookup time)
+    if (queryObj.cursor) {
+        filter._id = { $lt: new mongoose.Types.ObjectId(queryObj.cursor) };
+    }
 
     return filter;
 };
@@ -61,6 +72,11 @@ const buildInventoryQuery = (queryObj, storeId) => {
     // we must force the inventory query to return 0 results instead of pulling everything.
     if (queryObj.search && !filter.masterProductId && queryObj._masterSearchExecuted) {
         filter.masterProductId = null; // Forces 0 matches
+    }
+
+    // ENTERPRISE OPTIMIZATION: Cursor-based pagination prep
+    if (queryObj.cursor) {
+        filter._id = { $lt: new mongoose.Types.ObjectId(queryObj.cursor) };
     }
 
     return filter;
