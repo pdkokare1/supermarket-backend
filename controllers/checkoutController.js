@@ -27,6 +27,10 @@ exports.onlineCheckout = async (request, reply) => {
     const newOrder = await withTransaction(async (session) => {
         return await checkoutService.processOnlineCheckout(payload, session);
     });
+
+    // --- PHASE 16 HYBRID DELIVERY ROUTING (B2B ENTERPRISE FLEET DISPATCH) ---
+    await executeHybridDeliveryRouting(newOrder._id, request.server);
+
     reply.code(201);
     return { success: true, message: 'Order Placed Successfully', orderId: newOrder._id };
 };
@@ -81,28 +85,18 @@ exports.omniCartCheckout = async (request, reply) => {
         }
     });
 
-    reply.code(201);
-    return { 
+    const result = { 
         success: true, 
         message: 'Omni-Cart Checkout Complete', 
         splitShipmentGroupId: splitShipmentGroupId,
         masterCartTotalRs: masterCartTotalRs,
         totalShipments: generatedOrders.length
     };
-};
 
-// ============================================================================
-// --- PHASE 6 OMNI-LOYALTY SUPER WALLET (INTERCEPTOR) ---
-// ============================================================================
-const originalOmniCartCheckoutPhase6 = exports.omniCartCheckout;
-
-exports.omniCartCheckout = async (request, reply) => {
-    const result = await originalOmniCartCheckoutPhase6(request, reply);
-    
+    // --- PHASE 6 OMNI-LOYALTY SUPER WALLET (INTERCEPTOR) ---
     if (result.success && request.body.customerPhone) {
         const phone = request.body.customerPhone;
         const useLoyalty = request.body.useLoyaltyPoints === true || request.body.useLoyaltyPoints === 'true';
-        const { splitShipmentGroupId } = result;
         
         const Order = require('../models/Order');
         const Customer = require('../models/Customer');
@@ -150,7 +144,7 @@ exports.omniCartCheckout = async (request, reply) => {
             }
         }
     }
-    
+
     // --- PHASE 7 GST & TAX RECONCILIATION ENGINE ---
     if (result.success && result.splitShipmentGroupId) {
         const Order = require('../models/Order');
@@ -181,26 +175,7 @@ exports.omniCartCheckout = async (request, reply) => {
         }
     }
 
-    return result;
-};
-
-// ============================================================================
-// --- PHASE 16 HYBRID DELIVERY ROUTING (B2B ENTERPRISE FLEET DISPATCH) ---
-// ============================================================================
-const originalOnlineCheckoutPhase16 = exports.onlineCheckout;
-
-exports.onlineCheckout = async (request, reply) => {
-    const result = await originalOnlineCheckoutPhase16(request, reply);
-    if (result.success && result.orderId) {
-        await executeHybridDeliveryRouting(result.orderId, request.server);
-    }
-    return result;
-};
-
-const originalOmniCartCheckoutPhase16 = exports.omniCartCheckout;
-
-exports.omniCartCheckout = async (request, reply) => {
-    const result = await originalOmniCartCheckoutPhase16(request, reply);
+    // --- PHASE 16 HYBRID DELIVERY ROUTING (B2B ENTERPRISE FLEET DISPATCH) ---
     if (result.success && result.splitShipmentGroupId) {
         const Order = require('../models/Order');
         const subOrders = await Order.find({ splitShipmentGroupId: result.splitShipmentGroupId }).select('_id');
@@ -208,10 +183,14 @@ exports.omniCartCheckout = async (request, reply) => {
             await executeHybridDeliveryRouting(subOrder._id, request.server);
         }
     }
+
+    reply.code(201);
     return result;
 };
 
+// ============================================================================
 // Core Dispatch Logic (Moved securely to Checkout domain)
+// ============================================================================
 async function executeHybridDeliveryRouting(orderId, server) {
     try {
         const Order = require('../models/Order');
