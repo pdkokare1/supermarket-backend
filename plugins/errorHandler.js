@@ -65,7 +65,10 @@ module.exports = function (fastify) {
 
     fastify.setErrorHandler(function (error, request, reply) {
         
-        if (error.name === 'ValidationError') {
+        // ENTERPRISE OPTIMIZATION: Catch Malformed JSON to prevent engine leak
+        if (error instanceof SyntaxError && error.statusCode === 400 && 'body' in error) {
+            error.message = 'Invalid request payload format. Please check your data.';
+        } else if (error.name === 'ValidationError') {
             error.statusCode = 400;
             error.message = Object.values(error.errors || {}).map(val => val.message).join(', ');
         } else if (error.name === 'CastError') {
@@ -99,6 +102,11 @@ module.exports = function (fastify) {
         }
 
         const safeMessage = isServerError ? 'Internal Server Error. Our team has been notified.' : error.message;
+
+        // ENTERPRISE OPTIMIZATION: Absolutely guarantee no stack traces leak to the frontend
+        if (error.stack) {
+            delete error.stack;
+        }
 
         reply.status(error.statusCode || 500).send({
             success: false,
