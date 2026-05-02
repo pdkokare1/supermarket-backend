@@ -44,7 +44,6 @@ try {
             else if (channel === 'DAILYPICK_ORDER_EVENTS') {
                 try {
                     const parsed = JSON.parse(message);
-                    
                     const events = Array.isArray(parsed) ? parsed : [parsed];
                     
                     events.forEach(evt => {
@@ -65,6 +64,7 @@ try {
     console.error("Redis Initialization Error in SSE Service:", e);
 }
 
+// Memory Leak Prevention: Strict Heartbeat Cleanup
 const heartbeatInterval = setInterval(() => {
     adminConnections = adminConnections.filter(conn => {
         if (conn.destroyed || !conn.writable) {
@@ -132,8 +132,10 @@ const removeCustomerConnection = (orderId, conn) => {
 
 const publishEvent = (target, payload, additionalData = {}) => {
     if (redisPub) {
+        // Enforce Multi-Instance Broadcasting via Redis
         redisPub.publish('ORDER_STREAM_EVENT', JSON.stringify({ target, payload, ...additionalData })).catch(() => {});
     } else {
+        // Local Fallback (Development Only)
         if (target === 'admin') {
             adminConnections.forEach(conn => {
                 if (!conn.destroyed) conn.write(`data: ${payload}\n\n`);
