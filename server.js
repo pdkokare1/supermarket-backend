@@ -24,6 +24,7 @@ try {
 }
 
 const connectDB = require('./config/db');
+const mongoose = require('mongoose'); // Needed for graceful shutdown
 const { handleInventoryReport } = require('./jobs/inventoryHandler'); 
 const { bootstrapServer } = require('./utils/serverProcessUtils');
 const setupProcessManager = require('./utils/processManager');
@@ -75,6 +76,40 @@ const startServer = async () => {
         process.exit(1);
     }
 };
+
+// ==========================================
+// --- ENTERPRISE GRACEFUL SHUTDOWN ---
+// ==========================================
+const gracefulShutdown = async (signal) => {
+    fastify.log.info(`[SHUTDOWN] Received ${signal}. Initiating graceful shutdown sequence...`);
+    fastify.isShuttingDown = true; // Alerts /api/system/metrics to return 503 so load balancers stop sending traffic
+    
+    // Give cloud load balancers (Railway) time to reroute new traffic
+    await new Promise(resolve => setTimeout(resolve, 3000));
+    
+    try {
+        await fastify.close();
+        fastify.log.info('[SHUTDOWN] Server closed. No new HTTP connections accepted. Active requests finished.');
+        
+        if (mongoose.connection.readyState === 1) {
+            await mongoose.disconnect();
+            fastify.log.info('[SHUTDOWN] MongoDB disconnected cleanly.');
+        }
+        
+        if (redisClient) {
+            await redisClient.quit();
+            fastify.log.info('[SHUTDOWN] Redis disconnected cleanly.');
+        }
+        
+        process.exit(0);
+    } catch (err) {
+        fastify.log.error(`[SHUTDOWN] Error during shutdown sequence: ${err.message}`);
+        process.exit(1);
+    }
+};
+
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 
 // ==========================================
 // --- EXECUTION BOOTSTRAP ---
