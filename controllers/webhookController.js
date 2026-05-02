@@ -91,8 +91,25 @@ exports.razorpayWebhook = async (request, reply) => {
         shasum.update(payloadStr);
         const digest = shasum.digest('hex');
 
-        // Only process Ghost Order recovery if the signature is authentic
+        // Only process if the signature is authentic
         if (digest === request.headers['x-razorpay-signature']) {
+            
+            // ENTERPRISE OPTIMIZATION: Strict Idempotency Lock
+            // Prevents double-processing if the payment gateway sends the same successful webhook twice
+            const eventId = request.headers['x-razorpay-event-id'];
+            if (eventId) {
+                const cacheUtils = require('../utils/cacheUtils');
+                const redisClient = cacheUtils.getClient();
+                if (redisClient) {
+                    // SetNX prevents overwriting. If it returns null/false, the key already exists.
+                    const isNewEvent = await redisClient.set(`webhook_idemp:${eventId}`, 'processed', 'NX', 'EX', 86400);
+                    if (!isNewEvent) {
+                        request.server.log.info(`[IDEMPOTENCY] Safely skipped duplicate webhook event: ${eventId}`);
+                        return reply.code(200).send({ status: 'ok', message: 'Already processed' });
+                    }
+                }
+            }
+
             const event = request.body.event;
             
             if (event === 'payment.captured' || event === 'order.paid') {
