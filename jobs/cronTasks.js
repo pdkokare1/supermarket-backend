@@ -705,6 +705,43 @@ async function generateFleetHeatmap(fastify) {
     }
 }
 
+
+
+// ... [Keep all your existing functions like runEODBackup, runDemandForecast, etc. EXACTLY as they are] ...
+
+// ============================================================================
+// --- MOVED FROM SCHEDULER: PHASE 12 ALGORITHMIC RESTOCK ALERTS ---
+// ============================================================================
+async function runVelocityAnalyzer(fastify) {
+    fastify.log.info('Running Phase 12 Velocity & Restock Analyzer...');
+    try {
+        const Order = require('../models/Order');
+        const Product = require('../models/Product');
+        
+        // Look at orders from the last 24 hours
+        const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000);
+        
+        const velocityData = await Order.aggregate([
+            { $match: { createdAt: { $gte: yesterday }, status: { $in: ['Delivered', 'Dispatched'] } } },
+            { $unwind: "$items" },
+            { $group: { _id: "$items.productId", dailySold: { $sum: "$items.qty" } } }
+        ]);
+        
+        for (const stat of velocityData) {
+            const product = await Product.findById(stat._id);
+            if (product && product.variants && product.variants.length > 0) {
+                const stock = product.variants[0].stock;
+                // If daily velocity exceeds current stock, we will run out soon.
+                if (stat.dailySold > stock && stock > 0) {
+                    fastify.log.warn(`🚨 URGENT RESTOCK: ${product.name} is draining fast! Sold ${stat.dailySold} today, only ${stock} left.`);
+                }
+            }
+        }
+    } catch (err) {
+        fastify.log.error('Velocity Analyzer Error: ' + err.message);
+    }
+}
+
 module.exports = {
     runWithLock,
     runExpiryMonitor,
@@ -721,5 +758,6 @@ module.exports = {
     runDemandForecast,
     runFleetWatchdog,
     runAbandonedCartRecovery,
-    generateFleetHeatmap
+    generateFleetHeatmap,
+    runVelocityAnalyzer // Added to exports
 };
