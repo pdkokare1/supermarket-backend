@@ -40,7 +40,8 @@ exports.restoreInventory = async (items, storeId, session) => {
     }));
 
     if (bulkOperations.length > 0) {
-        await StoreInventory.bulkWrite(bulkOperations, { session });
+        // ENTERPRISE OPTIMIZATION: ordered: false parallelizes the writes in the MongoDB cluster
+        await StoreInventory.bulkWrite(bulkOperations, { session, ordered: false });
         await invalidateProductCache();
     }
 };
@@ -61,6 +62,7 @@ exports.deductInventory = async (items, storeId, session) => {
     }));
 
     if (bulkOperations.length > 0) {
+        // We leave ordered: true (default) here purposefully to ensure the cart fails predictably if an early item fails
         const bulkResult = await StoreInventory.bulkWrite(bulkOperations, { session });
         
         if (bulkResult.modifiedCount !== items.length) {
@@ -147,14 +149,15 @@ exports.calculateSalesVelocityAndStock = async (velocityDays, lowStockThreshold,
         }
 
         if (bulkOps.length >= BATCH_SIZE) {
-            await StoreInventory.bulkWrite(bulkOps);
+            // ENTERPRISE OPTIMIZATION: ordered: false prevents the Node Event Loop from choking on heavy Cron aggregations
+            await StoreInventory.bulkWrite(bulkOps, { ordered: false });
             bulkOps = []; 
             await new Promise(resolve => setImmediate(resolve));
         }
     }
 
     if (bulkOps.length > 0) {
-        await StoreInventory.bulkWrite(bulkOps);
+        await StoreInventory.bulkWrite(bulkOps, { ordered: false });
     }
 
     return { lowStockItems, deadStockItems };
