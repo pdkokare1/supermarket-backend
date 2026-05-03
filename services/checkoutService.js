@@ -432,9 +432,12 @@ exports.processOnlineCheckout = async (payload, externalSession = null) => {
     } finally {
         // 3. Clean up the holds after the transaction either succeeds or fails
         if (redisClient && locksAcquired.length > 0) {
+            // ENTERPRISE OPTIMIZATION: Use Redis Pipelining to release all locks in a single network round-trip
+            const pipeline = redisClient.pipeline();
             for (const lock of locksAcquired) {
-                await redisClient.decrby(lock.key, lock.qty);
+                pipeline.decrby(lock.key, lock.qty);
             }
+            await pipeline.exec();
         }
     }
 };
