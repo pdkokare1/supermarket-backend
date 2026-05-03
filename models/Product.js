@@ -67,7 +67,8 @@ const productSchema = new mongoose.Schema({
     taxType: { type: String, enum: ['Inclusive', 'Exclusive'], default: 'Inclusive' },
 
     variants: [variantSchema] 
-}, { timestamps: true });
+// ENTERPRISE OPTIMIZATION: optimisticConcurrency enforces Version Vector locking to prevent double-writes
+}, { timestamps: true, optimisticConcurrency: true });
 
 // Existing Indexes (Consolidated and Optimized)
 productSchema.index({ "variants.sku": 1 });
