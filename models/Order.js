@@ -6,7 +6,8 @@ const mongoose = require('mongoose');
 const orderCounterSchema = new mongoose.Schema({
     _id: { type: String, required: true },
     seq: { type: Number, default: 1000 }
-});
+// ENTERPRISE OPTIMIZATION: Enforce Version Vector locking on counters
+}, { optimisticConcurrency: true });
 // Attach to mongoose models cleanly so hot-reloads don't crash
 const OrderCounter = mongoose.models.OrderCounter || mongoose.model('OrderCounter', orderCounterSchema);
 
@@ -169,7 +170,8 @@ const orderSchema = new mongoose.Schema({
         message: { type: String, trim: true },
         timestamp: { type: Date, default: Date.now }
     }]
-}, { timestamps: true });
+// ENTERPRISE OPTIMIZATION: optimisticConcurrency enforces Version Vector locking to prevent double-writes
+}, { timestamps: true, optimisticConcurrency: true });
 
 // --- OPTIMIZED INDEXES FOR HIGH-SPEED QUERIES ---
 orderSchema.index({ status: 1, createdAt: -1 }); 
